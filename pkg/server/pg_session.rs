@@ -23,6 +23,7 @@ pub(crate) enum SessionQuery {
     Reset,
     DefaultPath,
     SchemaUtility(astersql_session::runtime::PgSchemaCommand),
+    DatabaseUtility(astersql_session::runtime::PgDatabaseCommand),
 }
 #[derive(Debug)]
 pub(crate) struct PgSession {
@@ -372,6 +373,22 @@ impl PgSession {
                 self.effective_explicit_path(context)?;
                 None
             }
+            SessionQuery::DatabaseUtility(command) => {
+                if context.in_transaction() {
+                    return Err(crate::conn::ConnError::PgFunction(
+                        astersql_session::runtime::PgFunctionError {
+                            state: "25001",
+                            message: "database administration is not allowed in a transaction"
+                                .into(),
+                            detail: None,
+                            hint: None,
+                            position: None,
+                        },
+                    ));
+                }
+                context.pg_database_facts(Some(command.clone()))?;
+                None
+            }
             SessionQuery::SchemaUtility(command) => {
                 context
                     .pg_schema_path(self.path.clone(), Some(command.clone()))
@@ -433,6 +450,15 @@ impl SessionQuery {
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
+            Self::DatabaseUtility(command) => match command {
+                astersql_session::runtime::PgDatabaseCommand::Owner { .. } => "ALTER DATABASE",
+                astersql_session::runtime::PgDatabaseCommand::Connect { grant: true, .. } => {
+                    "GRANT"
+                }
+                astersql_session::runtime::PgDatabaseCommand::Connect { grant: false, .. } => {
+                    "REVOKE"
+                }
+            },
             Self::SchemaUtility(command) => match command {
                 astersql_session::runtime::PgSchemaCommand::Create(_) => "CREATE SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::Drop(_) => "DROP SCHEMA",
@@ -518,6 +544,45 @@ impl SessionQuery {
             Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
             _ => None,
         };
+        use astersql_session::runtime::PgDatabaseCommand;
+        if tokens.len() == 6
+            && word(tokens.first(), "alter")
+            && word(tokens.get(1), "database")
+            && word(tokens.get(3), "owner")
+            && word(tokens.get(4), "to")
+        {
+            if let (Some(database), Some(role)) = (identifier(&tokens[2]), identifier(&tokens[5])) {
+                return Ok(Some(Self::DatabaseUtility(PgDatabaseCommand::Owner {
+                    database,
+                    role,
+                })));
+            }
+        }
+        if tokens.len() == 7
+            && (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
+            && word(tokens.get(1), "connect")
+            && word(tokens.get(2), "on")
+            && word(tokens.get(3), "database")
+        {
+            let grant = word(tokens.first(), "grant");
+            if word(tokens.get(5), if grant { "to" } else { "from" }) {
+                if let (Some(database), Some(mut role)) =
+                    (identifier(&tokens[4]), identifier(&tokens[6]))
+                {
+                    if word(tokens.get(6), "public") {
+                        role = "PUBLIC".into();
+                    }
+                    return Ok(Some(Self::DatabaseUtility(PgDatabaseCommand::Connect {
+                        database,
+                        role,
+                        grant,
+                    })));
+                }
+            }
+        }
+        if word(tokens.first(), "alter") && word(tokens.get(1), "database") {
+            return Err(("0A000", "unsupported PostgreSQL database policy".into()));
+        }
         if tokens.len() == 3 && word(tokens.get(1), "schema") {
             if let Some(name) = identifier(&tokens[2]) {
                 if word(tokens.first(), "create") {

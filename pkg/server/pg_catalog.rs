@@ -23,12 +23,34 @@ struct Execution<'a> {
     cancel: &'a CancellationToken,
     snapshot: Option<astersql_infoschema::SchemaRef>,
     database: String,
+    database_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgDatabaseFact>>>,
+    database_role_names: std::cell::RefCell<std::collections::BTreeMap<i64, String>>,
     providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
     ctes: std::cell::RefCell<std::collections::HashMap<usize, CatalogRows>>,
     materialized: std::cell::Cell<usize>,
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
+    fn database_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>> {
+        if self.database_facts.borrow().is_none() {
+            let facts = self.context.pg_database_facts(None)?;
+            *self.database_role_names.borrow_mut() =
+                facts.iter().filter_map(|f| f.owner.clone()).collect();
+            *self.database_facts.borrow_mut() = Some(facts);
+        }
+        Ok(self.database_facts.borrow().as_ref().unwrap().clone())
+    }
+    fn database_role_name(&self, oid: i64) -> ConnResult<Value> {
+        if self.database_facts.borrow().is_none() {
+            self.database_facts()?;
+        }
+        Ok(self
+            .database_role_names
+            .borrow()
+            .get(&oid)
+            .cloned()
+            .map_or(Value::Null, Value::Text))
+    }
     fn comparison(&self) -> ConnResult<()> {
         check_catalog_cancel(self.cancel)?;
         let work = self.work.get() + 1;
@@ -46,6 +68,15 @@ impl Execution<'_> {
         }
         Ok(std::sync::Arc::new(rows))
     }
+}
+fn database_identity_unavailable(message: &str) -> ConnError {
+    ConnError::PgFunction(astersql_session::runtime::PgFunctionError {
+        state: "0A000",
+        message: message.into(),
+        detail: None,
+        hint: None,
+        position: None,
+    })
 }
 fn catalog_row_limit() -> ConnError {
     ConnError::Session("PG catalog row limit exceeded (16384 rows)".into())
@@ -688,10 +719,12 @@ impl CatalogQuery {
                         0,
                     )),
                     ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                    ("pg_database", "datname") => Some((1, 253, 0)),
+                    ("pg_database", "datname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
                     ("pg_database", "datistemplate") => Some((3, 1, boolean)),
                     ("pg_database", "datallowconn") => Some((4, 1, boolean)),
-                    ("pg_database", "datdba") => Some((5, 8, 0)),
+                    ("pg_database", "datdba") => Some((5, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_namespace", "nspname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -908,15 +941,15 @@ impl CatalogQuery {
                     ("current_database" | "current_catalog", [])
                         if self.select.from.name == "pg_database" =>
                     {
-                        Ok((253, 0))
+                        Ok((crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     ("current_schema", []) if self.select.from.name == "pg_namespace" => {
                         Ok((crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     ("pg_get_userbyid", [arg])
-                        if matches!(arg, Expr::Null) || self.expr_type(arg)?.0 == 8 =>
+                        if matches!(arg, Expr::Null) || numeric_type(self.expr_type(arg)?.0) =>
                     {
-                        Ok((253, 0))
+                        Ok((crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     (name, [oid])
                         if FUNCTION_INTROSPECTION
@@ -1138,6 +1171,14 @@ impl CatalogQuery {
                     // These are PostgreSQL catalog attribute numbers, not the
                     // compact row slots used internally by the catalog evaluator.
                     let attribute = match (relation.name.as_str(), slot % CATALOG_ROW_WIDTH) {
+                        ("pg_shdescription", 6) => 1,
+                        ("pg_shdescription", 7) => 2,
+                        ("pg_shdescription", 2) => 3,
+                        ("pg_database", 0) => 1,
+                        ("pg_database", 1) => 2,
+                        ("pg_database", 5) => 3,
+                        ("pg_database", 3) => 6,
+                        ("pg_database", 4) => 7,
                         ("pg_namespace", 0) => 1,
                         ("pg_namespace", 1) => 2,
                         ("pg_namespace", 5) => 3,
@@ -1204,6 +1245,8 @@ impl CatalogQuery {
             cancel,
             snapshot,
             database,
+            database_facts: Default::default(),
+            database_role_names: Default::default(),
             providers: Default::default(),
             ctes: Default::default(),
             materialized: std::cell::Cell::new(0),
@@ -1330,6 +1373,7 @@ impl CatalogQuery {
                         execution.snapshot.as_ref(),
                         &execution.database,
                         execution.cancel,
+                        execution,
                     )?;
                     for row in &mut rows {
                         row.resize(CATALOG_ROW_WIDTH, Value::Null);
@@ -1412,6 +1456,7 @@ impl CatalogQuery {
         snapshot: Option<&astersql_infoschema::SchemaRef>,
         database: &str,
         cancel: &CancellationToken,
+        execution: &Execution<'_>,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
             "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
@@ -1479,14 +1524,24 @@ impl CatalogQuery {
                 cancel,
             )?,
             "pg_class" | "pg_database" | "pg_namespace" => {
-                let snapshot = snapshot
-                    .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
+                let snapshot = snapshot.ok_or_else(|| {
+                    if name == "pg_database" {
+                        database_identity_unavailable("schema snapshot is unavailable")
+                    } else {
+                        ConnError::Session("schema snapshot is unavailable".into())
+                    }
+                })?;
                 let schemas = snapshot.AllSchemas();
                 if name == "pg_class" {
                     class_rows(snapshot.as_ref(), database)?
                 } else if name == "pg_namespace" {
                     namespace_rows_for_context(context, snapshot.as_ref(), database)?
                 } else {
+                    let facts = execution
+                        .database_facts()?
+                        .into_iter()
+                        .map(|f| (f.id, f))
+                        .collect::<std::collections::BTreeMap<_, _>>();
                     // Native schema metadata has no shared-description rows. A
                     // LEFT JOIN to this empty relation keeps every schema and
                     // gives all right-side fields NULL, regardless of its predicate.
@@ -1494,16 +1549,23 @@ impl CatalogQuery {
                         .into_iter()
                         .map(|schema| {
                             // Both projections refer to the same native database object.
-                            let oid = namespace_oid(schema.id)?;
+                            let oid = namespace_oid(schema.id).map_err(|_| {
+                                database_identity_unavailable(
+                                    "PostgreSQL database identity is unavailable",
+                                )
+                            })?;
                             Ok(vec![
                                 Value::Signed(oid),
                                 Value::Text(schema.name.original.clone()),
-                                // Native schemas have no PostgreSQL owner or description,
-                                // and are neither template databases nor disabled databases.
+                                // Ordinary native databases have no template/disable policy.
+                                // Ownership is explicitly migrated or recorded at PG creation.
                                 Value::Null,
                                 Value::Text("false".into()),
                                 Value::Text("true".into()),
-                                Value::Null,
+                                facts
+                                    .get(&schema.id)
+                                    .and_then(|f| f.owner.as_ref())
+                                    .map_or(Value::Null, |(oid, _)| Value::Signed(*oid)),
                                 Value::Null,
                                 Value::Null,
                                 // There is no PG XID source. Expose an explicitly
@@ -1572,7 +1634,24 @@ impl CatalogQuery {
         let snapshot = execution.snapshot.as_deref();
         let evaluate = |expr: &Expr| self.evaluate(expr, row, execution);
         Ok(match expr {
-            Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
+            Expr::Column(path) => {
+                let slot = self.column(path).expect("validated column").0;
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_database")
+                    && slot % CATALOG_ROW_WIDTH == 5
+                    // NULL-extension of an unmatched outer join is a SQL NULL,
+                    // not a legacy database with missing ownership metadata.
+                    && row[slot - 5] != Value::Null
+                    && row[slot] == Value::Null
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL database owner requires explicit administrator migration",
+                    ));
+                }
+                row[slot].clone()
+            }
             Expr::Null => Value::Null,
             Expr::TypedLiteral(inner, _, _) => evaluate(inner)?,
             Expr::Arithmetic(left, op, right) => match (evaluate(left)?, evaluate(right)?) {
@@ -1926,15 +2005,27 @@ impl CatalogQuery {
                     }
                     Value::Null
                 }
-                "current_database" | "current_catalog" => Value::Text(database.into()),
+                "current_database" | "current_catalog" => {
+                    if database.is_empty()
+                        || !snapshot.is_some_and(|s| {
+                            s.AllSchemas().iter().any(|d| d.name.original == database)
+                        })
+                    {
+                        return Err(database_identity_unavailable(
+                            "PostgreSQL current database identity is unavailable",
+                        ));
+                    }
+                    Value::Text(database.into())
+                }
                 "current_schema" => self
                     .current_schema
                     .as_ref()
                     .map_or(Value::Null, |s| Value::Text(s.clone())),
-                "pg_get_userbyid" => {
-                    evaluate(&args[0])?;
-                    Value::Null
-                }
+                "pg_get_userbyid" => match evaluate(&args[0])? {
+                    Value::Null => Value::Null,
+                    Value::Signed(oid) => execution.database_role_name(oid)?,
+                    _ => unreachable!("validated role OID"),
+                },
                 "pg_get_function_arguments"
                 | "pg_get_function_result"
                 | "pg_get_function_sqlbody" => {

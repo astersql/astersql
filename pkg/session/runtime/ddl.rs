@@ -1347,9 +1347,15 @@ impl ConcreteSession {
                 _ => None,
             })
             .flatten();
-        self.domain
-            .ddl_create_database_with_id(&name, statement.IfNotExists, preferred_id)
-            .map_err(|error| session_error("persist CREATE DATABASE metadata", error))?;
+        if self.sql_dialect == ast::SqlDialect::PostgreSQL {
+            let owner = self.pg_database_role_id(&self.pg_schema_identity())?;
+            self.domain
+                .ddl_create_database_owned(&name, statement.IfNotExists, preferred_id, owner)
+        } else {
+            self.domain
+                .ddl_create_database_with_id(&name, statement.IfNotExists, preferred_id)
+        }
+        .map_err(|error| session_error("persist CREATE DATABASE metadata", error))?;
         RUNTIME_DATABASES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1562,6 +1568,27 @@ impl ConcreteSession {
                             .any(|database| database.name.lower == name)
                     })
             });
+        if self.sql_dialect == ast::SqlDialect::PostgreSQL {
+            if let Some(schema) = self
+                .domain
+                .info_schema()
+                .AllSchemas()
+                .iter()
+                .find(|s| s.name.lower == name)
+            {
+                let allowed = self
+                    .pg_database_facts(None)?
+                    .into_iter()
+                    .find(|f| f.id == schema.id)
+                    .is_some_and(|f| f.can_connect);
+                if !allowed {
+                    return Err(super::pg_schema::namespace_error(
+                        "42501",
+                        "permission denied for database",
+                    ));
+                }
+            }
+        }
         let mut state = self.state.borrow_mut();
         let built_in = matches!(
             name.as_str(),

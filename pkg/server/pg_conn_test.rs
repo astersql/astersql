@@ -33,8 +33,11 @@ fn startup(addr: std::net::SocketAddr, user: &str, version: u32) -> TcpStream {
 }
 #[test]
 fn startup_auth_roundtrip() {
-    let (domain, _) =
+    let (domain, native) =
         astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
+    // The namespace startup contract requires a real database identity even
+    // when authentication itself uses an unbootstrapped fixture.
+    native.execute("CREATE DATABASE test").unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,

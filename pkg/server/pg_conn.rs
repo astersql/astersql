@@ -340,7 +340,12 @@ impl PgService {
             }
             if let Some(db) = startup.parameters.get("database").filter(|s| !s.is_empty()) {
                 if let Err(e) = context.use_db(db, &CancellationToken::new()) {
-                    write_error(socket, "FATAL", "3D000", &e.to_string())?;
+                    let state = if matches!(&e, crate::conn::ConnError::PgFunction(_)) {
+                        sqlstate(&e)
+                    } else {
+                        "3D000"
+                    };
+                    write_error(socket, "FATAL", state, &e.to_string())?;
                     return Ok(false);
                 }
             }

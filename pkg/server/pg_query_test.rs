@@ -1192,6 +1192,20 @@ fn datagrip_catalog_live_metadata() {
     ] {
         assert_eq!(query(&mut socket, sql)[0].0, b'C', "{sql}");
     }
+    // Explicit administrator mapping for legacy databases in this disposable fixture.
+    for name in ["test", "mysql", "sys"] {
+        if domain
+            .info_schema()
+            .AllSchemas()
+            .iter()
+            .any(|s| s.name.original == name)
+        {
+            assert_eq!(
+                query(&mut socket, &format!("ALTER DATABASE {name} OWNER TO root"))[0].0,
+                b'C'
+            );
+        }
+    }
     let result = query(&mut socket, DATABASES_SQL);
     assert_eq!(result[0].0, b'T');
     let rows = catalog_rows(&result);
@@ -1217,7 +1231,7 @@ fn datagrip_catalog_live_metadata() {
     assert_eq!(created[2], None);
     assert_eq!(created[3].as_deref(), Some("f"));
     assert_eq!(created[4].as_deref(), Some("t"));
-    assert_eq!(created[5], None);
+    assert_eq!(created[5].as_deref(), Some("root"));
     assert!(catalog_rows(&query(&mut socket, TRANSACTIONS_SQL)).is_empty());
     assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
     assert_eq!(
@@ -1363,7 +1377,7 @@ fn namespace_catalog_live_metadata() {
         ("state_number", 20),
         ("name", 19),
         ("description", 25),
-        ("owner", 25),
+        ("owner", 19),
     ] {
         assert!(result[0].1[offset..].starts_with(&[name.as_bytes(), b"\0"].concat()));
         offset += name.len() + 1;
@@ -1446,7 +1460,7 @@ fn tablespace_catalog_empty_relation() {
                 ("spcacl", 25),
                 ("spcoptions", 25),
                 ("description", 25),
-                ("owner", 25),
+                ("owner", 19),
             ],
         ),
     ] {

@@ -6378,6 +6378,7 @@ impl ConcreteSession {
                     "Operation DROP USER failed for '{user}'@'{host}'"
                 )));
             }
+            self.pg_database_drop_role(user, false)?;
             identities.push((host, user.clone()));
         }
 
@@ -6404,6 +6405,7 @@ impl ConcreteSession {
 
         for (host, user) in identities {
             privileges.DropAccount(&host, &user);
+            self.pg_database_drop_role(&user, true)?;
         }
         handle.merge(privileges);
         Ok(())

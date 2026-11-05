@@ -3640,6 +3640,29 @@ impl Domain {
         self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
+    /// Create a PG database with a real, already allocated role identity.
+    pub fn ddl_create_database_owned(
+        &self,
+        database: &str,
+        if_not_exists: bool,
+        preferred_id: Option<i64>,
+        owner: i64,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata.create_database_owned(
+                    store,
+                    database,
+                    if_not_exists,
+                    preferred_id,
+                    Some(owner),
+                )
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// DDL 删库及库内表后刷新 canonical InfoSchema。
     pub fn ddl_drop_database(&self, database: &str, if_exists: bool) -> Result<(), DomainError> {
         let change = self

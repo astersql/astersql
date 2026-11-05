@@ -251,8 +251,20 @@ impl DdlMetadataService {
         if_not_exists: bool,
         preferred_id: Option<i64>,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.create_database_owned(store, database, if_not_exists, preferred_id, None)
+    }
+
+    /// Persist PG ownership in the same transaction as the database identity.
+    pub fn create_database_owned(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        if_not_exists: bool,
+        preferred_id: Option<i64>,
+        owner: Option<i64>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
-        self.mutate(store, move |catalog| {
+        self.mutate_with_kv(store, move |catalog, transaction| {
             if catalog.databases.contains_key(&database) {
                 if if_not_exists {
                     return Ok(DdlMetadataChange::default());
@@ -264,6 +276,12 @@ impl DdlMetadataService {
             let id = preferred_id.unwrap_or_else(|| allocate_id(catalog));
             if !astersql_meta_metadef::IsReservedID(id) {
                 catalog.next_id = catalog.next_id.max(id);
+            }
+            if let Some(owner) = owner {
+                transaction.Set(
+                    tidb_hash_key(b"PgDatabaseOwners", id.to_string().as_bytes()),
+                    owner.to_string().into_bytes(),
+                )?;
             }
             catalog.databases.insert(
                 database.clone(),
@@ -302,7 +320,7 @@ impl DdlMetadataService {
         ) -> Result<(), kv::errors::SharedError>,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
-        self.mutate(store, move |catalog| {
+        self.mutate_with_kv(store, move |catalog, transaction| {
             let existing = catalog
                 .tables
                 .iter()
@@ -312,7 +330,16 @@ impl DdlMetadataService {
                 })
                 .collect::<Vec<_>>();
             before_drop(&existing)?;
-            let database_existed = catalog.databases.remove(&database).is_some();
+            let removed_database = catalog.databases.remove(&database);
+            if let Some(database) = &removed_database {
+                for hash in [
+                    b"PgDatabaseOwners".as_slice(),
+                    b"PgDatabaseConnect".as_slice(),
+                ] {
+                    transaction.Delete(tidb_hash_key(hash, database.ID.to_string().as_bytes()))?;
+                }
+            }
+            let database_existed = removed_database.is_some();
             let table_keys = catalog
                 .tables
                 .keys()

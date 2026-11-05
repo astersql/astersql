@@ -906,6 +906,15 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    fn pg_database_facts(
+        &self,
+        _command: Option<astersql_session::runtime::PgDatabaseCommand>,
+    ) -> ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>> {
+        Err(ConnError::Session(
+            "PostgreSQL database metadata unavailable".into(),
+        ))
+    }
+
     /// Dispatch PG sequence operations to the connection's shared session worker.
     fn pg_sequence(
         &self,

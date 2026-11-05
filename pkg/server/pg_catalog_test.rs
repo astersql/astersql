@@ -130,7 +130,7 @@ fn catalog_projection_variants() {
     assert_eq!(
         columns(&response[0].1),
         vec![
-            ("Database Name".into(), 25),
+            ("Database Name".into(), 19),
             ("id".into(), 20),
             ("absent".into(), 25)
         ]
@@ -206,7 +206,7 @@ fn catalog_projection_variants() {
     assert_eq!(parsed.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
     assert_eq!(
         columns(&parsed[2].1),
-        vec![("Latest Name".into(), 25), ("id".into(), 20)]
+        vec![("Latest Name".into(), 19), ("id".into(), 20)]
     );
     assert_eq!(
         query(&mut socket, "CREATE DATABASE catalog_after_parse")[0].0,
@@ -285,6 +285,10 @@ fn catalog_database_description_semantics() {
     socket.write_all(&body).unwrap();
     while read(&mut socket).0 != b'Z' {}
 
+    assert_eq!(
+        query(&mut socket, "CREATE DATABASE IF NOT EXISTS test")[0].0,
+        b'C'
+    );
     for sql in [
         "SELECT objoid, classoid, objsubid, description FROM pg_catalog.pg_description WHERE classoid = 2615 AND objsubid = 0",
         "SELECT objoid, classoid, description FROM pg_catalog.pg_shdescription WHERE objoid = 1 AND classoid = 1262",
@@ -317,13 +321,13 @@ fn catalog_database_description_semantics() {
         columns(&result[0].1),
         vec![
             ("id".into(), 20),
-            ("datname".into(), 25),
+            ("datname".into(), 19),
             ("description".into(), 25),
             ("datistemplate".into(), 16),
             ("datallowconn".into(), 16),
-            ("owner".into(), 25),
-            ("db".into(), 25),
-            ("current_catalog".into(), 25)
+            ("owner".into(), 19),
+            ("db".into(), 19),
+            ("current_catalog".into(), 19)
         ]
     );
     assert_eq!(
@@ -340,7 +344,7 @@ fn catalog_database_description_semantics() {
                 None,
                 Some("f"),
                 Some("t"),
-                None,
+                Some("root"),
                 Some("test"),
                 Some("test")
             ])
@@ -3118,5 +3122,223 @@ fn pg12_ddl_failure_cleanup_catalog() {
     assert!(
         TcpListener::bind(addr).is_ok(),
         "owned listener must be released"
+    );
+}
+
+#[test]
+fn pg13_001_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_001_legacy").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_001_legacy")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_identity_user'@'%'")
+            .unwrap();
+    });
+    let connect = || {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0pg13_001_legacy\0\0",
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        while read(&mut socket).0 != b'Z' {}
+        socket
+    };
+    let mut a = connect();
+    let mut b = connect();
+    let unmigrated = query(
+        &mut a,
+        "SELECT datdba FROM pg_catalog.pg_database WHERE datname = 'pg13_001_legacy'",
+    );
+    assert_eq!(
+        unmigrated.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"EZ",
+        "{unmigrated:?}"
+    );
+    assert!(unmigrated[0].1.windows(5).any(|w| w == b"0A000"));
+    let names = query(
+        &mut a,
+        "SELECT oid, datname FROM pg_catalog.pg_database WHERE datname = 'pg13_001_legacy'",
+    );
+    assert_eq!(names.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+    let unmatched = query(
+        &mut a,
+        "SELECT D.datdba FROM pg_catalog.pg_database N LEFT JOIN pg_catalog.pg_database D ON D.datname = 'pg13_001_absent' WHERE N.datname = 'pg13_001_legacy'",
+    );
+    assert_eq!(
+        unmatched.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"TDCZ",
+        "{unmatched:?}"
+    );
+    assert_eq!(unmatched[1], (b'D', row(&[None])));
+    // Explicit admin migration, never an inferred root owner for a legacy DB.
+    let migrated = query(&mut a, "ALTER DATABASE pg13_001_legacy OWNER TO root");
+    assert_eq!(
+        migrated.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"CZ",
+        "{migrated:?}"
+    );
+    let sql = "SELECT oid, datname, datdba, datistemplate, datallowconn FROM pg_catalog.pg_database WHERE datname = 'pg13_001_legacy'";
+    let result = query(&mut a, sql);
+    assert_eq!(
+        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"TDCZ",
+        "{result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1),
+        vec![
+            ("oid".into(), 26),
+            ("datname".into(), 19),
+            ("datdba".into(), 26),
+            ("datistemplate".into(), 16),
+            ("datallowconn".into(), 16)
+        ]
+    );
+    let schema = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.original == "pg13_001_legacy")
+        .unwrap();
+    let fact = native
+        .pg_database_facts(None)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.id == schema.id)
+        .unwrap();
+    let (owner_oid, owner_name) = fact.owner.unwrap();
+    assert_eq!(owner_name, "root");
+    assert_eq!(
+        result[1],
+        (
+            b'D',
+            row(&[
+                Some(
+                    &crate::pg_catalog::namespace_oid(schema.id)
+                        .unwrap()
+                        .to_string()
+                ),
+                Some("pg13_001_legacy"),
+                Some(&owner_oid.to_string()),
+                Some("f"),
+                Some("t")
+            ])
+        )
+    );
+    domain.force_full_reload_for_test().unwrap();
+    assert_eq!(
+        query(
+            &mut a,
+            "SELECT pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname = 'pg13_001_legacy'"
+        )[1],
+        (b'D', row(&[Some("root")]))
+    );
+    assert_eq!(
+        query(&mut b, sql),
+        result,
+        "cross connection identities differ"
+    );
+    for suffix in ["WHERE datname = 'pg13_001_absent'", "LIMIT 0"] {
+        let empty = query(
+            &mut a,
+            &format!(
+                "SELECT oid, datname, datdba, datistemplate, datallowconn FROM pg_catalog.pg_database {suffix}"
+            ),
+        );
+        assert_eq!(
+            empty.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TCZ",
+            "{empty:?}"
+        );
+        assert_eq!(empty[0], result[0]);
+        assert_eq!(empty[1], (b'C', b"SELECT 0\0".to_vec()));
+        assert_eq!(empty[2], (b'Z', b"I".to_vec()));
+    }
+    assert_eq!(
+        query(&mut a, "BEGIN").last().unwrap(),
+        &(b'Z', b"T".to_vec())
+    );
+    assert_eq!(query(&mut a, sql).last().unwrap(), &(b'Z', b"T".to_vec()));
+    let failed = query(&mut a, "SELECT unknown FROM pg_catalog.pg_database");
+    assert_eq!(failed.last().unwrap(), &(b'Z', b"E".to_vec()));
+    let aborted = query(&mut a, sql);
+    assert!(aborted[0].1.windows(5).any(|w| w == b"25P02"));
+    assert_eq!(
+        query(&mut a, "ROLLBACK").last().unwrap(),
+        &(b'Z', b"I".to_vec())
+    );
+    assert_eq!(query(&mut a, sql), result);
+    native
+        .execute("CREATE USER 'pg13_identity_user'@'%' IDENTIFIED WITH mysql_native_password BY ''")
+        .unwrap();
+    let first_role = native.pg_database_role_id("pg13_identity_user").unwrap();
+    assert_eq!(
+        query(
+            &mut a,
+            "ALTER DATABASE pg13_001_legacy OWNER TO pg13_identity_user"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert!(
+        native
+            .execute("DROP USER 'pg13_identity_user'@'%'")
+            .is_err(),
+        "dangling database owner allowed"
+    );
+    assert_eq!(
+        query(&mut a, "ALTER DATABASE pg13_001_legacy OWNER TO root")[0].0,
+        b'C'
+    );
+    native
+        .execute("DROP USER 'pg13_identity_user'@'%'")
+        .unwrap();
+    native
+        .execute("CREATE USER 'pg13_identity_user'@'%' IDENTIFIED WITH mysql_native_password BY ''")
+        .unwrap();
+    assert_ne!(
+        native.pg_database_role_id("pg13_identity_user").unwrap(),
+        first_role,
+        "recreated role reused identity"
+    );
+    native
+        .execute("DROP USER 'pg13_identity_user'@'%'")
+        .unwrap();
+    drop(a);
+    drop(b);
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err(), "listener leaked");
+    println!(
+        "pg13_001_contract: BASE=1 EMPTY=2 cross_connection=1 reload=1 migration=2 role_recreation=1 transaction_recovery=1 cleanup=1"
     );
 }

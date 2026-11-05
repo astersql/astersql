@@ -97,6 +97,9 @@ pub use function_diagnostics::PgFunctionError;
 mod pg_array;
 #[cfg(test)]
 mod pg_array_test;
+mod pg_database;
+#[cfg(test)]
+mod pg_database_test;
 mod pg_json;
 #[cfg(test)]
 mod pg_json_test;
@@ -106,6 +109,7 @@ mod pg_jsonb_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
+pub use pg_database::{PgDatabaseCommand, PgDatabaseFact};
 mod pg_schema;
 mod pg_sequence;
 pub use pg_sequence::PgSequenceCommand;

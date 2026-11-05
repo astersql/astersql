@@ -417,6 +417,8 @@ impl PacketIo for UnixPacketIo {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootstrapAuthMode {
     InsecureRootOnly,
+    /// Bootstrap root plus verification of real native accounts (including empty-password accounts).
+    BootstrapRootAndNativeAccounts,
     SecureUnsupported,
 }
 
@@ -821,6 +823,14 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgDatabaseFacts {
+        command: Option<astersql_session::runtime::PgDatabaseCommand>,
+        response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>>>,
+    },
+    VerifyNativeAccount {
+        request: AuthRequest,
+        response: mpsc::SyncSender<ConnResult<()>>,
+    },
     CatalogSchemaSnapshot {
         response: mpsc::SyncSender<astersql_infoschema::SchemaRef>,
     },
@@ -1011,6 +1021,24 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgDatabaseFacts { command, response } => {
+                let _ = response.send(
+                    session
+                        .pg_database_facts(command.as_ref())
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::VerifyNativeAccount { request, response } => {
+                let result = session
+                    .pg_verify_native_account(
+                        &request.identity.username,
+                        &request.identity.hostname,
+                        &request.auth_data,
+                        &request.salt,
+                    )
+                    .map_err(session_protocol_error);
+                let _ = response.send(result);
+            }
             SessionRequest::PgSequence { command, response } => {
                 let _ = response.send(
                     session
@@ -1984,6 +2012,17 @@ impl TiDBContext for ConcreteTiDBContext {
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
         rx.recv().map_err(packet_error)
     }
+    fn pg_database_facts(
+        &self,
+        command: Option<astersql_session::runtime::PgDatabaseCommand>,
+    ) -> ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgDatabaseFacts {
+            command,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_namespace_facts(
         &self,
     ) -> Option<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>> {
@@ -2088,16 +2127,28 @@ impl TiDBContext for ConcreteTiDBContext {
                 "secure bootstrap authentication is not implemented".to_owned(),
             ));
         }
-        let allowed = self.auth_mode == BootstrapAuthMode::InsecureRootOnly
-            && request.identity.username == "root"
+        let allowed = matches!(
+            self.auth_mode,
+            BootstrapAuthMode::InsecureRootOnly | BootstrapAuthMode::BootstrapRootAndNativeAccounts
+        ) && request.identity.username == "root"
             && request.auth_data.is_empty()
             && request.identity.plugin == AUTH_NATIVE_PASSWORD;
-        if allowed {
+        let native =
+            self.auth_mode == BootstrapAuthMode::BootstrapRootAndNativeAccounts && !allowed;
+        if native {
+            let (tx, rx) = mpsc::sync_channel(1);
+            self.send_request(SessionRequest::VerifyNativeAccount {
+                request: request.clone(),
+                response: tx,
+            })?;
+            rx.recv().map_err(packet_error)??;
+        }
+        if allowed || native {
             let (response_tx, response_rx) = mpsc::sync_channel(1);
             self.send_request(SessionRequest::SetAuthenticatedUser {
                 username: request.identity.username.clone(),
                 // InsecureRootOnly admits only root, matching PROCESS privilege.
-                has_process_privilege: true,
+                has_process_privilege: allowed,
                 response: response_tx,
             })?;
             response_rx.recv().map_err(packet_error)?
