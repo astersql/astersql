@@ -93,3 +93,7 @@ Rust 保留版本常量、JSON 键、临时命名规则、FieldType 转发、生
 - 修改临时命名时同步检查 IsChanging、IsRemoving、两个 origin-name getter 与 persistent_modify_column.rs；bdr_1_aster_unit_test.rs:64-66 已覆盖大小写冲突和墓碑幂等。
 - 修改额外列时检查 planner/table/regionsplit 特殊 ID 分支，保持 handle 的 PK+NOT NULL、physical table ID 的 NOT NULL、commit TS 的 UNSIGNED，以及三者的 BIGINT/binary 属性。
 - FindColumnInfo* 是线性查找。若性能证据要求索引，应由拥有 TableInfo 快照生命周期的上层维护并处理 DDL 失效，不宜在本模块引入长寿命全局缓存。
+
+## PostgreSQL CHECK / NOT NULL metadata
+
+PostgreSQLNotNull records a declaration generation and name. DROP NOT NULL retains the last generation; SET NOT NULL advances it. The nullability flag controls whether the PG18 constraint row currently exists.

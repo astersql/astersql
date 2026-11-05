@@ -270,3 +270,7 @@ Ready采用上述聚焦测试、格式化、lint及差异检查；`make lint`退
 ## 写入 CTE 同语句源视图（任务22）
 
 `execute_relational_delete_with_output` 在有界写入 CTE 期间优先从共享源行视图选取候选，兄弟 SELECT 读取同一行集；普通 DELETE、写入应用及错误恢复仍复用既有逻辑。
+
+## PostgreSQL CHECK / NOT NULL metadata
+
+PG CHECK validation consumes PostgreSQLChecks when present and renders column references against current metadata, preserving enforcement across rename. Native constraints keep their original expression path.

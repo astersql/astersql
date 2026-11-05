@@ -5650,14 +5650,25 @@ fn pg_conflict_bind_predicate(
     Ok(bound)
 }
 
-fn pg_conflict_check_constraints(
+pub(super) fn pg_conflict_check_constraints(
     table: &astersql_meta_model::TableInfo,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<()> {
     for constraint in table.Constraints.iter().filter(|constraint| {
         constraint.Enforced && constraint.State == astersql_meta_model::StatePublic
     }) {
-        let expression = crate::dml_runtime::ParseGeneratedExpr(&constraint.ExprString)?;
+        let rendered = table
+            .PostgreSQLChecks
+            .get(&constraint.ID)
+            .map(|bound| {
+                bound
+                    .render(table, true, &mut Vec::new())
+                    .ok_or_else(|| SessionError::new("invalid bound CHECK dependency"))
+            })
+            .transpose()?;
+        let expression = crate::dml_runtime::ParseGeneratedExpr(
+            rendered.as_deref().unwrap_or(&constraint.ExprString),
+        )?;
         match crate::dml_runtime::EvalExpr(&expression, row, None)?.as_deref() {
             None | Some("1") => {}
             Some("0") => {

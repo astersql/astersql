@@ -76,6 +76,13 @@ pub struct TableInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub PostgreSQLAttributeSlots: Option<Vec<(i64, bool)>>,
+    /// Bound CHECK syntax captured from the DDL AST, keyed by persistent constraint ID.
+    #[serde(
+        default,
+        rename = "postgresql_checks",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub PostgreSQLChecks: HashMap<i64, PostgreSQLCheckExpression>,
     /// Persistent PG role identity. Legacy native relations require explicit adoption.
     #[serde(rename = "postgresql_owner", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLOwner: Option<i64>,
@@ -1399,6 +1406,60 @@ impl PartitionDefinition {
                 .flatten()
                 .map(|s| s.len() as i64)
                 .sum::<i64>()
+    }
+}
+
+/// Durable expression syntax with column references bound to persistent IDs.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub enum PostgreSQLCheckExpression {
+    Literal(String),
+    Column(i64),
+    Binary(String, Box<Self>, Box<Self>),
+    Unary(String, Box<Self>),
+    IsNull(bool, Box<Self>),
+}
+impl PostgreSQLCheckExpression {
+    pub fn render(
+        &self,
+        table: &TableInfo,
+        native: bool,
+        dependencies: &mut Vec<i64>,
+    ) -> Option<String> {
+        Some(match self {
+            Self::Literal(value) => value.clone(),
+            Self::Column(id) => {
+                let column = table
+                    .Columns
+                    .iter()
+                    .find(|c| c.ID == *id && c.State == StatePublic && !c.Hidden)?;
+                if !dependencies.contains(id) {
+                    dependencies.push(*id);
+                }
+                let (name, quote) = if native {
+                    (&column.Name.L, '`')
+                } else {
+                    (&column.Name.O, '"')
+                };
+                format!(
+                    "{quote}{}{quote}",
+                    name.replace(quote, &format!("{quote}{quote}"))
+                )
+            }
+            Self::Binary(op, left, right) => format!(
+                "({} {} {})",
+                left.render(table, native, dependencies)?,
+                op,
+                right.render(table, native, dependencies)?
+            ),
+            Self::Unary(op, value) => {
+                format!("({} {})", op, value.render(table, native, dependencies)?)
+            }
+            Self::IsNull(not, value) => format!(
+                "({} IS {}NULL)",
+                value.render(table, native, dependencies)?,
+                if *not { "NOT " } else { "" }
+            ),
+        })
     }
 }
 

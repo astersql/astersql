@@ -821,6 +821,69 @@ impl ConcreteSession {
                     _ => {}
                 }
             }
+            // Bind the original syntax before metadata publication. Never reconstruct
+            // CHECK dependencies by searching the stored native expression string.
+            let mut expressions = Vec::new();
+            for definition in &statement.Cols {
+                for option in &definition.Options {
+                    if option.Tp == ast::ColumnOptionType::Check {
+                        expressions.push(
+                            option
+                                .Expr
+                                .as_ref()
+                                .ok_or_else(|| SessionError::new("missing CHECK expression"))?,
+                        );
+                    }
+                }
+            }
+            for constraint in &statement.Constraints {
+                if constraint.Tp == ast::ConstraintType::Check {
+                    expressions.push(
+                        constraint
+                            .Expr
+                            .as_ref()
+                            .ok_or_else(|| SessionError::new("missing CHECK expression"))?,
+                    );
+                }
+            }
+            if expressions.len() != table.Constraints.len() {
+                return Err(SessionError::new("CHECK syntax metadata mismatch"));
+            }
+            for (index, expression) in expressions.into_iter().enumerate() {
+                let bound = pg_bind_check_expression(expression, &table)?;
+                let mut ids = Vec::new();
+                bound
+                    .render(&table, false, &mut ids)
+                    .ok_or_else(|| SessionError::new("invalid CHECK dependency"))?;
+                table.Constraints[index].ConstraintCols = ids
+                    .iter()
+                    .map(|id| {
+                        table
+                            .Columns
+                            .iter()
+                            .find(|c| c.ID == *id)
+                            .unwrap()
+                            .Name
+                            .clone()
+                    })
+                    .collect();
+                table
+                    .PostgreSQLChecks
+                    .insert(table.Constraints[index].ID, bound);
+            }
+            for (column, definition) in table.Columns.iter_mut().zip(&statement.Cols) {
+                if astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()) {
+                    let name = definition
+                        .Options
+                        .iter()
+                        .find(|o| {
+                            o.Tp == ast::ColumnOptionType::NotNull && !o.ConstraintName.is_empty()
+                        })
+                        .map(|o| o.ConstraintName.clone())
+                        .unwrap_or_else(|| format!("{}_{}_not_null", table.Name.O, column.Name.O));
+                    column.PostgreSQLNotNull = Some((1, name));
+                }
+            }
             // A newly created table has no preexisting rows to backfill. Its
             // indexes and empty storage become visible in one publication.
             for index in &mut table.Indices {
@@ -3029,6 +3092,24 @@ impl ConcreteSession {
                             }
                         }
                     }
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                        column.PostgreSQLNotNull = info.Columns[offset].PostgreSQLNotNull.clone();
+                        if astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag())
+                            && !astersql_parser_mysql::r#type::HasNotNullFlag(
+                                info.Columns[offset].GetFlag(),
+                            )
+                        {
+                            let generation = column
+                                .PostgreSQLNotNull
+                                .as_ref()
+                                .map_or(Some(1), |(g, _)| g.checked_add(1))
+                                .ok_or_else(|| SessionError::new("NOT NULL generation overflow"))?;
+                            column.PostgreSQLNotNull = Some((
+                                generation,
+                                format!("{}_{}_not_null", info.Name.O, column.Name.O),
+                            ));
+                        }
+                    }
                     Self::check_embedding_column_dependencies(&column, &info)?;
                     Self::validate_enum_set_lengths(std::slice::from_ref(&column))?;
                     if column.GetType() == astersql_parser_mysql::r#type::TypeTiDBVectorFloat32 {
@@ -4616,3 +4697,55 @@ impl ConcreteSession {
 #[cfg(test)]
 #[path = "pg12_ddl_probe_test.rs"]
 mod pg12_ddl_probe_test;
+
+/// Bind the supported CHECK syntax from the parser AST to durable column IDs.
+fn pg_bind_check_expression(
+    expression: &ast::ExprNode,
+    table: &astersql_meta_model::TableInfo,
+) -> SessionResult<astersql_meta_model::PostgreSQLCheckExpression> {
+    use astersql_meta_model::PostgreSQLCheckExpression as B;
+    let unsupported =
+        || super::query::pg_union_error("unsupported PostgreSQL CHECK expression", "0A000");
+    Ok(match &expression.Kind {
+        ast::ExprKind::Value(_) => {
+            B::Literal(astersql_ddl::expression_text(expression).map_err(|_| unsupported())?)
+        }
+        ast::ExprKind::Column(name) => B::Column(
+            table
+                .Columns
+                .iter()
+                .find(|c| {
+                    c.Name.O == name.Name.O
+                        && !c.Hidden
+                        && (name.Table.O.is_empty() || name.Table.O == table.Name.O)
+                        && (name.Schema.O.is_empty() || name.Schema.O == "public")
+                })
+                .ok_or_else(unsupported)?
+                .ID,
+        ),
+        ast::ExprKind::Parentheses(inner) => return pg_bind_check_expression(inner, table),
+        ast::ExprKind::Binary { Op, L, R }
+            if [
+                "=", "<>", "!=", ">", "<", ">=", "<=", "+", "-", "*", "/", "%", "AND", "OR", "and",
+                "or",
+            ]
+            .contains(&Op.as_str()) =>
+        {
+            B::Binary(
+                Op.to_uppercase(),
+                Box::new(pg_bind_check_expression(L, table)?),
+                Box::new(pg_bind_check_expression(R, table)?),
+            )
+        }
+        ast::ExprKind::Unary { Op, V } if ["+", "-", "NOT", "not"].contains(&Op.as_str()) => {
+            B::Unary(
+                Op.to_uppercase(),
+                Box::new(pg_bind_check_expression(V, table)?),
+            )
+        }
+        ast::ExprKind::IsNull { Expr, Not } => {
+            B::IsNull(*Not, Box::new(pg_bind_check_expression(Expr, table)?))
+        }
+        _ => return Err(unsupported()),
+    })
+}

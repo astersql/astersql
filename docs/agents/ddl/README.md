@@ -216,3 +216,22 @@ succeeds. Legacy indexes without that evidence refuse related PG projections;
 reads never migrate metadata. Backfill-merge and transitional native states do
 not establish PostgreSQL concurrent-index semantics. The focused catalog and
 libpq coverage is pg13_017_contract / pg13_017_differential.
+
+## Rust PostgreSQL CHECK and NOT NULL catalog facts
+
+PG CREATE TABLE captures supported CHECK syntax directly from the parser AST in
+`TableInfo.PostgreSQLChecks`, with persistent column IDs rather than name tokens.
+The catalog and PG write validation render that same bound syntax against the
+current table metadata, so column rename preserves both dependency identity and
+execution. Unsupported syntax is rejected before publication; legacy native
+CHECK strings are not treated as bound PostgreSQL expressions. `conbin` has
+pg_node_tree metadata but refuses CHECK values until a genuine PG node-tree
+conversion exists. This does not prevent reconstructable CHECK definitions.
+
+`ColumnInfo.PostgreSQLNotNull` stores the declaration name and generation, retained
+when DROP NOT NULL clears the column flag. SET NOT NULL validates existing rows
+and advances the generation before metadata publication. PG18 `contype=n` rows
+use this durable identity and the existing attribute-slot mapping; legacy flags
+alone do not establish PG constraint identities. CHECK, NOT NULL, FK and handle
+primary identities occupy disjoint local-ID classes. Focused tests are
+`pg13_020_contract` and `pg13_020_differential` in the server test modules.

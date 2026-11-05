@@ -5875,7 +5875,8 @@ fn pg13_018_contract() {
     }
     let sql = "SELECT c.oid,c.conname,c.contype,c.conrelid,c.connamespace,c.conindid FROM pg_catalog.pg_constraint c ORDER BY c.conname";
     let got = query(&mut socket, sql);
-    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 4, "{got:?}");
+    // PG18 also exposes three primary-column NOT NULL declarations.
+    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 7, "{got:?}");
     assert_eq!(
         columns(&got[0].1).iter().map(|v| v.1).collect::<Vec<_>>(),
         vec![26, 19, 18, 26, 26, 26]
@@ -6127,5 +6128,185 @@ fn pg13_019_contract() {
     }
     println!(
         "pg13_019_contract: order=1 permuted_parent=1 actions=2 match_null=1 corrupt_models=13 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_020_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_020_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_020_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_020_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE public.check_doc (v integer NOT NULL, x integer, CONSTRAINT positive CHECK (v > 0), CONSTRAINT constant_check CHECK (1=1))",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let got = query(
+        &mut socket,
+        "SELECT conname,contype,conkey,pg_catalog.pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint WHERE conrelid='public.check_doc'::regclass::oid ORDER BY conname",
+    );
+    assert_eq!(
+        got[0].0, b'T',
+        "CHECK and NOT NULL positive catalog contract: {got:?}"
+    );
+    let rows: Vec<_> = got
+        .iter()
+        .filter(|(tag, _)| *tag == b'D')
+        .map(|(_, b)| b.clone())
+        .collect();
+    assert_eq!(
+        rows.len(),
+        3,
+        "CHECK constant is a constraint; NOT NULL has PG18 identity: {rows:?}"
+    );
+    assert_eq!(
+        columns(&got[0].1)
+            .iter()
+            .map(|(_, oid)| *oid)
+            .collect::<Vec<_>>(),
+        vec![19, 18, 1005, 25]
+    );
+    assert_eq!(
+        rows,
+        vec![
+            row(&[
+                Some("check_doc_v_not_null"),
+                Some("n"),
+                Some("{1}"),
+                Some("NOT NULL \"v\"")
+            ]),
+            row(&[
+                Some("constant_check"),
+                Some("c"),
+                None,
+                Some("CHECK (1 = 1)")
+            ]),
+            row(&[
+                Some("positive"),
+                Some("c"),
+                Some("{1}"),
+                Some("CHECK (\"v\" > 0)")
+            ]),
+        ]
+    );
+    let got = query(
+        &mut socket,
+        "SELECT pg_catalog.pg_get_constraintdef(0),pg_catalog.pg_get_constraintdef(NULL),pg_catalog.pg_get_constraintdef(0,true)",
+    );
+    assert!(
+        got.iter()
+            .any(|(tag, body)| *tag == b'D' && *body == row(&[None, None, None])),
+        "{got:?}"
+    );
+    let got = query(
+        &mut socket,
+        "SELECT conbin FROM pg_catalog.pg_constraint WHERE oid=0",
+    );
+    assert_eq!(columns(&got[0].1)[0].1, 194);
+    assert!(!got.iter().any(|(tag, _)| *tag == b'D'));
+    let tables = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_020_contract"))
+        .unwrap();
+    let model = tables
+        .iter()
+        .find(|t| t.name.lower == "check_doc")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let encoded = serde_json::to_vec(model.as_ref()).unwrap();
+    let decoded: astersql_meta_model::TableInfo = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.PostgreSQLChecks.len(), 2);
+    assert_eq!(
+        decoded.Columns[0].PostgreSQLNotNull,
+        model.Columns[0].PostgreSQLNotNull
+    );
+    for scenario in 0..6 {
+        let mut m = decoded.clone();
+        match scenario {
+            0 => m.PostgreSQLChecks.clear(),
+            1 => {
+                m.PostgreSQLChecks.insert(
+                    m.Constraints[0].ID,
+                    astersql_meta_model::PostgreSQLCheckExpression::Column(999),
+                );
+            }
+            2 => m.Columns[0].PostgreSQLNotNull = Some((0, "bad".into())),
+            3 => m.Columns[0].Hidden = true,
+            4 => m.Constraints[0].ID = i64::MAX,
+            _ => m.Columns[0].PostgreSQLNotNull = Some((i64::MAX, "bad".into())),
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("pg13_020_contract"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: m.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new(m.Name.L.clone()),
+                    model_meta: Some(Arc::new(m)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let err = crate::pg_catalog::index_constraint_rows(
+            "pg_constraint",
+            &bad,
+            "pg13_020_contract",
+            &crate::conn::CancellationToken::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            "0A000",
+            "scenario={scenario}: {err}"
+        );
+    }
+    println!(
+        "pg13_020_contract: check=2 not_null=1 unknown_null=3 empty_describe=1 durable_roundtrip=1 corrupt_models=6 cleanup=1"
     );
 }

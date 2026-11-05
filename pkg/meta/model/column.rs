@@ -263,6 +263,13 @@ pub struct PostgreSQLIdentity {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ColumnInfo {
+    /// Last NOT NULL declaration generation and name, retained while nullable.
+    #[serde(
+        default,
+        rename = "postgresql_not_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLNotNull: Option<(i64, String)>,
     /// Explicit PostgreSQL identity; native columns have no association.
     #[serde(
         rename = "postgresql_identity",
@@ -341,6 +348,7 @@ impl ColumnInfo {
             Name,
             Offset: 0,
             PostgreSQLIdentity: None,
+            PostgreSQLNotNull: None,
             OriginDefaultValue: None,
             OriginDefaultValueBit: None,
             DefaultValue: None,

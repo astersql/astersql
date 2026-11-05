@@ -806,6 +806,11 @@ impl ConcreteSession {
         row: &HashMap<String, Option<String>>,
         flags: astersql_types::Flags,
     ) -> SessionResult<(kv::Key, Vec<u8>)> {
+        // All PG write paths, including ordinary UPDATE, must enforce the same
+        // bound CHECK facts used by catalog definition reconstruction.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::dml::pg_conflict_check_constraints(table, row)?;
+        }
         encode_relational_row_with_format(
             table,
             row,

@@ -131,3 +131,7 @@ PG CREATE TABLE 在原始声明 AST 尚可用时，将显式约束名称写入�
 CREATE TABLE LIKE 的现有复制路径清除源表声明身份，复制的索引不能凭源表约束名参与命名仲裁；不改其既有索引复制算法。
 
 PG 空表创建的索引在原子创建中登记 PostgreSQLBuildComplete；PG ADD INDEX 在 backfill_relational_index 成功后再通过 ddl_complete_postgresql_index 登记。物理回填前发布的原生 StatePublic 不再单独构成 PG valid/ready 的证据。MySQL 路径不新增完成登记写入。
+
+## PostgreSQL CHECK / NOT NULL metadata
+
+PG CREATE TABLE binds supported CHECK syntax to persistent column IDs before publication and captures NOT NULL names/generations. ALTER COLUMN preserves the last generation while nullable and advances it when reasserting NOT NULL after validating stored rows.

@@ -1835,6 +1835,15 @@ impl CatalogQuery {
                         }
                     }
                 }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_constraint")
+                    && slot % CATALOG_ROW_WIDTH == 14
+                    && row[slot - 12] == Value::Text("c".into())
+                {
+                    return Err(ConnError::UnsupportedCommand(0));
+                }
                 row[slot].clone()
             }
             Expr::Null => Value::Null,
@@ -3579,7 +3588,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_constraint", "condeferrable") => (11, 1),
         ("pg_constraint", "condeferred") => (12, 1),
         ("pg_constraint", "connoinherit") => (13, 1),
-        ("pg_constraint", "conbin") => (14, 253),
+        ("pg_constraint", "conbin") => (14, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_constraint", "conexclop") => (15, crate::pg_result::CatalogColumnType::OidArray as u8),
         ("pg_constraint", "xmin") => (16, 8),
         ("pg_attribute", "attrelid") => (0, oid),
@@ -5176,10 +5185,122 @@ pub(crate) fn index_constraint_rows(
         if relation != "pg_constraint" {
             continue;
         }
-        // CHECK expression translation is not established by this task. Reject
-        // rather than exposing native expressions as PostgreSQL parse trees.
-        if model.Constraints.iter().any(|c| c.State == StatePublic) {
-            return Err(unsupported());
+        for constraint in model.Constraints.iter().filter(|c| c.State == StatePublic) {
+            let bound = model
+                .PostgreSQLChecks
+                .get(&constraint.ID)
+                .ok_or_else(unsupported)?;
+            let mut dependencies = Vec::new();
+            let expression = bound
+                .render(model, false, &mut dependencies)
+                .ok_or_else(unsupported)?;
+            let columns = key_columns(
+                model,
+                &dependencies
+                    .iter()
+                    .map(|id| {
+                        model
+                            .Columns
+                            .iter()
+                            .find(|c| c.ID == *id)
+                            .unwrap()
+                            .Name
+                            .O
+                            .clone()
+                    })
+                    .collect::<Vec<_>>(),
+            )?;
+            if constraint.ID <= 0 {
+                return Err(unsupported());
+            }
+            // Negative odd IDs below -1 are separate from FK's even IDs and
+            // the handle primary key. CHECK and NOT NULL occupy distinct residues.
+            let local_id = constraint
+                .ID
+                .checked_mul(-4)
+                .and_then(|id| id.checked_sub(1))
+                .ok_or_else(unsupported)?;
+            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+            row[0] = Value::Signed(i64::from(crate::pg_oid::index_oid(model.ID, local_id)?));
+            row[1] = Value::Text(constraint.Name.O.clone());
+            row[2] = Value::Text("c".into());
+            row[3] = Value::Signed(relid);
+            row[4] = Value::Signed(namespace);
+            if !columns.is_empty() {
+                row[5] = array(&columns);
+            }
+            for slot in [6, 7] {
+                row[slot] = Value::Signed(0);
+            }
+            for slot in [9, 10, 22] {
+                row[slot] = Value::Text(" ".into());
+            }
+            for slot in [11, 12, 13] {
+                row[slot] = Value::Text("false".into());
+            }
+            row[21] = Value::Text(format!(
+                "CHECK {}{}",
+                expression,
+                if constraint.Enforced {
+                    ""
+                } else {
+                    " NOT ENFORCED"
+                }
+            ));
+            rows.push(row);
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
+            }
+        }
+        for column in model.Columns.iter().filter(|c| {
+            c.State == StatePublic
+                && !c.Hidden
+                && astersql_parser_mysql::r#type::HasNotNullFlag(c.GetFlag())
+        }) {
+            let Some((generation, name)) = &column.PostgreSQLNotNull else {
+                // Legacy native nullability has no PG18 constraint identity.
+                if model.ExactName {
+                    return Err(unsupported());
+                }
+                continue;
+            };
+            if column.ID <= 0 || *generation <= 0 {
+                return Err(unsupported());
+            }
+            let a = i128::from(column.ID);
+            let b = i128::from(*generation);
+            let sum = a.checked_add(b).ok_or_else(unsupported)?;
+            let paired = sum
+                .checked_mul(sum.checked_add(1).ok_or_else(unsupported)?)
+                .and_then(|v| (v / 2).checked_add(b))
+                .ok_or_else(unsupported)?;
+            let local_id = i64::try_from(paired)
+                .ok()
+                .and_then(|v| v.checked_mul(-4))
+                .and_then(|v| v.checked_sub(3))
+                .ok_or_else(unsupported)?;
+            let columns = key_columns(model, &[column.Name.O.clone()])?;
+            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+            row[0] = Value::Signed(i64::from(crate::pg_oid::index_oid(model.ID, local_id)?));
+            row[1] = Value::Text(name.clone());
+            row[2] = Value::Text("n".into());
+            row[3] = Value::Signed(relid);
+            row[4] = Value::Signed(namespace);
+            row[5] = array(&columns);
+            for slot in [6, 7] {
+                row[slot] = Value::Signed(0);
+            }
+            for slot in [9, 10, 22] {
+                row[slot] = Value::Text(" ".into());
+            }
+            for slot in [11, 12, 13] {
+                row[slot] = Value::Text("false".into());
+            }
+            row[21] = Value::Text(format!("NOT NULL {}", names(&columns)));
+            rows.push(row);
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
+            }
         }
         for fk in model.ForeignKeys.iter().filter(|f| f.State == StatePublic) {
             if fk.ID <= 0

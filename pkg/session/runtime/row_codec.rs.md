@@ -134,3 +134,7 @@ PostgreSQLFloatText标记的float4/8列使用现有string Datum存储规范目�
 ## 验证依据
 
 `cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。
+
+## PostgreSQL CHECK / NOT NULL metadata
+
+Before encoding a PostgreSQL row for write, validate CHECK constraints through the shared bound-expression path. This covers ordinary UPDATE as well as INSERT and conflict-update writes.
