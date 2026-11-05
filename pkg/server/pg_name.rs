@@ -1449,6 +1449,35 @@ pub(crate) fn adapt(
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
     crate::pg_sql::check_returning_aliases(sql)?;
+    // Native physical partitions have no independent PG relation identities.
+    // Gate valid PG partition DDL before the native parser can misdiagnose it
+    // as malformed MySQL partition syntax or create partial metadata.
+    let parts = tokens(sql)?;
+    if parts
+        .first()
+        .is_some_and(|t| t.word("create") || t.word("alter"))
+        && parts.iter().take(4).any(|t| t.word("table"))
+    {
+        let mut depth = 0usize;
+        for (index, part) in parts.iter().enumerate() {
+            match part.symbol {
+                Some(b'(') => depth += 1,
+                Some(b')') => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth == 0
+                && part.word("partition")
+                && parts
+                    .get(index + 1)
+                    .is_some_and(|t| t.word("by") || t.word("of"))
+            {
+                return Err(error(
+                    "0A000",
+                    "PostgreSQL partitioned relations are unsupported",
+                ));
+            }
+        }
+    }
     let path = session
         .effective_explicit_path(context)
         .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;

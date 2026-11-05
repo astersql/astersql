@@ -25,6 +25,11 @@ pub enum PgSchemaCommand {
         schema: String,
         owner: String,
     },
+    RelationOwner {
+        schema: Option<String>,
+        table: String,
+        owner: String,
+    },
     TableSelect {
         schema: String,
         table: String,
@@ -157,7 +162,8 @@ impl ConcreteSession {
                     }
                     if let Some(command) = command {
                         match command {
-                            PgSchemaCommand::TableSelect { .. } => {
+                            PgSchemaCommand::TableSelect { .. }
+                            | PgSchemaCommand::RelationOwner { .. } => {
                                 unreachable!("handled before namespace transaction")
                             }
                             PgSchemaCommand::Create(name) => {
@@ -348,6 +354,34 @@ impl ConcreteSession {
     }
 
     pub fn pg_schema_command(&self, command: &PgSchemaCommand) -> SessionResult<()> {
+        if let PgSchemaCommand::RelationOwner {
+            schema,
+            table,
+            owner,
+        } = command
+        {
+            let _guard = PG_NAMESPACE_DDL_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Legacy relations can only be adopted explicitly by the administrator.
+            if self.pg_schema_identity() != "root" {
+                return Err(namespace_error(
+                    "42501",
+                    "permission denied to change relation owner",
+                ));
+            }
+            let owner = self.pg_database_role_id(owner)?;
+            let physical = self.pg_bind_relation(schema.as_deref(), table, false)?;
+            let database = self.current_database();
+            let model = self
+                .domain
+                .table_by_name(&database, &physical)
+                .map_err(|e| session_error("resolve relation owner", e))?;
+            self.domain
+                .ddl_set_postgresql_owner(&database, model.ID, owner)
+                .map_err(|e| session_error("persist relation owner", e))?;
+            return Ok(());
+        }
         if let PgSchemaCommand::TableSelect {
             schema,
             table,

@@ -1229,6 +1229,7 @@ impl CatalogQuery {
                         ("pg_class", 1) => 2,
                         ("pg_class", 2) => 3,
                         ("pg_class", 3) => 18,
+                        ("pg_class", 11) => 6,
                         _ => return None,
                     };
                     let oid = crate::pg_oid::SYSTEM_RELATIONS
@@ -1729,6 +1730,29 @@ impl CatalogQuery {
                     return Err(database_identity_unavailable(
                         "PostgreSQL namespace ACL source is unavailable",
                     ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_class")
+                {
+                    let local = slot % CATALOG_ROW_WIDTH;
+                    if local == 3 && row[slot] == Value::Text("?".into()) {
+                        return Err(database_identity_unavailable(
+                            "native physical partition is not a PostgreSQL partitioned relation",
+                        ));
+                    }
+                    if local == 11 && row[slot - local] != Value::Null {
+                        match row[slot] {
+                            Value::Signed(oid)
+                                if execution.database_role_name(oid)? != Value::Null => {}
+                            _ => {
+                                return Err(database_identity_unavailable(
+                                    "PostgreSQL relation owner requires explicit administrator migration",
+                                ));
+                            }
+                        }
+                    }
                 }
                 row[slot].clone()
             }
@@ -3015,11 +3039,11 @@ pub(crate) fn class_rows(
         } else if model.Sequence.is_some() {
             "S"
         } else if partitioned {
-            "p"
+            "?"
         } else {
             "r"
         };
-        rows.push(class_row(
+        let mut relation = class_row(
             crate::pg_oid::table_oid(model.ID).map_err(|_| ConnError::UnsupportedCommand(0))?,
             model
                 .PostgreSQLNamespace
@@ -3027,16 +3051,20 @@ pub(crate) fn class_rows(
                 .map_or(model.Name.O.as_str(), |(_, name)| name.as_str()),
             namespace,
             kind,
-        ));
+        );
+        relation[11] = model.PostgreSQLOwner.map_or(Value::Null, Value::Signed);
+        rows.push(relation);
         for index in &catalog_indexes(model)? {
             if index.State == astersql_meta_model::StatePublic {
-                rows.push(class_row(
+                let mut relation = class_row(
                     crate::pg_oid::index_oid(model.ID, index.ID)
                         .map_err(|_| ConnError::UnsupportedCommand(0))?,
                     &index.Name.O,
                     namespace,
-                    if partitioned { "I" } else { "i" },
-                ));
+                    if partitioned { "?" } else { "i" },
+                );
+                relation[11] = model.PostgreSQLOwner.map_or(Value::Null, Value::Signed);
+                rows.push(relation);
             }
         }
     }
@@ -3373,15 +3401,14 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_inherits", "inhrelid") => (0, oid),
         ("pg_inherits", "inhparent") => (1, oid),
         ("pg_inherits", "inhseqno") => (2, 3),
-        ("pg_class", "xmin") => (4, 8),
-        ("pg_class", "reltablespace") => (5, oid),
-        ("pg_class", "reloptions") => (6, crate::pg_result::CatalogColumnType::TextArray as u8),
-        ("pg_class", "relpersistence") => (7, internal_char),
-        ("pg_class", "relispartition") => (8, 1),
-        ("pg_class", "relpartbound") => (9, 253),
-        ("pg_class", "relam") => (10, oid),
-        ("pg_class", "relowner") => (11, 8),
-        ("pg_class", "relacl") => (12, crate::pg_result::CatalogColumnType::AclArray as u8),
+        // No PG transaction/storage/partition/ACL facts back these fields yet.
+        // Refuse the requested field at bind time, including LIMIT 0 and predicates.
+        (
+            "pg_class",
+            "xmin" | "reltablespace" | "reloptions" | "relpersistence" | "relispartition"
+            | "relpartbound" | "relam" | "relacl",
+        ) => return None,
+        ("pg_class", "relowner") => (11, oid),
         ("pg_depend", "classid") => (0, oid),
         ("pg_depend", "objid") => (1, oid),
         ("pg_depend", "refclassid") => (2, oid),

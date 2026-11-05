@@ -69,6 +69,9 @@ pub const VirtualColFTSScoreID: i64 = -2050;
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TableInfo {
+    /// Persistent PG role identity. Legacy native relations require explicit adoption.
+    #[serde(rename = "postgresql_owner", skip_serializing_if = "Option::is_none")]
+    pub PostgreSQLOwner: Option<i64>,
     /// PG namespace identity and logical relation name; Name remains the storage key.
     #[serde(rename = "postgresql_namespace", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLNamespace: Option<(i64, String)>,

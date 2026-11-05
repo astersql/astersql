@@ -8257,10 +8257,15 @@ impl ConcreteSession {
                     "",
                     astersql_privilege_privileges::SelectPriv,
                 ) {
-                    return Err(SessionError::new(format!(
+                    let message = format!(
                         "SELECT command denied to user '{user}'@'{host}' for table '{}'",
                         table_source.Source.Name.O
-                    )));
+                    );
+                    return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                        super::pg_schema::namespace_error("42501", &message)
+                    } else {
+                        SessionError::new(message)
+                    });
                 }
             }
         }

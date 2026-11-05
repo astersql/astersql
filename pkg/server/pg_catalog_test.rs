@@ -541,7 +541,7 @@ fn pg_introspection_relations_live() {
     native.execute("CREATE TABLE test.relations_partitioned (id INT, KEY relations_partition_idx(id)) PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN MAXVALUE)").unwrap();
     let result = query(
         &mut socket,
-        "SELECT oid, relname, relnamespace, relkind, NULL AS absent FROM pg_catalog.pg_class ORDER BY oid",
+        "SELECT oid, relname, relnamespace, relkind, NULL AS absent FROM pg_catalog.pg_class WHERE relname NOT IN ('relations_partitioned','relations_partition_idx') ORDER BY oid",
     );
     assert_eq!(
         result[0].0, b'T',
@@ -557,6 +557,19 @@ fn pg_introspection_relations_live() {
             ("absent".into(), 25)
         ]
     );
+    for name in ["relations_partitioned", "relations_partition_idx"] {
+        let denied = query(
+            &mut socket,
+            &format!("SELECT relkind FROM pg_catalog.pg_class WHERE relname='{name}'"),
+        );
+        assert_eq!(denied[0].0, b'E', "{denied:?}");
+        assert!(denied[0].1.windows(5).any(|s| s == b"0A000"));
+        let identity = query(
+            &mut socket,
+            &format!("SELECT oid,relname FROM pg_catalog.pg_class WHERE relname='{name}'"),
+        );
+        assert_eq!(identity.iter().filter(|m| m.0 == b'D').count(), 1);
+    }
     let snapshot = domain.info_schema();
     let schema = snapshot
         .AllSchemas()
@@ -570,7 +583,6 @@ fn pg_introspection_relations_live() {
         ("relations_live", "r"),
         ("relations_view", "v"),
         ("relations_seq", "S"),
-        ("relations_partitioned", "p"),
     ] {
         let table = snapshot
             .TableByName(
@@ -588,12 +600,8 @@ fn pg_introspection_relations_live() {
             )),
             "{name}: {result:?}"
         );
-        if name == "relations_live" || name == "relations_partitioned" {
-            let (index_name, index_kind) = if name == "relations_live" {
-                ("relations_idx", "i")
-            } else {
-                ("relations_partition_idx", "I")
-            };
+        if name == "relations_live" {
+            let (index_name, index_kind) = ("relations_idx", "i");
             let index = table
                 .Meta()
                 .indices
@@ -706,16 +714,8 @@ fn pg_introspection_relations_live() {
             .contains(&(b'D', row(&[Some("relations_renamed")])))
     );
     let xmin = query(&mut socket, "SELECT xmin FROM pg_catalog.pg_class");
-    assert_eq!(xmin[0].0, b'T', "{xmin:?}");
-    let xmin_rows = xmin
-        .iter()
-        .filter(|message| message.0 == b'D')
-        .collect::<Vec<_>>();
-    assert!(!xmin_rows.is_empty(), "{xmin:?}");
-    assert!(
-        xmin_rows.iter().all(|message| message.1 == row(&[None])),
-        "{xmin:?}"
-    );
+    assert_eq!(xmin[0].0, b'E', "{xmin:?}");
+    assert!(xmin[0].1.windows(5).any(|s| s == b"0A000"), "{xmin:?}");
     let unsupported_join = query(
         &mut socket,
         "SELECT C.relname FROM pg_catalog.pg_class C JOIN public.relations_seq B ON C.oid = B.id",
@@ -806,7 +806,7 @@ fn pg_introspection_relations_live() {
             &mut socket,
             "SELECT 'pg_class'::regclass::oid, 'pg_class'::regclass FROM pg_catalog.pg_namespace WHERE nspname = 'public'"
         )[1],
-        (b'D', row(&[Some(&shadow_id), Some("public.pg_class")]))
+        (b'D', row(&[Some(&shadow_id), Some("pg_class")]))
     );
     assert_eq!(
         query(
@@ -4109,5 +4109,163 @@ fn pg13_006_contract() {
     drop(cleanup);
     println!(
         "pg13_006_contract: unknown=2 path=1 quoted=1 cross_database=1 errors_recovered=3 legacy_ambiguity=2 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_007_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_007_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_007_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_007_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_007_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_007_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_007_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_007_admin");
+    let (mut c, _) = connect("pg13_007_policy");
+    for sql in [
+        "CREATE TABLE public.rel_t(id integer)",
+        "CREATE INDEX rel_ix ON public.rel_t(id)",
+    ] {
+        let got = query(&mut a, sql);
+        assert!(!got.iter().any(|m| m.0 == b'E'), "{sql}: {got:?}");
+    }
+    let sql = "SELECT c.relname,c.relkind,c.relowner,pg_catalog.pg_get_userbyid(c.relowner) AS owner FROM pg_catalog.pg_class c WHERE c.relname='rel_t'";
+    let got = query(&mut a, sql);
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![19, 18, 26, 19]
+    );
+    let owner_row = got.iter().find(|m| m.0 == b'D').unwrap();
+    assert!(
+        !owner_row.1.windows(4).any(|w| w == [255, 255, 255, 255]),
+        "owner must be non-NULL: {got:?}"
+    );
+    let second = query(&mut b, sql);
+    assert_eq!(second.iter().find(|m| m.0 == b'D'), Some(owner_row));
+    let absent = query(&mut c, sql);
+    assert!(!absent.iter().any(|m| m.0 == b'D'));
+    native
+        .execute("CREATE USER 'pg13_007_owner'@'%' IDENTIFIED BY ''")
+        .unwrap();
+    let changed = query(&mut a, "ALTER TABLE public.rel_t OWNER TO pg13_007_owner");
+    assert!(!changed.iter().any(|m| m.0 == b'E'), "{changed:?}");
+    for socket in [&mut a, &mut b] {
+        let got = query(socket, sql);
+        let owner = got.iter().find(|m| m.0 == b'D').unwrap();
+        assert!(
+            owner
+                .1
+                .windows(b"pg13_007_owner".len())
+                .any(|s| s == b"pg13_007_owner"),
+            "{got:?}"
+        );
+    }
+    for field in [
+        "xmin",
+        "relam",
+        "relpartbound",
+        "reltablespace",
+        "relacl",
+        "reloptions",
+        "relpersistence",
+        "relispartition",
+    ] {
+        let got = query(
+            &mut a,
+            &format!("SELECT c.{field} FROM pg_catalog.pg_class c WHERE c.relname='rel_t'"),
+        );
+        assert_eq!(got[0].0, b'E', "{field}: {got:?}");
+        assert!(
+            got[0].1.windows(5).any(|s| s == b"0A000"),
+            "{field}: {got:?}"
+        );
+        let recovered = query(&mut a, sql);
+        assert!(!recovered.iter().any(|m| m.0 == b'E'), "{recovered:?}");
+    }
+    native
+        .execute("CREATE TABLE pg13_007_admin.legacy(id INT)")
+        .unwrap();
+    let legacy = query(
+        &mut a,
+        "SELECT c.oid,c.relowner FROM pg_class c WHERE c.relname='legacy'",
+    );
+    assert_eq!(legacy[0].0, b'E', "{legacy:?}");
+    assert!(legacy[0].1.windows(5).any(|s| s == b"0A000"));
+    let adopted = query(&mut a, "ALTER TABLE public.legacy OWNER TO root");
+    assert!(!adopted.iter().any(|m| m.0 == b'E'), "{adopted:?}");
+    let legacy = query(
+        &mut b,
+        "SELECT c.relowner FROM pg_class c WHERE c.relname='legacy'",
+    );
+    assert_eq!(
+        legacy.iter().filter(|m| m.0 == b'D').count(),
+        1,
+        "{legacy:?}"
+    );
+    assert!(
+        native.execute("DROP USER 'pg13_007_owner'@'%'").is_err(),
+        "must not drop a referenced persistent owner"
+    );
+    drop(a);
+    drop(b);
+    drop(c);
+    drop(cleanup);
+    println!(
+        "pg13_007_contract: kinds=2 owner_connections=2 owner_transfer=1 legacy_adoption=1 owner_drop_guard=1 cross_database=1 rejected_projections_recovered=8 cleanup=1"
     );
 }

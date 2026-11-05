@@ -179,3 +179,16 @@ storage attributes. It does not enlist general DDL owner jobs into user
 transactions. Its focused regression tests live in
 `pkg/session/runtime/pg12_ddl_probe_test.rs`; the real PostgreSQL reference is
 collected independently by `pkg/server/testdata/pg12_transaction_libpq.py`.
+
+## Rust PostgreSQL relation ownership
+
+The Rust PostgreSQL catalog stores a creating role ID on table, view and sequence
+metadata. Legacy native relations have no implicit PG owner; an administrator
+can adopt one with `ALTER TABLE ... OWNER TO ...`. This is a metadata-only change
+through `DdlMetadataService::set_postgresql_owner` and the normal Domain metadata
+publication path, preserving relation and index IDs and requiring no backfill.
+The public PostgreSQL entry still rejects this DDL inside a transaction block.
+Native physical partitions do not establish PG partitioned-relation semantics;
+PG `PARTITION BY` / `PARTITION OF` DDL is rejected before native parsing or writes,
+and a native partition's `pg_class.relkind` projection is rejected rather than
+reported as `p` or `I`. Ordinary identities and unrelated relations remain readable.

@@ -671,6 +671,10 @@ impl ConcreteSession {
         };
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
+            table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
+        } else {
+            // CREATE LIKE must not copy a PG owner's authority to a native relation.
+            table.PostgreSQLOwner = None;
         }
         astersql_ddl::storage_class::CheckStorageClassAdmission(
             &table.EngineAttribute,
@@ -1441,6 +1445,11 @@ impl ConcreteSession {
             } else {
                 &statement.Name.Name.L
             }),
+            PostgreSQLOwner: if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                Some(self.pg_database_role_id(&self.pg_schema_identity())?)
+            } else {
+                None
+            },
             ExactName: self.sql_dialect() == ast::SqlDialect::PostgreSQL,
             PostgreSQLNamespace: if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
                 self.pg_relation_namespace(&statement.Name.Name.O)?

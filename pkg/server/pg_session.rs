@@ -467,6 +467,7 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::Drop(_) => "DROP SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::Rename { .. }
                 | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::RelationOwner { .. } => "ALTER TABLE",
                 astersql_session::runtime::PgSchemaCommand::RevokeAll { .. } => "REVOKE",
                 astersql_session::runtime::PgSchemaCommand::TableSelect { .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
@@ -551,6 +552,32 @@ impl SessionQuery {
             Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
             _ => None,
         };
+        if word(tokens.first(), "alter") && word(tokens.get(1), "table") {
+            let parsed =
+                if tokens.len() == 6 && word(tokens.get(3), "owner") && word(tokens.get(4), "to") {
+                    identifier(&tokens[2])
+                        .zip(identifier(&tokens[5]))
+                        .map(|(table, owner)| (None, table, owner))
+                } else if tokens.len() == 8
+                    && matches!(tokens.get(3), Some(Token::Symbol('.')))
+                    && word(tokens.get(5), "owner")
+                    && word(tokens.get(6), "to")
+                {
+                    identifier(&tokens[2])
+                        .zip(identifier(&tokens[4]))
+                        .zip(identifier(&tokens[7]))
+                        .map(|((schema, table), owner)| (Some(schema), table, owner))
+                } else {
+                    None
+                };
+            if let Some((schema, table, owner)) = parsed {
+                return Ok(Some(Self::SchemaUtility(PgSchemaCommand::RelationOwner {
+                    schema,
+                    table,
+                    owner,
+                })));
+            }
+        }
         use astersql_session::runtime::PgDatabaseCommand;
         if tokens.len() == 6
             && word(tokens.first(), "alter")

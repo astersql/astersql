@@ -4122,6 +4122,23 @@ impl Domain {
         self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
+    /// Publish a metadata-only PG ownership change through the canonical DDL path.
+    pub fn ddl_set_postgresql_owner(
+        &self,
+        database: &str,
+        table_id: i64,
+        owner: i64,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .set_postgresql_owner(store, database, table_id, owner)
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// Classic IMPORT INTO 的同步表模式 DDL；按库表 ID 定位目标。
     pub fn ddl_set_table_mode_by_ids(
         &self,

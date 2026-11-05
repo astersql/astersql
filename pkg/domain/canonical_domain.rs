@@ -471,6 +471,7 @@ impl DdlMetadataService {
                     Name: ast::NewCIStr(&name),
                     DBID: table.DBID,
                     ExactName: table.ExactName,
+                    PostgreSQLOwner: table.PostgreSQLOwner,
                     State: astersql_meta_model::StatePublic,
                     Sequence: Some(identity.Sequence.clone()),
                     PostgreSQLNamespace: table
@@ -1136,6 +1137,34 @@ impl DdlMetadataService {
                 old_tables: vec![(database.clone(), old)],
                 new_tables: vec![(database, new)],
                 changed: true,
+                ..DdlMetadataChange::default()
+            })
+        })
+    }
+
+    /// Change only persistent PG ownership, preserving relation and index identity.
+    pub fn set_postgresql_owner(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table_id: i64,
+        owner: i64,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        let database = database.to_owned();
+        self.mutate(store, move |catalog| {
+            let (key, old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), table)| *db == database && table.ID == table_id)
+                .map(|(key, table)| (key.clone(), table.clone()))
+                .ok_or_else(|| kv::errors::New("relation no longer exists"))?;
+            let mut updated = old.clone();
+            updated.PostgreSQLOwner = Some(owner);
+            catalog.tables.insert(key, updated.clone());
+            Ok(DdlMetadataChange {
+                changed: true,
+                old_tables: vec![(database.clone(), old)],
+                new_tables: vec![(database, updated)],
                 ..DdlMetadataChange::default()
             })
         })

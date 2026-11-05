@@ -2262,7 +2262,12 @@ impl ConcreteSession {
             } else {
                 None
             };
-            let table = build_bootstrap_view_table(sql, resolved_columns)?;
+            let mut table = build_bootstrap_view_table(sql, resolved_columns)?;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
+                table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
+                table.ExactName = true;
+            }
             self.domain
                 .ddl_create_table(&database, table, false)
                 .map_err(|error| session_error("create view", error))?;

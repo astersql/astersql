@@ -340,6 +340,18 @@ impl ConcreteSession {
                     let mut roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
                     if let Some(oid) = roles.get(role) {
                         for schema in &schemas {
+                            let tables = self
+                                .domain
+                                .info_schema()
+                                .SchemaTableInfos(&schema.name)
+                                .map_err(|e| kv::errors::New(e.to_string()))?;
+                            if tables.iter().any(|t| {
+                                t.model_meta
+                                    .as_ref()
+                                    .is_some_and(|m| m.PostgreSQLOwner == Some(*oid))
+                            }) {
+                                return Err(kv::errors::New("role owns a relation"));
+                            }
                             let owner: Option<i64> = load(txn, &ctx, owner_key(schema.id))?;
                             if owner == Some(*oid) {
                                 return Err(kv::errors::New("role owns a database"));
