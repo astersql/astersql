@@ -308,6 +308,13 @@ impl IndexColumn {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct IndexInfo {
+    /// Recorded only after synchronous index construction finishes. Legacy
+    /// native metadata has no such proof; StatePublic alone is insufficient.
+    #[serde(
+        rename = "postgresql_build_complete",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub PostgreSQLBuildComplete: bool,
     /// Actual PG declaration owning this supporting index. Absent for standalone
     /// CREATE UNIQUE INDEX and legacy metadata; never inferred from idx_name.
     #[serde(

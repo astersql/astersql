@@ -1242,6 +1242,24 @@ impl CatalogQuery {
                         ("pg_index", 7) => 16,
                         ("pg_index", 8) => 19,
                         ("pg_index", 10) => 17,
+                        ("pg_index", 9) => 18,
+                        ("pg_index", 11) => 20,
+                        ("pg_index", 12) => 21,
+                        ("pg_index", 15) => 8,
+                        ("pg_index", 16) => 9,
+                        ("pg_index", 17) => 10,
+                        ("pg_index", 18) => 12,
+                        ("pg_index", 19) => 14,
+                        ("pg_index", 20) => 15,
+                        ("pg_opclass", 0) => 1,
+                        ("pg_opclass", 1) => 2,
+                        ("pg_opclass", 3) => 3,
+                        ("pg_opclass", 4) => 7,
+                        ("pg_opclass", 5) => 9,
+                        ("pg_opclass", 6) => 8,
+                        ("pg_opclass", 7) => 6,
+                        ("pg_opclass", 8) => 5,
+                        ("pg_opclass", 9) => 4,
                         ("pg_attribute", 0) => 1,
                         ("pg_sequence", 0) => 1,
                         ("pg_attribute", 3) => 3,
@@ -1582,12 +1600,13 @@ impl CatalogQuery {
             "pg_proc" => function_rows(),
             // Native physical partitions are not independent SQL relations in
             // this adapter. There are no PG inheritance edges to those objects.
-            // PostgreSQL extension objects (foreign wrappers, operator classes,
+            // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_opclass" | "pg_operator" | "pg_aggregate" | "pg_foreign_table"
+            "pg_inherits" | "pg_operator" | "pg_aggregate" | "pg_foreign_table"
             | "pg_foreign_server" | "pg_collation" | "pg_opfamily" | "pg_amop" | "pg_amproc"
             | "pg_policy" | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            "pg_opclass" => integer_opclass_rows(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -1729,6 +1748,21 @@ impl CatalogQuery {
         Ok(match expr {
             Expr::Column(path) => {
                 let slot = self.column(path).expect("validated column").0;
+                let local = slot % CATALOG_ROW_WIDTH;
+                let base = slot - local;
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_index")
+                    && row[base] != Value::Null
+                    && matches!(local, 9 | 10 | 13..=20)
+                    && row[slot] == Value::Null
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL index auxiliary identity or synchronous build evidence is unavailable",
+                    ));
+                }
+
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
@@ -3400,7 +3434,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_rewrite", "oid") => (0, oid),
         ("pg_rewrite", "ev_class") => (1, oid),
         ("pg_opclass", "xmin") => (2, 8),
-        ("pg_opclass", "opcname") => (3, 253),
+        ("pg_opclass", "opcname") => (3, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_opclass", "opcintype") => (4, oid),
         ("pg_opclass", "opckeytype") => (5, oid),
         ("pg_opclass", "opcdefault") => (6, 1),
@@ -3509,10 +3543,16 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_index", "indoption") => (8, crate::pg_result::CatalogColumnType::Int2Vector as u8),
         ("pg_index", "indclass") => (9, crate::pg_result::CatalogColumnType::OidVector as u8),
         ("pg_index", "indcollation") => (10, crate::pg_result::CatalogColumnType::OidVector as u8),
-        ("pg_index", "indexprs") => (11, 253),
-        ("pg_index", "indpred") => (12, 253),
+        ("pg_index", "indexprs") => (11, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
+        ("pg_index", "indpred") => (12, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_index", "indisvalid") => (13, 1),
         ("pg_index", "indisready") => (14, 1),
+        ("pg_index", "indisexclusion") => (15, 1),
+        ("pg_index", "indimmediate") => (16, 1),
+        ("pg_index", "indisclustered") => (17, 1),
+        ("pg_index", "indcheckxmin") => (18, 1),
+        ("pg_index", "indislive") => (19, 1),
+        ("pg_index", "indisreplident") => (20, 1),
         ("pg_constraint", "oid") => (0, oid),
         ("pg_constraint", "conname") => (1, 253),
         ("pg_constraint", "contype") => (2, internal_char),
@@ -3597,6 +3637,17 @@ struct BuiltinType {
     by_value: bool,
 }
 const COLUMN_TYPES: &[BuiltinType] = &[
+    BuiltinType {
+        oid: 194,
+        name: "pg_node_tree",
+        display: "pg_node_tree",
+        category: "S",
+        kind: "b",
+        element: 0,
+        array: 0,
+        length: -1,
+        by_value: false,
+    },
     BuiltinType {
         oid: 16,
         name: "bool",
@@ -4436,14 +4487,14 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
 // src/include/catalog/pg_type.dat (including array_type_oid); no type rows are
 // synthesized from this list. It only distinguishes unsupported from unknown.
 const PG18_UNMAPPED_TYPE_OIDS: &[i64] = &[
-    24, 27, 28, 29, 32, 71, 75, 81, 83, 142, 143, 194, 210, 269, 270, 271, 272, 273, 325, 600, 601,
-    602, 603, 604, 628, 629, 650, 651, 705, 718, 719, 774, 775, 790, 791, 829, 869, 1008, 1010,
-    1011, 1012, 1017, 1018, 1019, 1020, 1027, 1040, 1041, 1263, 1266, 1270, 1560, 1561, 1562, 1563,
-    1790, 2201, 2202, 2203, 2204, 2207, 2208, 2209, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2283,
-    2776, 2949, 2970, 3115, 3220, 3221, 3310, 3361, 3402, 3500, 3614, 3615, 3642, 3643, 3644, 3645,
-    3734, 3735, 3769, 3770, 3831, 3838, 3908, 3909, 3910, 3911, 3912, 3913, 3926, 3927, 4072, 4073,
-    4089, 4090, 4096, 4097, 4191, 4192, 4451, 4532, 4533, 4534, 4535, 4536, 4537, 4538, 4600, 4601,
-    5017, 5038, 5039, 5069, 5077, 5078, 5079, 5080, 6150, 6151, 6152, 6153, 6155, 6157,
+    24, 27, 28, 29, 32, 71, 75, 81, 83, 142, 143, 210, 269, 270, 271, 272, 273, 325, 600, 601, 602,
+    603, 604, 628, 629, 650, 651, 705, 718, 719, 774, 775, 790, 791, 829, 869, 1008, 1010, 1011,
+    1012, 1017, 1018, 1019, 1020, 1027, 1040, 1041, 1263, 1266, 1270, 1560, 1561, 1562, 1563, 1790,
+    2201, 2202, 2203, 2204, 2207, 2208, 2209, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2283, 2776,
+    2949, 2970, 3115, 3220, 3221, 3310, 3361, 3402, 3500, 3614, 3615, 3642, 3643, 3644, 3645, 3734,
+    3735, 3769, 3770, 3831, 3838, 3908, 3909, 3910, 3911, 3912, 3913, 3926, 3927, 4072, 4073, 4089,
+    4090, 4096, 4097, 4191, 4192, 4451, 4532, 4533, 4534, 4535, 4536, 4537, 4538, 4600, 4601, 5017,
+    5038, 5039, 5069, 5077, 5078, 5079, 5080, 6150, 6151, 6152, 6153, 6155, 6157,
 ];
 
 fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
@@ -4786,6 +4837,9 @@ pub(crate) fn catalog_indexes(
         }
         indexes.push(astersql_meta_model::IndexInfo {
             ID: -1,
+            // The primary handle is the row storage itself, not a secondary
+            // index awaiting a backfill job.
+            PostgreSQLBuildComplete: true,
             Name: astersql_parser_ast::NewCIStr(
                 model
                     .PostgreSQLPrimaryConstraint
@@ -4812,6 +4866,33 @@ pub(crate) fn catalog_indexes(
             .map_err(|_| ConnError::UnsupportedCommand(0))?;
     }
     Ok(indexes)
+}
+
+// PostgreSQL 18.6 pg_opclass.dat: integer_ops family, btree method 403.
+// The relational runtime encodes signed integer datums in ordered keys and
+// checks unique integer keys immediately; arbitrary native collations and
+// custom methods do not establish equivalence to these builtins.
+const INTEGER_OPCLASSES: &[(i64, &str, i64)] = &[
+    (1979, "int2_ops", 21),
+    (1978, "int4_ops", 23),
+    (3124, "int8_ops", 20),
+];
+fn integer_opclass_rows() -> Vec<Vec<Value>> {
+    INTEGER_OPCLASSES
+        .iter()
+        .map(|&(oid, name, input)| {
+            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+            row[0] = Value::Signed(oid);
+            row[1] = Value::Signed(403);
+            row[3] = Value::Text(name.into());
+            row[4] = Value::Signed(input);
+            row[5] = Value::Signed(0);
+            row[6] = Value::Text("true".into());
+            row[7] = Value::Signed(1976);
+            row[9] = Value::Signed(11);
+            row
+        })
+        .collect()
 }
 
 pub(crate) fn index_constraint_rows(
@@ -4893,6 +4974,11 @@ pub(crate) fn index_constraint_rows(
         }
         let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
         let indexes = catalog_indexes(model)?;
+        if relation == "pg_index" && indexes.iter().any(|i| i.State != StatePublic) {
+            // The PG adapter has no concurrent-index state machine. A native
+            // transitional index is unavailable, not an absent successful row.
+            return Err(unsupported());
+        }
         for index in indexes.iter().filter(|i| i.State == StatePublic) {
             if index.Tp != astersql_meta_model::ast::IndexType::Btree
                 || index.Invisible
@@ -4973,12 +5059,48 @@ pub(crate) fn index_constraint_rows(
                 // with direction/NULL ordering or INCLUDE are rejected before DDL
                 // because the native model cannot preserve those facts.
                 row[8] = Value::Text(vec!["0"; columns.len()].join(" "));
-                // Native indexes do not select PostgreSQL operator classes.
-                row[9] = Value::Text(String::new());
-                // No PostgreSQL collation identities; invalid OID 0 per key.
-                row[10] = Value::Text(vec!["0"; columns.len()].join(" "));
-                row[13] = Value::Text("true".into());
-                row[14] = Value::Text("true".into());
+                // Signed integer keys use the same ordered integer encoding and
+                // equality checks as the runtime's relational indexes. No string
+                // collation or noninteger operator class is inferred here.
+                let classes: Option<Vec<_>> = index
+                    .Columns
+                    .iter()
+                    .map(|key| {
+                        let column = model.Columns.iter().find(|c| c.Name.O == key.Name.O)?;
+                        if astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag()) {
+                            return None;
+                        }
+                        let oid = native_column_type(column).ok()?.0;
+                        INTEGER_OPCLASSES
+                            .iter()
+                            .find(|(_, _, input)| *input == oid)
+                            .map(|(oid, _, _)| oid.to_string())
+                    })
+                    .collect();
+                if let Some(classes) = classes {
+                    row[9] = Value::Text(classes.join(" "));
+                    row[10] = Value::Text(vec!["0"; columns.len()].join(" "));
+                }
+                if index.BackfillState != astersql_meta_model::BackfillStateInapplicable {
+                    return Err(unsupported());
+                }
+                // Only synchronous ordinary indexes are exposed. EXCLUDE,
+                // deferred constraints, CLUSTER, concurrent rebuilds and replica
+                // identity DDL are rejected by the PG entry before mutation.
+                for (slot, value) in [
+                    (13, true),
+                    (14, true),
+                    (15, false),
+                    (16, true),
+                    (17, false),
+                    (18, false),
+                    (19, true),
+                    (20, false),
+                ] {
+                    if index.PostgreSQLBuildComplete {
+                        row[slot] = Value::Text(value.to_string());
+                    }
+                }
                 row[21] = Value::Text(definition);
                 row[22] = Value::Text(
                     columns

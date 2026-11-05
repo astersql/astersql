@@ -106,3 +106,5 @@ RustCodeGraph 的文件节点报告本文件被 22 个文件使用，并点名 `
 ## 2026-11-02 命名约束仲裁
 
 PostgreSQLConstraintName 是可选的真实声明来源，存于同一支撑索引记录并关联其 ID/Columns；独立 CREATE UNIQUE INDEX 和旧目录缺省为空，仲裁不得从索引名称推断身份。
+
+PostgreSQLBuildComplete 是可缺省的持久同步构建事实。旧模型缺省 false；只在空表创建或真实关系索引回填成功后登记，StatePublic 本身不证明 PG valid/ready。

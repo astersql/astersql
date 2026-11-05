@@ -278,3 +278,5 @@ PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受�
 ## 索引生命周期命令标签（2026-11-05）
 
 独立索引改名适配为单一RenameIndex动作时输出ALTER INDEX；DropIndexStmt输出DROP INDEX。pg13_014_differential使用独立libpq核对成功标签、SQLSTATE及恢复状态。
+
+CatalogColumnType::PgNodeTree 将目录表达式/谓词的描述映射为 pg_node_tree/194、长度-1；普通无表达式值为NULL，不冒充 text/25。

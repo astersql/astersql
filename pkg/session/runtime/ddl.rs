@@ -805,6 +805,11 @@ impl ConcreteSession {
                     _ => {}
                 }
             }
+            // A newly created table has no preexisting rows to backfill. Its
+            // indexes and empty storage become visible in one publication.
+            for index in &mut table.Indices {
+                index.PostgreSQLBuildComplete = true;
+            }
             table.PostgreSQLNumericText = true;
             table.PostgreSQLFloatText = true;
             table.PostgreSQLDateText = true;
@@ -4008,6 +4013,13 @@ impl ConcreteSession {
                         })?;
                     if !index.IsColumnarIndex() {
                         self.backfill_relational_index(&indexed_table, &index)?;
+                        if indexed_table.ExactName {
+                            self.domain
+                                .ddl_complete_postgresql_index(database, indexed_table.ID, index.ID)
+                                .map_err(|error| {
+                                    session_error("publish synchronous index completion", error)
+                                })?;
+                        }
                     }
                     for _ in 0..3 {
                         if astersql_testkit_testfailpoint::eval_bool(

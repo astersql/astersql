@@ -88,3 +88,5 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 ## 索引身份与句柄主键（2026-11-05）
 
 catalog_indexes 校验表内索引ID唯一、多主索引和整数句柄的唯一主键列；缺显式Primary时才投影局部ID -1。已保存的PG主键声明名用于关系命名，pg_class、pg_index及regclass共用该身份。PG表的独立唯一索引没有PostgreSQLConstraintName时不产生唯一约束行；原生遗留约束语义留待约束来源专项。IDX-BASE字段及conrelid补齐PG目录来源属性号，零行Describe也保持来源。
+
+索引辅助身份仅登记已证明的有符号整数 btree 等价类 int2_ops/int4_ops/int8_ops（1979/1978/3124，方法403）。indclass 与有序规范整数键关联，整数 indcollation 为0；未知等价来源在相关投影前拒绝。indexprs/indpred 使用 pg_node_tree/194，普通无表达式/条件才为NULL。状态/EXTRA 依赖 PostgreSQLBuildComplete 与 State/BackfillState；过渡模型拒绝。EXCLUDE/延迟/CLUSTER/并发构建/复制身份不开放时遵循入口拒绝策略。

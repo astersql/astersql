@@ -204,3 +204,15 @@ any value is NULL. Published column flags remain the source of
 `pg_attribute.attnotnull`; catalog reads do not infer constraints from samples.
 Focused coverage is in `pg13_010_contract`, `pg13_010_differential`, and
 `pg13_010_not_null_rejects_existing_null_before_publication`.
+
+## Rust PostgreSQL synchronous index publication
+
+The native ADD INDEX path can publish StatePublic before relational backfill.
+PostgreSQL catalog valid/ready fields therefore also require the persisted
+IndexInfo.PostgreSQLBuildComplete fact. PG empty-table creation records it in
+the atomic table publication; PG ADD INDEX records it through
+Domain::ddl_complete_postgresql_index only after backfill_relational_index
+succeeds. Legacy indexes without that evidence refuse related PG projections;
+reads never migrate metadata. Backfill-merge and transitional native states do
+not establish PostgreSQL concurrent-index semantics. The focused catalog and
+libpq coverage is pg13_017_contract / pg13_017_differential.

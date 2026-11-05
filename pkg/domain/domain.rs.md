@@ -101,3 +101,5 @@ Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、ch
 ### 来源 f95ec32c8c 的局部增量
 
 get_ks_global_var_accessor 通过已安装的跨 keyspace Manager 获取或创建目标 runtime，并返回其只读缓存；Manager 不存在、创建失败或访问器未安装时传播错误。对应 Go GetKSGlobalVarAccessor；不读取当前 Domain 的全局变量。
+
+ddl_complete_postgresql_index 将运行时已经完成的 PG 同步索引构建事实交给 DdlMetadataService 持久化并发布新 InfoSchema；目录读取本身不写入或分配身份。

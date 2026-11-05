@@ -5611,3 +5611,195 @@ fn pg13_016_contract() {
         "pg13_016_contract: full=2 key_order=2 out_of_range=2 unknown_null=3 invalid_model=8 second_connection=1 isolation=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_017_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_017_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_017_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_017_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_017_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_017_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_017_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_017_admin");
+    let (mut c, _) = connect("pg13_017_policy");
+    for sql in [
+        "CREATE TABLE public.idx_contract (id integer, obsolete integer, a integer, b integer)",
+        "ALTER TABLE public.idx_contract DROP COLUMN obsolete",
+        "CREATE INDEX idx_contract_ba ON public.idx_contract (b,a)",
+    ] {
+        let got = query(&mut a, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let sql = "SELECT i.indclass,i.indcollation,i.indexprs,i.indpred,i.indisvalid,i.indisready,i.indisexclusion,i.indimmediate,i.indisclustered,i.indcheckxmin,i.indislive,i.indisreplident FROM pg_catalog.pg_index i WHERE i.indrelid='public.idx_contract'::regclass::oid";
+    let got = query(&mut a, sql);
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert!(
+        got.contains(&(
+            b'D',
+            row(&[
+                Some("1978 1978"),
+                Some("0 0"),
+                None,
+                None,
+                Some("t"),
+                Some("t"),
+                Some("f"),
+                Some("t"),
+                Some("f"),
+                Some("f"),
+                Some("t"),
+                Some("f")
+            ])
+        )),
+        "{got:?}"
+    );
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![30, 30, 194, 194, 16, 16, 16, 16, 16, 16, 16, 16]
+    );
+    assert_eq!(query(&mut b, sql), got);
+    let empty = query(
+        &mut c,
+        "SELECT i.indclass,i.indexprs,i.indislive FROM pg_catalog.pg_index i",
+    );
+    assert_eq!(empty.iter().filter(|m| m.0 == b'D').count(), 0);
+    assert_eq!(
+        columns(&empty[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![30, 194, 16]
+    );
+    let meta = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("pg13_017_admin"),
+            &astersql_infoschema::CiString::new("idx_contract"),
+        )
+        .unwrap();
+    let original = meta.Meta().model_meta.as_ref().unwrap().as_ref().clone();
+    for scenario in 0..11 {
+        let mut model = original.clone();
+        match scenario {
+            0 => model.Indices[0].Tp = astersql_meta_model::ast::IndexType::Invalid,
+            1 => model.Indices[0].Tp = astersql_meta_model::ast::IndexType::Hash,
+            2 => model.Indices[0].Invisible = true,
+            3 => model.Indices[0].Global = true,
+            4 => model.Indices[0].ConditionExprString = "a > 0".into(),
+            5 => model.Indices[0].Columns[0].Length = 1,
+            6 => model.Columns.last_mut().unwrap().Hidden = true,
+            7 => model.Indices[0].Columns[0].UseChangingType = true,
+            8 => model.Indices[0].BackfillState = astersql_meta_model::BackfillStateRunning,
+            9 => model.ID = 0,
+            _ => model.Indices[0].State = astersql_meta_model::StateWriteOnly,
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("invalid"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("idx_contract"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let err = crate::pg_catalog::index_constraint_rows(
+            "pg_index",
+            &bad,
+            "invalid",
+            &crate::conn::CancellationToken::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            if scenario == 9 { "22003" } else { "0A000" },
+            "scenario={scenario}"
+        );
+    }
+    assert!(original.Indices[0].PostgreSQLBuildComplete);
+    let restored: astersql_meta_model::TableInfo =
+        serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(restored.Indices[0].PostgreSQLBuildComplete);
+    // Legacy native publication has no PG build proof or string collation
+    // equivalence. Related projections must refuse rather than emit NULL/true.
+    native
+        .execute("CREATE TABLE pg13_017_admin.legacy_aux (a VARCHAR(20),KEY legacy_key(a))")
+        .unwrap();
+    for field in ["indisvalid", "indclass", "indcollation"] {
+        let refused = query(
+            &mut a,
+            &format!(
+                "SELECT i.{field} FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid WHERE c.relname='legacy_key'"
+            ),
+        );
+        assert_eq!(refused[0].0, b'E', "{refused:?}");
+        assert!(refused[0].1.windows(6).any(|w| w == b"C0A000"));
+        assert!(!refused.iter().any(|m| m.0 == b'D'));
+        assert_eq!(query(&mut a, "SELECT 1").last(), Some(&(b'Z', vec![b'I'])));
+    }
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_017_contract: aux_state_extra=12 null_shape=2 invalid_model=11 second_connection=1 isolation=1 cleanup=1"
+    );
+}

@@ -129,3 +129,5 @@ ALTER的AddLastPartition/DropFirstPartition调用DDL的alter_interval_partition_
 PG CREATE TABLE 在原始声明 AST 尚可用时，将显式约束名称写入真实支撑索引或主键表元数据；复用既有建表持久化。独立 CREATE UNIQUE INDEX 路径不写声明来源，未给旧目录按名称回填。
 
 CREATE TABLE LIKE 的现有复制路径清除源表声明身份，复制的索引不能凭源表约束名参与命名仲裁；不改其既有索引复制算法。
+
+PG 空表创建的索引在原子创建中登记 PostgreSQLBuildComplete；PG ADD INDEX 在 backfill_relational_index 成功后再通过 ddl_complete_postgresql_index 登记。物理回填前发布的原生 StatePublic 不再单独构成 PG valid/ready 的证据。MySQL 路径不新增完成登记写入。

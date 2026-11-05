@@ -4446,6 +4446,23 @@ impl Domain {
             })
     }
 
+    /// Publish the runtime's completed synchronous build evidence.
+    pub fn ddl_complete_postgresql_index(
+        &self,
+        database: &str,
+        table_id: i64,
+        index_id: i64,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .complete_postgresql_index(store, database, table_id, index_id)
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// Persist an ADD INDEX job before the owner starts physical backfill.
     ///
     /// Re-staging the same job is idempotent, which mirrors a replacement

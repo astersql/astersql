@@ -1452,12 +1452,35 @@ fn alias_scope(
 pub(crate) fn check_index_options(sql: &str) -> ParseResult<()> {
     // Command classification also sees internally adapted native identifiers.
     let parts = source_tokens(sql, true)?;
+    // No PG clustered storage or replica-identity subsystem is exposed.
+    if parts.first().is_some_and(|p| p.word("cluster"))
+        || parts.first().is_some_and(|p| p.word("alter"))
+            && parts.get(1).is_some_and(|p| p.word("table"))
+            && parts
+                .windows(2)
+                .any(|p| p[0].word("replica") && p[1].word("identity"))
+    {
+        return Err(error(
+            "0A000",
+            "PostgreSQL clustered storage and replica identity are unsupported",
+        ));
+    }
     let index = parts.first().is_some_and(|p| p.word("create"))
         && (parts.get(1).is_some_and(|p| p.word("index"))
             || parts.get(1).is_some_and(|p| p.word("unique"))
                 && parts.get(2).is_some_and(|p| p.word("index")));
     if !index {
         return Ok(());
+    }
+    let index_token = if parts[1].word("unique") { 2 } else { 1 };
+    if parts
+        .get(index_token + 1)
+        .is_some_and(|p| p.word("concurrently"))
+    {
+        return Err(error(
+            "0A000",
+            "PostgreSQL concurrent index construction is unsupported",
+        ));
     }
     let Some(on) = parts.iter().position(|p| p.word("on")) else {
         return Ok(());
@@ -1498,10 +1521,14 @@ pub(crate) fn check_index_options(sql: &str) -> ParseResult<()> {
         let include = depth == 0
             && part.word("include")
             && parts.get(i + 1).is_some_and(|p| p.symbol == Some(b'('));
-        if ordering || include {
+        let null_policy = depth == 0
+            && part.word("nulls")
+            && parts.get(i + 1).is_some_and(|p| p.word("not"))
+            && parts.get(i + 2).is_some_and(|p| p.word("distinct"));
+        if ordering || include || null_policy {
             return Err(error(
                 "0A000",
-                "PostgreSQL index ordering and INCLUDE require stored index facts",
+                "PostgreSQL index ordering, INCLUDE and NULL uniqueness require stored index facts",
             ));
         }
     }

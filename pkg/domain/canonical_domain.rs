@@ -1502,6 +1502,47 @@ impl DdlMetadataService {
         })
     }
 
+    /// Persist completion after the relational runtime has backfilled this exact
+    /// index. Resolve by persistent IDs so a rename cannot mark another object.
+    pub fn complete_postgresql_index(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table_id: i64,
+        index_id: i64,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        let database = database.to_ascii_lowercase();
+        self.mutate(store, move |catalog| {
+            let (key, old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), t)| db == &database && t.ID == table_id)
+                .map(|(k, t)| (k.clone(), t.clone()))
+                .ok_or_else(|| kv::errors::New("unknown index parent"))?;
+            let mut new = old.clone();
+            let index = new
+                .Indices
+                .iter_mut()
+                .find(|i| i.ID == index_id)
+                .ok_or_else(|| kv::errors::New("unknown index identity"))?;
+            if index.State != astersql_meta_model::StatePublic
+                || index.BackfillState != astersql_meta_model::BackfillStateInapplicable
+            {
+                return Err(kv::errors::New(
+                    "index construction is not synchronous/public",
+                ));
+            }
+            index.PostgreSQLBuildComplete = true;
+            catalog.tables.insert(key, new.clone());
+            Ok(DdlMetadataChange {
+                old_tables: vec![(database.clone(), old)],
+                new_tables: vec![(database, new)],
+                changed: true,
+                ..Default::default()
+            })
+        })
+    }
+
     /// Rename one public index while preserving its stable ID and predicate.
     pub fn rename_index(
         &self,
