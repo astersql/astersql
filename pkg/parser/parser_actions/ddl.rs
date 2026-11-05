@@ -593,6 +593,7 @@ enum DdlRule {
     OptCharsetWithOptBinaryAlt02,
     OptCharsetWithOptBinaryAlt03,
     OptCharsetWithOptBinaryAlt04,
+    PgTimestampTzColumn,
     DateAndTimeTypeAlt01,
     DateAndTimeTypeAlt02,
     DateAndTimeTypeAlt03,
@@ -1900,6 +1901,9 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
         }
         "optcharsetwithoptbinary_byte--17b83f71093c5a69" => {
             Some(DdlRule::OptCharsetWithOptBinaryAlt04)
+        }
+        "dateandtimetype_timestamp_optfieldlen_with_time--2fa3b638728b40ca" => {
+            Some(DdlRule::PgTimestampTzColumn)
         }
         "dateandtimetype_date--1291b2631724242a" => Some(DdlRule::DateAndTimeTypeAlt01),
         "dateandtimetype_datetime_optfieldlen--9b9bc1dab8240dcf" => {
@@ -7325,6 +7329,28 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 }
                 .to_owned(),
             }))
+        }
+        DdlRule::PgTimestampTzColumn => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                || !rhs[5].ident.eq_ignore_ascii_case("zone")
+            {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            let precision = rhs[2]
+                .item
+                .as_deref()
+                .and_then(semantic_numeric_isize)
+                .unwrap_or(-1);
+            if !(-1..=6).contains(&precision) {
+                yylex.AppendError(yylex.Errorf("timestamp precision must be between 0 and 6", &[]));
+                return Err(1);
+            }
+            let mut field_type =
+                parser_types::types::NewFieldType(parser_mysql::r#type::TypePgTimestampTz);
+            field_type.SetDecimal(precision);
+            field_type.SetPostgreSQLDeclaration();
+            out.item = Some(Box::new(field_type));
         }
         DdlRule::DateAndTimeTypeAlt02
         | DdlRule::DateAndTimeTypeAlt03

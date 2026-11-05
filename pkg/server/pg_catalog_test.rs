@@ -6649,3 +6649,113 @@ fn pg13_022_contract() {
         "pg13_022_contract: base_columns=6 explicit_null_normalized=1 set_drop_rename=3 empty_describe=1 durable_roundtrip=1 corrupt_models=5 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_023_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_023_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_023_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_023_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let created = query(
+        &mut socket,
+        "CREATE TABLE public.def_doc (qty integer DEFAULT 7, label text DEFAULT 'O''Reilly', flag boolean DEFAULT true)",
+    );
+    assert_eq!(created[0].0, b'C', "{created:?}");
+    let got = query(
+        &mut socket,
+        "SELECT adbin,pg_get_expr(adbin,0),pg_get_expr(adbin,adrelid,true) FROM pg_attrdef WHERE adrelid='public.def_doc'::regclass::oid ORDER BY adnum",
+    );
+    assert_eq!(got[0].0, b'T', "safe deparse positive contract: {got:?}");
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![194, 25, 25]
+    );
+    let data: Vec<_> = got.iter().filter(|(t, _)| *t == b'D').collect();
+    assert_eq!(data.len(), 3);
+    for expected in ["7", "'O''Reilly'::text", "true"] {
+        assert!(
+            data.iter()
+                .any(|(_, body)| body.ends_with(&row(&[Some(expected), Some(expected)])[2..])),
+            "{got:?}"
+        );
+    }
+    let got = query(
+        &mut socket,
+        "SELECT pg_get_expr(NULL,0),pg_get_expr(NULL,0,false) FROM pg_type LIMIT 1",
+    );
+    assert_eq!(got[1], (b'D', row(&[None, None])));
+    for sql in [
+        "SELECT pg_get_expr('fake',0) FROM pg_type LIMIT 1",
+        "SELECT pg_get_expr('0:7',0) FROM pg_type LIMIT 1",
+        "SELECT pg_get_expr(NULL,0,false,0) FROM pg_type LIMIT 1",
+    ] {
+        let got = query(&mut socket, sql);
+        assert!(got.iter().any(|(t, _)| *t == b'E'), "{sql}: {got:?}");
+        assert!(!got.iter().any(|(t, _)| *t == b'D'));
+        assert_eq!(got.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT oid FROM pg_type WHERE oid=23")[1],
+        (b'D', row(&[Some("23")]))
+    );
+    native.execute("CREATE TABLE pg13_023_contract.def_native (x INT,y INT GENERATED ALWAYS AS (IFNULL(x,0)) STORED)").unwrap();
+    let rejected = query(
+        &mut socket,
+        "SELECT adbin FROM pg_attrdef WHERE adrelid='public.def_native'::regclass::oid",
+    );
+    assert!(
+        rejected
+            .iter()
+            .any(|(t, b)| *t == b'E' && b.windows(6).any(|w| w == b"0A000\0")),
+        "{rejected:?}"
+    );
+    assert!(!rejected.iter().any(|(t, _)| *t == b'D'));
+    native
+        .execute("DROP TABLE pg13_023_contract.def_native")
+        .unwrap();
+    assert_eq!(
+        query(&mut socket, "SELECT pg_get_expr(NULL,0)")[1],
+        (b'D', row(&[None]))
+    );
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    println!(
+        "pg13_023_contract: constants=3 null=2 invalid_recovery=3 native_generated_reject=1 pg_node_tree_describe=1 cleanup=1"
+    );
+}

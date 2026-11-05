@@ -158,9 +158,9 @@ fn committed_outputs_match_current_grammars() {
         ],
     );
 
-    assert_eq!(grammar_fingerprint, (204_104, 0x5cc0_3836_1eb0_abcd));
+    assert_eq!(grammar_fingerprint, (216_876, 0x0364641ad284ddb1));
     assert_eq!(generator_fingerprint, (99_721, 0x15c1_a6d5_6705_2051));
-    assert_eq!(output_fingerprint, (17_796_471, 0x596c_7ee4_a884_7c1b));
+    assert_eq!(output_fingerprint, (19_871_878, 0x7d94d093886da9ca));
 
     for output in GENERATED_OUTPUT_NAMES {
         let source = fs::read_to_string(parser_root.join("generated").join(output))

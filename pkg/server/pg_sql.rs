@@ -104,7 +104,13 @@ fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
                         None => Kind::String,
                     };
                 }
-                if delimiter == b'\'' && bytes[i] == b'\\' && i + 1 < bytes.len() {
+                if delimiter == b'\''
+                    && start > 0
+                    && matches!(bytes[start - 1], b'e' | b'E')
+                    && (start == 1 || !bytes[start - 2].is_ascii_alphanumeric())
+                    && bytes[i] == b'\\'
+                    && i + 1 < bytes.len()
+                {
                     i += 2;
                 } else {
                     i += 1;
@@ -387,11 +393,58 @@ pub(crate) fn values_parameter_source(sql: &str) -> ParseResult<(String, Vec<usi
     Ok((apply(sql, edits)?, insertions))
 }
 
+// PostgreSQL standard string literals preserve backslashes. Translate only
+// DEFAULT literals at the DDL boundary before the native parser sees them;
+// returned definitions must survive an ALTER SET DEFAULT round trip.
+fn default_literal_sql(sql: &str, tokens: &[Token]) -> ParseResult<String> {
+    if !tokens
+        .first()
+        .is_some_and(|t| t.word("create") || t.word("alter"))
+    {
+        return Ok(sql.into());
+    }
+    let mut edits = BTreeMap::new();
+    for (index, _) in tokens.iter().enumerate().filter(|(_, t)| t.word("default")) {
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        let (literal, escape) = if matches!(next.kind, Kind::String) {
+            (next, false)
+        } else if next.word("e") {
+            match tokens.get(index + 2) {
+                Some(t) if matches!(t.kind, Kind::String) && next.end == t.start => (t, true),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let value = &sql[literal.start..literal.end];
+        if escape {
+            let mut bytes = value.as_bytes().iter().copied();
+            while let Some(byte) = bytes.next() {
+                if byte == b'\\'
+                    && !bytes.next().is_some_and(|b| {
+                        matches!(b, b'\\' | b'\'' | b'n' | b'r' | b't' | b'b' | b'f')
+                    })
+                {
+                    return Err(error("0A000", "unsupported DEFAULT escape string"));
+                }
+            }
+            edits.insert(next.start, (literal.end, value.to_owned()));
+        } else if value.contains('\\') {
+            edits.insert(literal.start, (literal.end, value.replace('\\', "\\\\")));
+        }
+    }
+    apply(sql, edits)
+}
+
 fn adapt_internal(
     sql: &str,
     context: Option<&dyn TiDBContext>,
     session: Option<&crate::pg_session::PgSession>,
 ) -> ParseResult<String> {
+    let normalized = default_literal_sql(sql, &tokens(sql)?)?;
+    let sql = normalized.as_str();
     let tokens = tokens(sql)?;
     let Some(first) = tokens.first() else {
         return Ok(sql.to_owned());
@@ -901,7 +954,11 @@ fn existing_column_suffix(
         return Err(error("0A000", "generated ALTER COLUMN is unsupported"));
     }
     let mut suffix = if include_type {
-        format!(" {}", column.GetTypeDesc())
+        if astersql_parser_mysql::r#type::HasIsBooleanFlag(column.GetFlag()) {
+            " BOOLEAN".into()
+        } else {
+            format!(" {}", column.GetTypeDesc())
+        }
     } else {
         String::new()
     };
@@ -917,7 +974,24 @@ fn existing_column_suffix(
     if let Some(override_default) = default_override {
         if let Some(default) = override_default {
             suffix.push_str(" DEFAULT ");
-            suffix.push_str(&default);
+            let parts = tokens(&default)?;
+            let cast = match column.FieldType.PostgreSQLTypeOid() {
+                Some(25) => "text",
+                Some(1043) => "character varying",
+                Some(1042) => "bpchar",
+                _ => "",
+            };
+            // A deparsed literal cast to this very column type is already
+            // enforced by assignment. Remove only that redundant string cast;
+            // arbitrary expressions and cross-type casts keep their gate.
+            let literal = parts.first().filter(|t| matches!(t.kind, Kind::String));
+            if let Some(literal) = literal.filter(|literal| {
+                !cast.is_empty() && default[literal.end..].trim() == format!("::{cast}")
+            }) {
+                suffix.push_str(&default[..literal.end]);
+            } else {
+                suffix.push_str(&default);
+            }
         } else {
             // Keep an explicit option so the native MODIFY path does not
             // mistake DROP DEFAULT for a type-only change and retain it.

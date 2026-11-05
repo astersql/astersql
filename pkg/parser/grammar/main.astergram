@@ -3829,6 +3829,7 @@ OptCharsetWithOptBinary : "BYTE" @action;
 DateAndTimeType : "DATE" @action;
 DateAndTimeType : "DATETIME" OptFieldLen @action;
 DateAndTimeType : "TIMESTAMP" OptFieldLen @action;
+DateAndTimeType : "TIMESTAMP" OptFieldLen "WITH" "TIME" identifier @action;
 DateAndTimeType : "TIME" OptFieldLen @action;
 DateAndTimeType : Year OptFieldLen FieldOpts @action;
 FieldLen : "(" LengthNum ")" @action;

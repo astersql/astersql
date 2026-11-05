@@ -212,3 +212,15 @@ fn pg13_011_user_type_creation_gate() {
         assert!(crate::pg_sql::adapt(sql).is_ok(), "{sql}");
     }
 }
+
+#[test]
+fn pg13_023_default_literal_escapes() {
+    assert_eq!(
+        super::pg_sql::adapt("CREATE TABLE t (v text DEFAULT 'a\\b')").unwrap(),
+        "CREATE TABLE t (v TEXT DEFAULT 'a\\\\b')"
+    );
+    assert_eq!(
+        super::pg_sql::adapt("CREATE TABLE t (v text DEFAULT E'a\\\\b')").unwrap(),
+        "CREATE TABLE t (v TEXT DEFAULT 'a\\\\b')"
+    );
+}

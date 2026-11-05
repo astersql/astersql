@@ -1216,6 +1216,51 @@ impl ConcreteSession {
             return Ok(Some(value.to_string()));
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && matches!(
+                column.GetType(),
+                astersql_parser_mysql::r#type::TypeDatetime
+                    | astersql_parser_mysql::r#type::TypePgTimestampTz
+            )
+            && let Some(astersql_meta_model::DefaultValue::String(bytes)) = column.GetDefaultValue()
+        {
+            let text = String::from_utf8_lossy(&bytes).trim().to_ascii_uppercase();
+            if let Some(arguments) = text.strip_prefix("CURRENT_TIMESTAMP") {
+                let precision = if arguments.is_empty() || arguments == "()" {
+                    Some(-1)
+                } else {
+                    arguments
+                        .strip_prefix('(')
+                        .and_then(|s| s.strip_suffix(')'))
+                        .and_then(|s| s.trim_matches('\'').parse::<isize>().ok())
+                        .filter(|n| (0..=6).contains(n))
+                };
+                if let Some(precision) = precision {
+                    // Reuse the PG execution snapshot: catalog reads do not
+                    // sample a clock, and all defaults in a transaction share it.
+                    let instant = self
+                        .pg_timestamptz_input("now")?
+                        .round_precision(precision)
+                        .map_err(|e| {
+                            SessionError::with_source(
+                                e.to_string(),
+                                astersql_errors::SharedError::new(e),
+                            )
+                        })?;
+                    return if column.GetType() == astersql_parser_mysql::r#type::TypeDatetime {
+                        self.pg_timestamptz_to_timestamp_value(
+                            Some(instant.to_string()),
+                            column.GetDecimal(),
+                        )
+                    } else {
+                        self.pg_timestamptz_relational_value(
+                            Some(instant.to_string()),
+                            column.GetDecimal(),
+                        )
+                    };
+                }
+            }
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && column.DefaultIsExpr
             && let Some(astersql_meta_model::DefaultValue::String(bytes)) = column.GetDefaultValue()
         {

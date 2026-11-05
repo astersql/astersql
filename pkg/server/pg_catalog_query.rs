@@ -976,7 +976,7 @@ impl Parser {
         let from = if self.word("from") {
             self.relation()?
         } else {
-            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass")) && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
+            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass" | "pg_get_expr")) && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
                 matches!(&w[0],Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
                 && matches!(&w[2],Token::Word(s) if matches!(s.as_str(),"pg_is_in_recovery" | "txid_current" | "format_type" | "pg_get_indexdef" | "pg_get_constraintdef"))
                 && w[3]==Token::Symbol('(')
@@ -1188,7 +1188,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             && w[1] == Token::Symbol('.')
             && matches!(&w[2], Token::Word(s) | Token::Quoted(s) if is_catalog_relation(s))
     });
-    let scalar_catalog = tokens.windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass")) && w[1] == Token::Symbol('(')) || tokens.windows(4).any(|w| {
+    let scalar_catalog = tokens.windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass" | "pg_get_expr")) && w[1] == Token::Symbol('(')) || tokens.windows(4).any(|w| {
         matches!(&w[0], Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
         && matches!(&w[2], Token::Word(s) if matches!(s.as_str(), "pg_is_in_recovery" | "txid_current" | "format_type" | "pg_get_indexdef" | "pg_get_constraintdef"))
         && w[3]==Token::Symbol('(')

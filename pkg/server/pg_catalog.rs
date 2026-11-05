@@ -1023,11 +1023,15 @@ impl CatalogQuery {
                     {
                         Ok((253, 0))
                     }
-                    ("pg_get_expr", [expression, relation])
+                    ("pg_get_expr", [expression, relation] | [expression, relation, _])
                         if (matches!(expression, Expr::Null)
-                            || self.expr_type(expression)?.0 == 253)
+                            || self.expr_type(expression)?.0
+                                == crate::pg_result::CatalogColumnType::PgNodeTree as u8)
                             && (matches!(relation, Expr::Null)
-                                || numeric_type(self.expr_type(relation)?.0)) =>
+                                || numeric_type(self.expr_type(relation)?.0))
+                            && (args.len() == 2
+                                || matches!(args[2], Expr::Null)
+                                || self.expr_type(&args[2])?.0 == 1) =>
                     {
                         Ok((253, 0))
                     }
@@ -1301,6 +1305,7 @@ impl CatalogQuery {
                         ("pg_attribute", 12) => 13,
                         ("pg_attrdef", 0) => 2,
                         ("pg_attrdef", 1) => 3,
+                        ("pg_attrdef", 2) => 4,
                         ("pg_attrdef", 3) => 1,
                         ("pg_sequence", 2) => 3,
                         ("pg_sequence", 3) => 4,
@@ -2509,19 +2514,24 @@ impl CatalogQuery {
                     )?),
                     _ => unreachable!("validated format_type"),
                 },
-                "pg_get_expr" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
-                    (Value::Null, _) | (_, Value::Null) => Value::Null,
-                    (Value::Text(encoded), Value::Signed(relation)) => {
-                        let (owner, expression) = encoded
-                            .split_once(':')
-                            .ok_or(ConnError::UnsupportedCommand(0))?;
-                        if owner.parse::<i64>().ok() != Some(relation) {
-                            return Err(ConnError::UnsupportedCommand(0));
+                "pg_get_expr" => {
+                    let expression = evaluate(&args[0])?;
+                    let relation = evaluate(&args[1])?;
+                    let pretty = if args.len() == 3 {
+                        evaluate(&args[2])?
+                    } else {
+                        Value::Text("false".into())
+                    };
+                    match (expression, relation, pretty) {
+                        (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => {
+                            Value::Null
                         }
-                        Value::Text(expression.into())
+                        (Value::Text(tree), Value::Signed(_), _) => {
+                            Value::Text(deparse_default_tree(&tree)?)
+                        }
+                        _ => return Err(ConnError::UnsupportedCommand(0)),
                     }
-                    _ => return Err(ConnError::UnsupportedCommand(0)),
-                },
+                }
                 // Preserve the native oldest-transaction meaning: smaller TSO
                 // has greater age. This is ordering, not a fabricated PG XID.
                 "age" => match evaluate(&args[0])? {
@@ -2979,6 +2989,7 @@ fn catalog_parameter_type(oid: u32) -> ParseResult<(u8, usize)> {
     Ok(match oid {
         0 => return Err(("42P18", "could not determine catalog parameter type".into())),
         26 => (crate::pg_oid::OID_TYPE, 0),
+        194 => (crate::pg_result::CatalogColumnType::PgNodeTree as u8, 0),
         16 => (1, astersql_parser_mysql::r#type::IsBooleanFlag),
         20 => (8, 0),
         21 => (2, 0),
@@ -3689,7 +3700,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_attrdef", "oid") => (3, oid),
         ("pg_attrdef", "adrelid") => (0, oid),
         ("pg_attrdef", "adnum") => (1, 2),
-        ("pg_attrdef", "adbin") => (2, 253),
+        ("pg_attrdef", "adbin") => (2, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_type", "oid") => (0, oid),
         ("pg_type", "typname") => (1, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_type", "typnamespace") => (2, oid),
@@ -4702,8 +4713,13 @@ fn column_default(
             String::from_utf8(v).map_err(|_| ConnError::UnsupportedCommand(0))?
         }
     };
-    if column.DefaultIsExpr || oid == 1114 && text.to_uppercase().starts_with("CURRENT_TIMESTAMP") {
+    if column.DefaultIsExpr
+        || matches!(oid, 1114 | 1184) && text.to_uppercase().starts_with("CURRENT_TIMESTAMP")
+    {
         let mut upper = text.to_uppercase();
+        if upper == "CURRENT_TIMESTAMP()" {
+            upper = "CURRENT_TIMESTAMP".into();
+        }
         for precision in 0..=6 {
             if upper == format!("CURRENT_TIMESTAMP('{precision}')") {
                 upper = format!("CURRENT_TIMESTAMP({precision})");
@@ -4738,6 +4754,380 @@ fn column_default(
     }
     let name = format_column_type(oid, None)?;
     Ok(Some(format!("'{}'::{name}", text.replace('\'', "''"))))
+}
+
+// PostgreSQL nodeToString is an architecture-dependent internal format. This
+// bounded codec uses 64-bit little-endian Datum/varlena layout (the supported
+// server targets), and only nodes whose semantics we can reconstruct. No SQL
+// suffix or function body from a client is ever returned as a definition.
+fn default_const_tree(oid: i64, bytes: &[u8], len: i16, byval: bool) -> String {
+    let value = bytes
+        .iter()
+        .map(|b| (*b as i8).to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let size = if byval { len as usize } else { bytes.len() };
+    let collid = if matches!(oid, 25 | 1042 | 1043) {
+        100
+    } else {
+        0
+    };
+    format!(
+        "{{CONST :consttype {oid} :consttypmod -1 :constcollid {collid} :constlen {len} :constbyval {byval} :constisnull false :location -1 :constvalue {size} [ {value} ]}}"
+    )
+}
+
+fn default_varlena(data: &[u8]) -> ConnResult<Vec<u8>> {
+    let size = u32::try_from(data.len() + 4).map_err(|_| ConnError::UnsupportedCommand(0))?;
+    if size > 0x3fff_ffff {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    let mut bytes = (size << 2).to_le_bytes().to_vec();
+    bytes.extend_from_slice(data);
+    Ok(bytes)
+}
+
+fn default_node_tree(
+    column: &astersql_meta_model::ColumnInfo,
+    oid: i64,
+    sql: &str,
+) -> ConnResult<String> {
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    if !cfg!(target_endian = "little") || std::mem::size_of::<usize>() != 8 {
+        return Err(unsupported());
+    }
+    if sql.starts_with("CURRENT_TIMESTAMP") {
+        let precision = if sql == "CURRENT_TIMESTAMP" {
+            -1
+        } else {
+            sql.strip_prefix("CURRENT_TIMESTAMP(")
+                .and_then(|s| s.strip_suffix(')'))
+                .and_then(|s| s.parse::<i32>().ok())
+                .filter(|n| (0..=6).contains(n))
+                .ok_or_else(unsupported)?
+        };
+        if !matches!(oid, 1114 | 1184) {
+            return Err(unsupported());
+        }
+        let tree = format!(
+            "{{SQLVALUEFUNCTION :op {} :type 1184 :typmod {precision} :location -1}}",
+            if precision == -1 { 3 } else { 4 }
+        );
+        return Ok(if oid == 1114 {
+            format!(
+                "{{FUNCEXPR :funcid 2027 :funcresulttype 1114 :funcretset false :funcvariadic false :funcformat 2 :funccollid 0 :inputcollid 0 :args ({tree}) :location -1}}"
+            )
+        } else {
+            tree
+        });
+    }
+    let (mut bytes, len, byval) = match oid {
+        16 => (vec![u8::from(sql == "true")], 1, true),
+        21 => (
+            sql.parse::<i16>()
+                .map_err(|_| unsupported())?
+                .to_le_bytes()
+                .to_vec(),
+            2,
+            true,
+        ),
+        23 => (
+            sql.parse::<i32>()
+                .map_err(|_| unsupported())?
+                .to_le_bytes()
+                .to_vec(),
+            4,
+            true,
+        ),
+        20 => (
+            sql.parse::<i64>()
+                .map_err(|_| unsupported())?
+                .to_le_bytes()
+                .to_vec(),
+            8,
+            true,
+        ),
+        700 => (
+            sql.parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(unsupported)?
+                .to_le_bytes()
+                .to_vec(),
+            4,
+            true,
+        ),
+        701 => (
+            sql.parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(unsupported)?
+                .to_le_bytes()
+                .to_vec(),
+            8,
+            true,
+        ),
+        1700 => {
+            let wire = sql
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map_err(|_| unsupported())?
+                .to_binary();
+            let word = |at| u16::from_be_bytes([wire[at], wire[at + 1]]);
+            let mut data = (word(4) | word(6)).to_le_bytes().to_vec();
+            data.extend_from_slice(&word(2).to_le_bytes());
+            for pair in wire[8..].chunks_exact(2) {
+                data.extend_from_slice(&u16::from_be_bytes([pair[0], pair[1]]).to_le_bytes());
+            }
+            (default_varlena(&data)?, -1, false)
+        }
+        25 | 1042 | 1043 => {
+            let Some(astersql_meta_model::DefaultValue::String(value)) = column.GetDefaultValue()
+            else {
+                return Err(unsupported());
+            };
+            let text = std::str::from_utf8(&value).map_err(|_| unsupported())?;
+            if text.contains('\0') {
+                return Err(unsupported());
+            }
+            (default_varlena(text.as_bytes())?, -1, false)
+        }
+        1082 | 1083 | 1114 | 1184 => {
+            let Some(astersql_meta_model::DefaultValue::String(value)) = column.GetDefaultValue()
+            else {
+                return Err(unsupported());
+            };
+            let text = std::str::from_utf8(&value).map_err(|_| unsupported())?;
+            use astersql_types::pg_temporal::{PgDate, PgTime, PgTimestamp, PgTimestampTz};
+            let bytes = match oid {
+                1082 => i32::from_be_bytes(
+                    text.parse::<PgDate>()
+                        .map_err(|_| unsupported())?
+                        .to_binary(),
+                )
+                .to_le_bytes()
+                .to_vec(),
+                1083 => i64::from_be_bytes(
+                    text.parse::<PgTime>()
+                        .map_err(|_| unsupported())?
+                        .to_binary(),
+                )
+                .to_le_bytes()
+                .to_vec(),
+                1114 => i64::from_be_bytes(
+                    text.parse::<PgTimestamp>()
+                        .map_err(|_| unsupported())?
+                        .to_binary(),
+                )
+                .to_le_bytes()
+                .to_vec(),
+                _ => i64::from_be_bytes(
+                    text.parse::<PgTimestampTz>()
+                        .map_err(|_| unsupported())?
+                        .to_binary(),
+                )
+                .to_le_bytes()
+                .to_vec(),
+            };
+            (bytes, if oid == 1082 { 4 } else { 8 }, true)
+        }
+        // These types need their own Datum conversion; never label a SQL
+        // fragment or a native datetime's bytes as a PostgreSQL tree.
+        _ => return Err(unsupported()),
+    };
+    if byval {
+        bytes.resize(8, 0);
+    }
+    Ok(default_const_tree(oid, &bytes, len, byval))
+}
+
+fn deparse_default_tree(tree: &str) -> ConnResult<String> {
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    if tree.len() > 1_048_576
+        || !cfg!(target_endian = "little")
+        || std::mem::size_of::<usize>() != 8
+    {
+        return Err(unsupported());
+    }
+    if let Some(inner) = tree.strip_prefix("{FUNCEXPR :funcid 2027 :funcresulttype 1114 :funcretset false :funcvariadic false :funcformat 2 :funccollid 0 :inputcollid 0 :args (").and_then(|s| s.strip_suffix(") :location -1}")) {
+        if !inner.starts_with("{SQLVALUEFUNCTION ") { return Err(unsupported()); }
+        return deparse_default_tree(inner);
+    }
+    if let Some(body) = tree
+        .strip_prefix("{SQLVALUEFUNCTION :op ")
+        .and_then(|s| s.strip_suffix(" :location -1}"))
+    {
+        let words: Vec<_> = body.split_whitespace().collect();
+        if words.len() != 5 || words[1..4] != [":type", "1184", ":typmod"] {
+            return Err(unsupported());
+        }
+        let precision = words[4].parse::<i32>().map_err(|_| unsupported())?;
+        return match (words[0], precision) {
+            ("3", -1) => Ok("CURRENT_TIMESTAMP".into()),
+            ("4", 0..=6) => Ok(format!("CURRENT_TIMESTAMP({precision})")),
+            _ => Err(unsupported()),
+        };
+    }
+    let words: Vec<_> = tree.split_whitespace().collect();
+    if words.len() < 22
+        || words[0] != "{CONST"
+        || words[1] != ":consttype"
+        || words[3..6] != [":consttypmod", "-1", ":constcollid"]
+        || words[7] != ":constlen"
+        || words[9] != ":constbyval"
+        || words[11..16] != [":constisnull", "false", ":location", "-1", ":constvalue"]
+        || words[17] != "["
+        || words[words.len() - 1] != "]}"
+    {
+        return Err(unsupported());
+    }
+    let oid = words[2].parse::<i64>().map_err(|_| unsupported())?;
+    let len = words[8].parse::<i16>().map_err(|_| unsupported())?;
+    let byval = match words[10] {
+        "true" => true,
+        "false" => false,
+        _ => return Err(unsupported()),
+    };
+    let bytes = words[18..words.len() - 1]
+        .iter()
+        .map(|s| s.parse::<i8>().map(|b| b as u8).map_err(|_| unsupported()))
+        .collect::<ConnResult<Vec<_>>>()?;
+    // Canonical reconstruction also rejects unrecognized/trailing fields,
+    // incorrect lengths, collation identities and malformed Datum padding.
+    if default_const_tree(oid, &bytes, len, byval) != tree {
+        return Err(unsupported());
+    }
+    let expected_len = match oid {
+        16 => 1,
+        21 => 2,
+        23 | 700 | 1082 => 4,
+        20 | 701 | 1083 | 1114 | 1184 => 8,
+        25 | 1042 | 1043 | 1700 => -1,
+        _ => return Err(unsupported()),
+    };
+    if len != expected_len
+        || byval != (len > 0)
+        || (byval && (bytes.len() != 8 || bytes[len as usize..].iter().any(|b| *b != 0)))
+    {
+        return Err(unsupported());
+    }
+    let text = if byval {
+        match oid {
+            16 => match bytes[0] {
+                0 => "false".into(),
+                1 => "true".into(),
+                _ => return Err(unsupported()),
+            },
+            21 => i16::from_le_bytes(bytes[..2].try_into().unwrap()).to_string(),
+            23 => i32::from_le_bytes(bytes[..4].try_into().unwrap()).to_string(),
+            20 => i64::from_le_bytes(bytes[..8].try_into().unwrap()).to_string(),
+            700 => {
+                let n = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+                if !n.is_finite() {
+                    return Err(unsupported());
+                }
+                n.to_string()
+            }
+            701 => {
+                let n = f64::from_le_bytes(bytes[..8].try_into().unwrap());
+                if !n.is_finite() {
+                    return Err(unsupported());
+                }
+                n.to_string()
+            }
+            1082 | 1083 | 1114 | 1184 => {
+                use astersql_types::pg_temporal::{PgDate, PgTime, PgTimestamp, PgTimestampTz};
+                let data = if oid == 1082 {
+                    i32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        .to_be_bytes()
+                        .to_vec()
+                } else {
+                    i64::from_le_bytes(bytes[..8].try_into().unwrap())
+                        .to_be_bytes()
+                        .to_vec()
+                };
+                let value = match oid {
+                    1082 => PgDate::from_binary(&data)
+                        .map_err(|_| unsupported())?
+                        .to_string(),
+                    1083 => PgTime::from_binary(&data)
+                        .map_err(|_| unsupported())?
+                        .to_string(),
+                    1114 => PgTimestamp::from_binary(&data)
+                        .map_err(|_| unsupported())?
+                        .to_string(),
+                    _ => PgTimestampTz::from_binary(&data)
+                        .map_err(|_| unsupported())?
+                        .to_string(),
+                };
+                format!(
+                    "'{}'::{}",
+                    value.replace('\'', "''"),
+                    format_column_type(oid, None)?
+                )
+            }
+            _ => return Err(unsupported()),
+        }
+    } else {
+        if bytes.len() < 4
+            || u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize != bytes.len() << 2
+        {
+            return Err(unsupported());
+        }
+        let data = &bytes[4..];
+        if oid == 1700 {
+            if data.len() < 2 || data.len() % 2 != 0 {
+                return Err(unsupported());
+            }
+            let header = u16::from_le_bytes(data[..2].try_into().unwrap());
+            let (sign, scale, weight, offset) = if header & 0xc000 == 0x8000 {
+                (
+                    if header & 0x2000 != 0 { 0x4000u16 } else { 0 },
+                    (header >> 7) & 0x3f,
+                    ((header & 0x3f) as i16) - if header & 0x40 != 0 { 64 } else { 0 },
+                    2,
+                )
+            } else {
+                if data.len() < 4 || header & 0xc000 >= 0x8000 {
+                    return Err(unsupported());
+                }
+                (
+                    header & 0x4000,
+                    header & 0x3fff,
+                    i16::from_le_bytes(data[2..4].try_into().unwrap()),
+                    4,
+                )
+            };
+            let mut wire = (((data.len() - offset) / 2) as u16).to_be_bytes().to_vec();
+            wire.extend_from_slice(&weight.to_be_bytes());
+            wire.extend_from_slice(&sign.to_be_bytes());
+            wire.extend_from_slice(&scale.to_be_bytes());
+            for pair in data[offset..].chunks_exact(2) {
+                wire.extend_from_slice(&u16::from_le_bytes([pair[0], pair[1]]).to_be_bytes());
+            }
+            astersql_types::pg_numeric::PgNumeric::from_binary(&wire)
+                .map_err(|_| unsupported())?
+                .to_string()
+        } else {
+            let text = std::str::from_utf8(data).map_err(|_| unsupported())?;
+            if text.contains('\0') {
+                return Err(unsupported());
+            }
+            let literal = if text.contains('\\') {
+                format!("E'{}'", text.replace('\\', "\\\\").replace('\'', "''"))
+            } else {
+                format!("'{}'", text.replace('\'', "''"))
+            };
+            // Bare CHARACTER means character(1) in SQL. bpchar retains the
+            // unconstrained internal type, so cloning never truncates to one.
+            let name = if oid == 1042 {
+                "bpchar".into()
+            } else {
+                format_column_type(oid, None)?
+            };
+            format!("{literal}::{name}")
+        }
+    };
+    Ok(text)
 }
 
 pub(crate) fn column_catalog_rows(
@@ -4855,12 +5245,12 @@ pub(crate) fn column_catalog_rows(
             }
             if relation == "pg_attrdef" {
                 if let Some(default) = default {
-                    // PG-private opaque deparse input, tied to its owning
-                    // relation. It is not native SQL passed back to the engine.
+                    // Bind the typed value to an actual PostgreSQL node, without
+                    // evaluating runtime functions during catalog reads.
                     rows.push(vec![
                         Value::Signed(relid),
                         Value::Signed(position),
-                        Value::Text(format!("{relid}:{default}")),
+                        Value::Text(default_node_tree(column, oid, &default)?),
                         Value::Signed(i64::from(crate::pg_oid::namespace_oid(
                             column
                                 .PostgreSQLDefaultID

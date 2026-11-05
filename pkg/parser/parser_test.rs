@@ -7198,3 +7198,46 @@ fn pg13_009_column_declarations() {
     assert_eq!(table.Cols[4].Tp.GetDecimal(), -1);
     assert_eq!(table.Cols[5].Tp.GetDecimal(), 3);
 }
+
+#[test]
+fn pg13_023_timestamp_default_declaration() {
+    for (sql, precision) in [
+        (
+            "CREATE TABLE t (v timestamp with time zone DEFAULT CURRENT_TIMESTAMP)",
+            -1,
+        ),
+        (
+            "CREATE TABLE t (v timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP(3))",
+            3,
+        ),
+    ] {
+        let (nodes, _) = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        let table = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::CreateTableStmt>()
+            .unwrap();
+        assert_eq!(
+            table.Cols[0].Tp.GetType(),
+            parser_mysql::r#type::TypePgTimestampTz
+        );
+        assert_eq!(table.Cols[0].Tp.GetDecimal(), precision);
+        assert!(table.Cols[0].Tp.IsPostgreSQLDeclaration());
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+                .ParseSQL(sql, &[])
+                .is_err()
+        );
+    }
+    for sql in [
+        "CREATE TABLE t (v timestamp with time invalid)",
+        "CREATE TABLE t (v timestamp(7) with time zone)",
+    ] {
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .is_err()
+        );
+    }
+}

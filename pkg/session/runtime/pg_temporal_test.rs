@@ -477,3 +477,55 @@ fn pg08_03_timestamp_conversion() {
     }
     println!("pg08_03_timestamp_conversion: 2 scenarios passed");
 }
+
+#[test]
+fn pg13_023_current_timestamp_default_clock() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session.execute("USE test").unwrap();
+    session.execute("SET time_zone = '+00:00'").unwrap();
+    session
+        .execute("CREATE TABLE pg13_023_clock (v timestamp(6) DEFAULT CURRENT_TIMESTAMP(6))")
+        .unwrap();
+    session.execute("SET timestamp = 946684800.123456").unwrap();
+    session.execute("BEGIN").unwrap();
+    session
+        .execute("INSERT INTO pg13_023_clock DEFAULT VALUES")
+        .unwrap();
+    session.execute("SET timestamp = 947026800.654321").unwrap();
+    session
+        .execute("INSERT INTO pg13_023_clock DEFAULT VALUES")
+        .unwrap();
+    let mut rows = session
+        .execute("SELECT v FROM pg13_023_clock")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        rows.next_row().unwrap().unwrap(),
+        ["2000-01-01 00:00:00.123456"]
+    );
+    assert_eq!(
+        rows.next_row().unwrap().unwrap(),
+        ["2000-01-01 00:00:00.123456"]
+    );
+    assert!(rows.next_row().unwrap().is_none());
+    session.execute("ROLLBACK").unwrap();
+    let mut empty = session
+        .execute("SELECT v FROM pg13_023_clock")
+        .unwrap()
+        .remove(0);
+    assert!(empty.next_row().unwrap().is_none());
+    session
+        .execute("INSERT INTO pg13_023_clock DEFAULT VALUES")
+        .unwrap();
+    let mut fresh = session
+        .execute("SELECT v FROM pg13_023_clock")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        fresh.next_row().unwrap().unwrap(),
+        ["2000-01-04 23:00:00.654321"]
+    );
+    session.execute("DROP TABLE pg13_023_clock").unwrap();
+    domain.close();
+}

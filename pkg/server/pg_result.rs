@@ -916,7 +916,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .to_vec(),
         // PostgreSQL json_send returns the same validated original text, with
         // no jsonb version byte or MySQL BinaryJSON type code.
-        114 | 19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
+        114 | 19 | 25 | 194 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
         // jsonb_send uses version 1 followed by jsonb_out text, never the
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
