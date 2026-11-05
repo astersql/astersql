@@ -256,3 +256,25 @@ The PG catalog emits VAR/OPEXPR
 nodes using persistent attribute slots; deparsing requires the matching current
 relation and bound definition. Focused tests are `pg13_024_contract` and
 `pg13_024_differential` in the existing server test modules.
+
+## Rust PostgreSQL bound view definitions
+
+PG CREATE VIEW captures a bounded single-table SELECT or literal projection in
+`TableInfo.PostgreSQLView`. It reuses `PostgreSQLCheckExpression` for stable column
+IDs, records the base relation ID and dependency/output types, and retains
+`ViewInfo` source, explicit column names and CHECK OPTION provenance. Creation
+uses the existing result-type binder instead of executing the view to infer its
+columns. Unsupported replacement definitions are validated before dropping the
+old view.
+
+Catalog deparsing and the existing SELECT executor render that same binding
+against the current database snapshot. PG output uses logical schema names and
+quoted identifiers; native execution uses the existing physical storage names.
+Renamed columns preserve their dependency identity. Missing dependencies or
+changed types refuse rather than resolving a new object with the old name.
+Authenticated view reads and source binding reuse the existing SELECT privilege
+check. Legacy/native views retain native execution but do not establish a PG
+reconstructable definition. This bounded path does not introduce arbitrary query
+conversion, a dependency graph, or CHECK OPTION write enforcement. Focused tests
+are `pg13_025_contract`, `pg13_025_differential`, and
+`pg13_025_view_binding_uses_shared_executor`.

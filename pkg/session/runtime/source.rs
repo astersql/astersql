@@ -765,7 +765,38 @@ impl ConcreteSession {
                 ))
             })?;
         if let Some(view) = table.View.as_ref() {
-            let statements = parse(&view.SelectStmt)?;
+            if table.PostgreSQLView.is_some()
+                && !self.information_schema_table_visible(database, &table.Name.O)
+            {
+                return Err(super::pg_schema::namespace_error(
+                    "42501",
+                    "permission denied for view",
+                ));
+            }
+            let bound_sql;
+            let definition = if let Some(bound) = &table.PostgreSQLView {
+                let base = bound.RelationID.and_then(|id| {
+                    self.catalog_schema_snapshot()
+                        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                        .ok()?
+                        .into_iter()
+                        .filter_map(|t| t.model_meta.clone())
+                        .find(|t| t.ID == id)
+                });
+                let sql = bound
+                    .render(&table, base.as_deref(), database, true)
+                    .ok_or_else(|| {
+                        super::query::pg_union_error(
+                            "view binding is unavailable or incompatible",
+                            "0A000",
+                        )
+                    })?;
+                bound_sql = format!("CREATE VIEW v AS {sql}");
+                &bound_sql
+            } else {
+                &view.SelectStmt
+            };
+            let statements = parse(definition)?;
             let create = statements
                 .first()
                 .and_then(|statement| statement.as_any().downcast_ref::<ast::CreateViewStmt>())

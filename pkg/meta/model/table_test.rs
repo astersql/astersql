@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -509,4 +509,59 @@ fn postgresql_attribute_slots_survive_serialization() {
         .unwrap()
         .push((40, false));
     assert_eq!(table.postgresql_attribute_number(40).unwrap(), 4);
+}
+
+#[test]
+fn postgresql_bound_view_survives_rename_but_refuses_rebinding() {
+    let mut column = new_column_for_test(7, 0);
+    column.State = StatePublic;
+    let mut base = TableInfo {
+        ID: 41,
+        Name: ast::NewCIStr("base"),
+        Columns: vec![column.clone()],
+        State: StatePublic,
+        ..Default::default()
+    };
+    let mut view = TableInfo {
+        Columns: vec![column.clone()],
+        View: Some(ViewInfo {
+            SelectStmt: "CREATE VIEW v AS SELECT c_7 FROM base".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    view.PostgreSQLView = Some(PostgreSQLView {
+        RelationID: Some(base.ID),
+        RelationColumns: vec![(column.ID, column.FieldType.clone())],
+        Projection: vec![(
+            PostgreSQLCheckExpression::Column(column.ID),
+            column.FieldType.clone(),
+        )],
+        Filter: None,
+        SourceSQL: view.View.as_ref().unwrap().SelectStmt.clone(),
+        CheckOption: view.View.as_ref().unwrap().CheckOption,
+    });
+    let bytes = serde_json::to_vec(&view).unwrap();
+    let restored: TableInfo = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&restored).unwrap());
+    let bound = restored.PostgreSQLView.as_ref().unwrap();
+    base.Columns[0].Name = ast::NewCIStr("renamed");
+    let rendered = bound
+        .render(&restored, Some(&base), "public", false)
+        .unwrap();
+    assert!(rendered.contains("\"renamed\" AS \"c_7\""));
+    base.ID += 1;
+    assert!(
+        bound
+            .render(&restored, Some(&base), "public", false)
+            .is_none()
+    );
+    assert!(bound.render(&restored, None, "public", false).is_none());
+    let legacy: TableInfo = serde_json::from_str("{}").unwrap();
+    assert!(legacy.PostgreSQLView.is_none());
+    assert!(
+        !serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("postgresql_view")
+    );
 }

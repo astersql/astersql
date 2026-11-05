@@ -3907,7 +3907,7 @@ pub(super) fn relational_column_origin(
     column: &astersql_meta_model::ColumnInfo,
 ) -> Option<ConcreteColumnOrigin> {
     if table.ID <= 0
-        || table.View.is_some()
+        || (table.View.is_some() && table.PostgreSQLView.is_none())
         || table.Sequence.is_some()
         || column.ID <= 0
         || column.Hidden

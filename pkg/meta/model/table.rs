@@ -220,6 +220,13 @@ pub struct TableInfo {
     /// 视图定义（若本对象是视图）。
     #[serde(rename = "view")]
     pub View: Option<ViewInfo>,
+    /// PG view provenance captured at CREATE, absent on legacy/native views.
+    #[serde(
+        default,
+        rename = "postgresql_view",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLView: Option<PostgreSQLView>,
     #[serde(
         rename = "materialized_view_base",
         skip_serializing_if = "Option::is_none"
@@ -818,6 +825,112 @@ impl TiFlashReplicaInfo {
     /// 判断指定分区是否已有可用 TiFlash 副本。
     pub fn IsPartitionAvailable(&self, partition_id: i64) -> bool {
         self.AvailablePartitionIDs.contains(&partition_id)
+    }
+}
+
+/// Bounded SELECT syntax; expressions reuse the durable CHECK column identity.
+/// Relation IDs are resolved inside the current database, never by stored names.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct PostgreSQLView {
+    pub RelationID: Option<i64>,
+    pub RelationColumns: Vec<(i64, parser_types::types::FieldType)>,
+    pub Projection: Vec<(PostgreSQLCheckExpression, parser_types::types::FieldType)>,
+    pub Filter: Option<PostgreSQLCheckExpression>,
+    pub SourceSQL: String,
+    pub CheckOption: ast::ViewCheckOption,
+}
+impl PostgreSQLView {
+    /// Render the same bound definition for PG introspection and native execution.
+    /// A changed dependency type or missing identity refuses rather than rebinding.
+    pub fn render(
+        &self,
+        view: &TableInfo,
+        base: Option<&TableInfo>,
+        schema: &str,
+        native: bool,
+    ) -> Option<String> {
+        let stored = view.View.as_ref()?;
+        if stored.SelectStmt != self.SourceSQL
+            || stored.CheckOption != self.CheckOption
+            || self.Projection.is_empty()
+            || self.Projection.len() != view.Columns.len()
+            || (!stored.Cols.is_empty()
+                && (stored.Cols.len() != view.Columns.len()
+                    || stored
+                        .Cols
+                        .iter()
+                        .zip(&view.Columns)
+                        .any(|(a, b)| a.O != b.Name.O)))
+        {
+            return None;
+        }
+        let empty = TableInfo::default();
+        let base = match (self.RelationID, base) {
+            (None, None) if self.RelationColumns.is_empty() => &empty,
+            (Some(id), Some(base))
+                if id == base.ID
+                    && base.State == StatePublic
+                    && base.View.is_none()
+                    && base.Sequence.is_none() =>
+            {
+                base
+            }
+            _ => return None,
+        };
+        for (id, tp) in &self.RelationColumns {
+            if !base
+                .Columns
+                .iter()
+                .any(|c| c.ID == *id && c.State == StatePublic && !c.Hidden && c.FieldType == *tp)
+            {
+                return None;
+            }
+        }
+        let quote = |name: &str| {
+            let q = if native { '`' } else { '"' };
+            format!("{q}{}{q}", name.replace(q, &format!("{q}{q}")))
+        };
+        let mut dependencies = Vec::new();
+        let mut fields = Vec::new();
+        for ((expression, tp), column) in self.Projection.iter().zip(&view.Columns) {
+            if column.FieldType != *tp {
+                return None;
+            }
+            fields.push(format!(
+                "{} AS {}",
+                expression.render(base, native, &mut dependencies)?,
+                quote(if native {
+                    &column.Name.L
+                } else {
+                    &column.Name.O
+                })
+            ));
+        }
+        let mut sql = format!("SELECT {}", fields.join(", "));
+        if self.RelationID.is_some() {
+            let name = if native {
+                &base.Name.O
+            } else {
+                base.PostgreSQLNamespace
+                    .as_ref()
+                    .map_or(&base.Name.O, |(_, name)| name)
+            };
+            sql.push_str(&format!(" FROM {}.{}", quote(schema), quote(name)));
+        }
+        if let Some(filter) = &self.Filter {
+            sql.push_str(&format!(
+                " WHERE {}",
+                filter.render(base, native, &mut dependencies)?
+            ));
+        }
+        if dependencies.len() != self.RelationColumns.len()
+            || dependencies
+                .iter()
+                .any(|id| !self.RelationColumns.iter().any(|(bound, _)| bound == id))
+        {
+            return None;
+        }
+        Some(sql)
     }
 }
 

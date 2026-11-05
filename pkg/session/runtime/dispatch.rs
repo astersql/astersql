@@ -2242,23 +2242,20 @@ impl ConcreteSession {
             } else {
                 create.ViewName.Schema.L.clone()
             };
-            if create.OrReplace
+            let replacing = create.OrReplace
                 && self
-                    .mdl_stats_table(&database, &create.ViewName.Name.L)
-                    .is_some()
-            {
-                self.domain
-                    .ddl_drop_tables(
-                        vec![(database.clone(), create.ViewName.Name.L.clone())],
-                        false,
-                    )
-                    .map_err(|error| session_error("replace view", error))?;
-            }
+                    .mdl_stats_table(&database, &create.ViewName.Name.O)
+                    .is_some();
             let resolved_columns = if create.Cols.is_empty() {
-                Some(
+                Some(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    self.relational_query_node_result_fields(create.Select.as_ref(), &[])?
+                        .into_iter()
+                        .map(|f| f.column_as_name.O)
+                        .collect()
+                } else {
                     self.execute_view_definition_node(create.Select.as_ref())?
-                        .columns,
-                )
+                        .columns
+                })
             } else {
                 None
             };
@@ -2267,6 +2264,15 @@ impl ConcreteSession {
                 table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
                 table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
                 table.ExactName = true;
+                self.bind_postgresql_view(create, &mut table)?;
+            }
+            if replacing {
+                self.domain
+                    .ddl_drop_tables(
+                        vec![(database.clone(), create.ViewName.Name.O.clone())],
+                        false,
+                    )
+                    .map_err(|error| session_error("replace view", error))?;
             }
             self.domain
                 .ddl_create_table(&database, table, false)

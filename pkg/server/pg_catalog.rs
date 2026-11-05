@@ -2388,11 +2388,54 @@ impl CatalogQuery {
                                 && i64::from(crate::pg_oid::table_oid(model.ID)?) == oid
                             {
                                 if let Some(view) = &model.View {
-                                    // Return the persisted source, never infer a definition
-                                    // from columns or pretty-print through a different parser.
+                                    crate::pg_name::stored_view_select(&view.SelectStmt).map_err(
+                                        |_| {
+                                            database_identity_unavailable(
+                                                "invalid stored view source",
+                                            )
+                                        },
+                                    )?;
+                                    let bound = model.PostgreSQLView.as_ref().ok_or_else(|| {
+                                        database_identity_unavailable(
+                                            "view has no bound PostgreSQL definition",
+                                        )
+                                    })?;
+                                    let tables =
+                                        snapshot.SchemaTableInfos(&schema.name).map_err(|e| {
+                                            database_identity_unavailable(&e.to_string())
+                                        })?;
+                                    let base = bound.RelationID.and_then(|id| {
+                                        tables
+                                            .iter()
+                                            .filter_map(|t| t.model_meta.as_deref())
+                                            .find(|t| t.ID == id)
+                                    });
+                                    let facts = execution
+                                        .context
+                                        .pg_namespace_facts()
+                                        .transpose()?
+                                        .unwrap_or_default();
+                                    let namespace =
+                                        match base.and_then(|t| t.PostgreSQLNamespace.as_ref()) {
+                                            Some((id, _)) => facts
+                                                .iter()
+                                                .find(|f| f.id == *id)
+                                                .map(|f| f.name.as_str())
+                                                .ok_or_else(|| {
+                                                    database_identity_unavailable(
+                                                        "view namespace is unavailable",
+                                                    )
+                                                })?,
+                                            None => "public",
+                                        };
                                     definition = Value::Text(
-                                        crate::pg_name::stored_view_select(&view.SelectStmt)
-                                            .map_err(|(_, message)| ConnError::Session(message))?,
+                                        bound.render(model, base, namespace, false).ok_or_else(
+                                            || {
+                                                database_identity_unavailable(
+                                                    "view binding is unavailable or incompatible",
+                                                )
+                                            },
+                                        )?,
                                     );
                                 }
                                 break;

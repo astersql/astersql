@@ -6981,3 +6981,289 @@ fn pg13_024_contract() {
         "pg13_024_contract: modes=2 insert_null=2 update=2 rename=2 durable_identity=2 serde=2 corrupt_models=8 native_generated_reject=1 unsupported_ddl=1 reject_recovery=1 empty_describe=1 cleanup=1"
     );
 }
+
+// Bound view creation, introspection, and execution share the same model.
+#[test]
+fn pg13_025_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_025_probe").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_025_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err(), "listener leaked");
+        println!("TASK25_CLEANUP database_dropped=true listener_closed=true");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_025_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let got = query(socket, sql);
+        assert!(!got.iter().any(|(t, _)| *t == b'E'), "{sql}: {got:?}");
+        assert_eq!(got.last(), Some(&(b'Z', vec![b'I'])));
+        got
+    }
+    fn definition(socket: &mut TcpStream, name: &str) -> String {
+        let got = ok(
+            socket,
+            &format!("SELECT pg_get_viewdef(c.oid) FROM pg_class c WHERE c.relname='{name}'"),
+        );
+        assert_eq!(columns(&got[0].1)[0].1, 25);
+        let rows: Vec<_> = got.iter().filter(|(t, _)| *t == b'D').collect();
+        assert_eq!(rows.len(), 1);
+        let len = i32::from_be_bytes(rows[0].1[2..6].try_into().unwrap());
+        assert!(len > 0);
+        String::from_utf8(rows[0].1[6..6 + len as usize].to_vec()).unwrap()
+    }
+    for sql in [
+        "CREATE TABLE public.view_base (id integer,label text)",
+        "INSERT INTO public.view_base VALUES (1,'AS WITH LOCAL CHECK OPTION'),(2,NULL)",
+        "CREATE VIEW public.\"ViewAS\" (\"ID\",\"Label\") AS /* AS ignored */ SELECT id AS \"ID\",label AS \"Label\" FROM public.view_base WHERE id>0 WITH LOCAL CHECK OPTION",
+        "CREATE VIEW public.view_simple AS SELECT id,label FROM public.view_base WHERE id>0",
+    ] {
+        ok(&mut socket, sql);
+    }
+    let original = ok(&mut socket, "SELECT * FROM public.\"ViewAS\"");
+    assert_eq!(
+        columns(&original[0].1),
+        vec![("ID".into(), 23), ("Label".into(), 25)]
+    );
+    assert_eq!(
+        original[1],
+        (b'D', row(&[Some("1"), Some("AS WITH LOCAL CHECK OPTION")]))
+    );
+    assert_eq!(original[2], (b'D', row(&[Some("2"), None])));
+    // Retain the original red input: view_simple's returned SELECT must create
+    // an executable clone through the same PostgreSQL listener.
+    let simple_definition = definition(&mut socket, "view_simple");
+    ok(
+        &mut socket,
+        &format!("CREATE VIEW public.view_clone AS {simple_definition}"),
+    );
+    let simple = ok(&mut socket, "SELECT * FROM public.view_simple");
+    let cloned_simple = ok(&mut socket, "SELECT * FROM public.view_clone");
+    assert_eq!(columns(&simple[0].1), columns(&cloned_simple[0].1));
+    assert_eq!(
+        simple
+            .iter()
+            .filter(|(t, _)| *t == b'D')
+            .collect::<Vec<_>>(),
+        cloned_simple
+            .iter()
+            .filter(|(t, _)| *t == b'D')
+            .collect::<Vec<_>>()
+    );
+    ok(&mut socket, "DROP VIEW public.view_clone");
+    let mut scenarios = 2;
+    for (name, sql, expected) in [
+        (
+            "as",
+            "CREATE VIEW public.\"as\" AS SELECT 'AS WITH CASCADED CHECK OPTION' AS \"aS\"",
+            25,
+        ),
+        (
+            "view_cascade",
+            "CREATE VIEW public.view_cascade AS SELECT id FROM public.view_base WHERE id>0 WITH CASCADED CHECK OPTION",
+            23,
+        ),
+        (
+            "view_default",
+            "CREATE VIEW public.view_default AS SELECT id FROM public.view_base WHERE id>0 WITH CHECK OPTION",
+            23,
+        ),
+    ] {
+        ok(&mut socket, sql);
+        let def = definition(&mut socket, name);
+        ok(
+            &mut socket,
+            &format!("CREATE VIEW public.clone_lex AS {def}"),
+        );
+        let source = ok(&mut socket, &format!("SELECT * FROM public.\"{name}\""));
+        let clone = ok(&mut socket, "SELECT * FROM public.clone_lex");
+        assert_eq!(columns(&source[0].1), columns(&clone[0].1));
+        assert_eq!(columns(&clone[0].1)[0].1, expected);
+        assert_eq!(
+            source
+                .iter()
+                .filter(|(t, _)| *t == b'D')
+                .collect::<Vec<_>>(),
+            clone.iter().filter(|(t, _)| *t == b'D').collect::<Vec<_>>()
+        );
+        ok(&mut socket, "DROP VIEW public.clone_lex");
+        scenarios += 1;
+    }
+    for sql in [
+        "CREATE SCHEMA view_shadow",
+        "CREATE TABLE view_shadow.view_base(id integer,label text)",
+        "INSERT INTO view_shadow.view_base VALUES(99,'shadow')",
+        "SET search_path TO view_shadow,public,pg_catalog",
+    ] {
+        ok(&mut socket, sql);
+    }
+    let def = definition(&mut socket, "ViewAS");
+    ok(
+        &mut socket,
+        &format!("CREATE VIEW public.view_clone AS {def}"),
+    );
+    let clone = ok(&mut socket, "SELECT * FROM public.view_clone");
+    assert_eq!(columns(&original[0].1), columns(&clone[0].1));
+    assert_eq!(
+        original
+            .iter()
+            .filter(|(t, _)| *t == b'D')
+            .collect::<Vec<_>>(),
+        clone.iter().filter(|(t, _)| *t == b'D').collect::<Vec<_>>()
+    );
+    let shadow = ok(&mut socket, "SELECT * FROM view_shadow.view_base");
+    assert_eq!(shadow[1], (b'D', row(&[Some("99"), Some("shadow")])));
+    ok(&mut socket, "SET search_path TO public,pg_catalog");
+    ok(
+        &mut socket,
+        "ALTER TABLE public.view_base RENAME COLUMN label TO renamed_label",
+    );
+    assert!(definition(&mut socket, "ViewAS").contains("renamed_label"));
+    let after = ok(&mut socket, "SELECT * FROM public.\"ViewAS\"");
+    assert_eq!(original, after);
+    scenarios += 2;
+    let models = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_025_probe"))
+        .unwrap();
+    let view = models
+        .iter()
+        .find(|t| t.name.original == "ViewAS")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let base = models
+        .iter()
+        .find(|t| t.name.lower == "view_base")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let serialized = serde_json::to_vec(view.as_ref()).unwrap();
+    let restored: astersql_meta_model::TableInfo = serde_json::from_slice(&serialized).unwrap();
+    assert_eq!(serialized, serde_json::to_vec(&restored).unwrap());
+    definition(&mut socket, "ViewAS");
+    let fresh_models = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_025_probe"))
+        .unwrap();
+    let fresh_view = fresh_models
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|t| t.ID == restored.ID)
+        .unwrap();
+    assert_eq!(
+        serialized,
+        serde_json::to_vec(fresh_view.as_ref()).unwrap(),
+        "introspection must not migrate or mutate shared view metadata"
+    );
+    assert!(
+        restored
+            .PostgreSQLView
+            .as_ref()
+            .unwrap()
+            .render(&restored, Some(base), "public", false)
+            .is_some()
+    );
+    for n in 0..5 {
+        let mut bad = restored.clone();
+        match n {
+            0 => bad.View.as_mut().unwrap().SelectStmt = "DROP TABLE view_base".into(),
+            1 => bad.View.as_mut().unwrap().SelectStmt = "SELECT 1; SELECT 2".into(),
+            2 => bad.PostgreSQLView.as_mut().unwrap().RelationID = Some(-1),
+            3 => bad.PostgreSQLView.as_mut().unwrap().RelationColumns[0].0 = -1,
+            _ => bad.View.as_mut().unwrap().Cols[0] = astersql_meta_model::ast::NewCIStr("bad"),
+        }
+        assert!(
+            bad.PostgreSQLView
+                .as_ref()
+                .unwrap()
+                .render(&bad, Some(base), "public", false)
+                .is_none(),
+            "corrupt model {n}"
+        );
+    }
+    native.execute("CREATE VIEW pg13_025_probe.view_native AS SELECT IFNULL(renamed_label,'x') AS label FROM pg13_025_probe.view_base").unwrap();
+    let rejected = query(
+        &mut socket,
+        "SELECT pg_get_viewdef(c.oid) FROM pg_class c WHERE c.relname='view_native'",
+    );
+    assert!(
+        rejected
+            .iter()
+            .any(|(t, b)| *t == b'E' && b.windows(6).any(|s| s == b"0A000\0")),
+        "{rejected:?}"
+    );
+    assert!(!rejected.iter().any(|(t, _)| *t == b'D'));
+    let empty = ok(
+        &mut socket,
+        "SELECT pg_get_viewdef(c.oid) FROM pg_class c WHERE c.oid=0",
+    );
+    assert_eq!(columns(&empty[0].1)[0].1, 25);
+    assert!(!empty.iter().any(|(t, _)| *t == b'D'));
+    let nulls = ok(
+        &mut socket,
+        "SELECT pg_get_viewdef(NULL::oid),pg_get_viewdef(0::oid)",
+    );
+    assert_eq!(nulls[1], (b'D', row(&[None, None])));
+    // Removing a dependency must never retarget an old view to a same-name table.
+    for sql in [
+        "DROP TABLE public.view_base",
+        "CREATE TABLE public.view_base(id integer,label text)",
+        "INSERT INTO public.view_base VALUES(77,'replacement')",
+    ] {
+        ok(&mut socket, sql);
+    }
+    for sql in [
+        "SELECT * FROM public.view_simple",
+        "SELECT pg_get_viewdef(c.oid) FROM pg_class c WHERE c.relname='view_simple'",
+    ] {
+        let got = query(&mut socket, sql);
+        assert!(
+            got.iter()
+                .any(|(t, b)| *t == b'E' && b.windows(6).any(|s| s == b"0A000\0")),
+            "{sql}: {got:?}"
+        );
+        assert!(!got.iter().any(|(t, _)| *t == b'D'));
+    }
+    ok(&mut socket, "SELECT 1");
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    println!(
+        "pg13_025_contract: positive_scenarios={scenarios} corrupt_models=5 native_reject=1 missing_dependency=2 null=2 empty_describe=1 recovery=1 serde=1 cleanup=1"
+    );
+}

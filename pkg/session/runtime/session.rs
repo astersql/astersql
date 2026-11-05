@@ -3650,3 +3650,228 @@ impl ConcreteSession {
             astersql_sessionctx_vardef::ClusteredIndexDefModeIntOnly;
     }
 }
+
+impl ConcreteSession {
+    /// Capture a small SELECT using the existing AST, type binder and CHECK syntax.
+    pub(super) fn bind_postgresql_view(
+        &self,
+        create: &ast::CreateViewStmt,
+        view: &mut astersql_meta_model::TableInfo,
+    ) -> SessionResult<()> {
+        use astersql_meta_model::{PostgreSQLCheckExpression as B, PostgreSQLView};
+        let unsupported = || {
+            super::query::pg_union_error("unsupported PostgreSQL bound view definition", "0A000")
+        };
+        let select = create
+            .Select
+            .as_any()
+            .downcast_ref::<ast::SelectStmt>()
+            .ok_or_else(unsupported)?;
+        if create.Security != ast::ViewSecurity::Definer
+            || select.Distinct
+            || !select.GroupBy.is_empty()
+            || select.Having.is_some()
+            || !select.OrderBy.is_empty()
+            || select.Limit.is_some()
+            || select.With.is_some()
+            || select.lock_info.is_some()
+            || !select.WindowSpecs.is_empty()
+            || select.SelectIntoOpt.is_some()
+            || !select.Lists.is_empty()
+        {
+            return Err(unsupported());
+        }
+        let base = if let Some(from) = &select.From {
+            let join = &from.TableRefs;
+            if join.Right.is_some()
+                || join.On.is_some()
+                || !join.Using.is_empty()
+                || join.NaturalJoin
+            {
+                return Err(unsupported());
+            }
+            let Some(ast::ResultSetNode::TableSource(source)) = join.Left.as_deref() else {
+                return Err(unsupported());
+            };
+            if source.QuerySource.is_some()
+                || source.FunctionSource.is_some()
+                || !source.AsName.O.is_empty()
+                || source.TableSample.is_some()
+                || source.AsOf.is_some()
+                || source.Lateral
+                || !source.ColumnNames.is_empty()
+            {
+                return Err(unsupported());
+            }
+            let database = self.current_database();
+            if !source.Source.Schema.O.is_empty() && source.Source.Schema.O != database {
+                return Err(unsupported());
+            }
+            let (_, base) = self
+                .mdl_stats_table(&database, relation_name(&source.Source))
+                .ok_or_else(unsupported)?;
+            if base.View.is_some() || base.Sequence.is_some() {
+                return Err(unsupported());
+            }
+            if !self.information_schema_table_visible(&database, &base.Name.O) {
+                return Err(super::pg_schema::namespace_error(
+                    "42501",
+                    "permission denied for view source",
+                ));
+            }
+            Some(base)
+        } else {
+            None
+        };
+        let empty = astersql_meta_model::TableInfo::default();
+        let base_model = base.as_ref().unwrap_or(&empty);
+        // The wire name rewriter already bound relations to their storage names.
+        // Normalize only this resolved source's column qualifiers before CHECK binding.
+        let bind = |expression: &ast::ExprNode| {
+            let mut expression = expression.clone();
+            fn normalize(
+                e: &mut ast::ExprNode,
+                table: &astersql_meta_model::TableInfo,
+                database: &str,
+            ) -> bool {
+                match &mut e.Kind {
+                    ast::ExprKind::Column(c) => {
+                        if (!c.Table.O.is_empty() && c.Table.O != table.Name.O)
+                            || (!c.Schema.O.is_empty() && c.Schema.O != database)
+                        {
+                            return false;
+                        }
+                        c.Table = ast::NewCIStr("");
+                        c.Schema = ast::NewCIStr("");
+                        true
+                    }
+                    ast::ExprKind::Value(_) => true,
+                    ast::ExprKind::Parentheses(e) => normalize(e, table, database),
+                    ast::ExprKind::Binary { L, R, .. } => {
+                        normalize(L, table, database) && normalize(R, table, database)
+                    }
+                    ast::ExprKind::Unary { V, .. } => normalize(V, table, database),
+                    ast::ExprKind::IsNull { Expr, .. } => normalize(Expr, table, database),
+                    _ => false,
+                }
+            }
+            if !normalize(&mut expression, base_model, &self.current_database()) {
+                return Err(unsupported());
+            }
+            super::ddl::pg_bind_check_expression(&expression, base_model)
+        };
+        let mut expressions = Vec::new();
+        for field in &select.Fields.Fields {
+            if field.WildCard.is_some() {
+                if base.is_none() {
+                    return Err(unsupported());
+                }
+                expressions.extend(
+                    base_model
+                        .Columns
+                        .iter()
+                        .filter(|c| !c.Hidden && c.State == astersql_meta_model::StatePublic)
+                        .map(|c| B::Column(c.ID)),
+                );
+            } else {
+                let expression = bind(field.Expr.as_ref().ok_or_else(unsupported)?)?;
+                if !matches!(expression, B::Column(_) | B::Literal(_)) {
+                    return Err(unsupported());
+                }
+                expressions.push(expression);
+            }
+        }
+        let fields = self.relational_query_node_result_fields(create.Select.as_ref(), &[])?;
+        if fields.len() != expressions.len() || fields.len() != view.Columns.len() {
+            return Err(unsupported());
+        }
+        let mut projection = Vec::new();
+        for ((expression, field), column) in
+            expressions.into_iter().zip(fields).zip(&mut view.Columns)
+        {
+            let mut tp = field.column.FieldType;
+            // SQL unknown string/NULL projections resolve to text in a stored view.
+            if matches!(
+                tp.GetType(),
+                astersql_parser_mysql::r#type::TypeNull
+                    | astersql_parser_mysql::r#type::TypeVarString
+                    | astersql_parser_mysql::r#type::TypeString
+                    | astersql_parser_mysql::r#type::TypeVarchar
+            ) {
+                tp = astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeVarString,
+                );
+                tp.SetPostgreSQLTextOid(25);
+            }
+            if (tp.GetType() != astersql_parser_mysql::r#type::TypeLong
+                && tp.PostgreSQLTextOid() != Some(25))
+                || astersql_parser_mysql::r#type::HasUnsignedFlag(tp.GetFlag())
+            {
+                return Err(unsupported());
+            }
+            column.FieldType = tp.clone();
+            projection.push((expression, tp));
+        }
+        let filter = select.Where.as_ref().map(bind).transpose()?;
+        // Keep predicates inside the existing signed-int4 CHECK contract. Native
+        // text collations and numeric truthiness do not establish PG equivalence.
+        fn int4_operand(e: &B, table: &astersql_meta_model::TableInfo) -> bool {
+            match e {
+                B::Column(id) => table.Columns.iter().any(|c| {
+                    c.ID == *id
+                        && c.GetType() == astersql_parser_mysql::r#type::TypeLong
+                        && !astersql_parser_mysql::r#type::HasUnsignedFlag(c.GetFlag())
+                }),
+                B::Literal(v) => v.parse::<i32>().is_ok() || v.eq_ignore_ascii_case("NULL"),
+                _ => false,
+            }
+        }
+        fn predicate(e: &B, table: &astersql_meta_model::TableInfo) -> bool {
+            match e {
+                B::Binary(op, l, r)
+                    if ["=", "<>", "!=", ">", "<", ">=", "<="].contains(&op.as_str()) =>
+                {
+                    int4_operand(l, table) && int4_operand(r, table)
+                }
+                B::Binary(op, l, r) if op == "AND" || op == "OR" => {
+                    predicate(l, table) && predicate(r, table)
+                }
+                B::Unary(op, v) if op == "NOT" => predicate(v, table),
+                B::IsNull(_, v) => matches!(v.as_ref(), B::Column(_) | B::Literal(_)),
+                B::Literal(v) => ["TRUE", "FALSE", "NULL"]
+                    .iter()
+                    .any(|b| v.eq_ignore_ascii_case(b)),
+                _ => false,
+            }
+        }
+        if filter.as_ref().is_some_and(|f| !predicate(f, base_model)) {
+            return Err(unsupported());
+        }
+        let mut dependencies = Vec::new();
+        for e in projection.iter().map(|(e, _)| e).chain(filter.iter()) {
+            e.render(base_model, false, &mut dependencies)
+                .ok_or_else(unsupported)?;
+        }
+        let relation_columns = dependencies
+            .into_iter()
+            .map(|id| {
+                let column = base_model
+                    .Columns
+                    .iter()
+                    .find(|c| c.ID == id)
+                    .ok_or_else(unsupported)?;
+                Ok((id, column.FieldType.clone()))
+            })
+            .collect::<SessionResult<Vec<_>>>()?;
+        let stored = view.View.as_ref().ok_or_else(unsupported)?;
+        view.PostgreSQLView = Some(PostgreSQLView {
+            RelationID: base.as_ref().map(|t| t.ID),
+            RelationColumns: relation_columns,
+            Projection: projection,
+            Filter: filter,
+            SourceSQL: stored.SelectStmt.clone(),
+            CheckOption: stored.CheckOption,
+        });
+        Ok(())
+    }
+}

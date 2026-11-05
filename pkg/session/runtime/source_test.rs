@@ -1,6 +1,8 @@
 // Copyright 2026 AsterSQL.
 
 use super::*;
+use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+use astersql_parser_ast as ast;
 
 #[test]
 fn distinct_is_applied_before_order_by_and_limit() {
@@ -189,4 +191,74 @@ fn integer_non_equi_join_preserves_exact_comparison_and_outer_rows() {
         query("select l.id,r.id from integer_left l left join integer_right r on l.k>r.k"),
         query("select l.id,r.id from integer_left l left join integer_right r on not(l.k<=r.k)")
     );
+}
+
+#[test]
+fn pg13_025_view_binding_uses_shared_executor() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session
+        .execute("CREATE TABLE view_binding_base(id integer,label text)")
+        .unwrap();
+    session
+        .execute("INSERT INTO view_binding_base VALUES(1,'one')")
+        .unwrap();
+    session
+        .execute("CREATE VIEW view_binding AS SELECT id,label FROM view_binding_base WHERE id>0")
+        .unwrap();
+    let (_, before) = domain.stats_table("test", "view_binding").unwrap();
+    assert!(before.PostgreSQLView.is_some());
+    assert_eq!(
+        session
+            .describe_result_fields("SELECT * FROM view_binding")
+            .unwrap()[0]
+            .column
+            .FieldType
+            .GetType(),
+        astersql_parser_mysql::r#type::TypeLong
+    );
+    assert!(
+        session
+            .execute(
+                "CREATE OR REPLACE VIEW view_binding AS SELECT id+1 AS n FROM view_binding_base"
+            )
+            .is_err()
+    );
+    let (_, after) = domain.stats_table("test", "view_binding").unwrap();
+    assert_eq!(
+        before.ID, after.ID,
+        "unsupported replacement must not drop the original"
+    );
+    session
+        .execute("ALTER TABLE view_binding_base RENAME COLUMN label TO renamed")
+        .unwrap();
+    let mut rows = session.execute("SELECT * FROM view_binding").unwrap();
+    assert_eq!(rows[0].next_row().unwrap().unwrap(), ["1", "one"]);
+    session.execute("DROP TABLE view_binding_base").unwrap();
+    session
+        .execute("CREATE TABLE view_binding_base(id integer,label text)")
+        .unwrap();
+    session
+        .execute("INSERT INTO view_binding_base VALUES(77,'replacement')")
+        .unwrap();
+    assert!(session.execute("SELECT * FROM view_binding").is_err());
+    session.execute("DROP VIEW view_binding").unwrap();
+    session.execute("DROP TABLE view_binding_base").unwrap();
+}
+
+#[test]
+fn pg13_025_unsupported_view_predicates_do_not_publish() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session
+        .execute("CREATE TABLE view_predicate_base(id integer,label text)")
+        .unwrap();
+    for condition in ["id", "label='A'", "id+1>0"] {
+        let sql = format!(
+            "CREATE VIEW bad_view_predicate AS SELECT id FROM view_predicate_base WHERE {condition}"
+        );
+        assert!(session.execute(&sql).is_err(), "{sql}");
+        assert!(domain.stats_table("test", "bad_view_predicate").is_none());
+    }
+    session.execute("DROP TABLE view_predicate_base").unwrap();
 }

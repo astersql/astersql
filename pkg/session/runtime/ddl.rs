@@ -4779,7 +4779,7 @@ impl ConcreteSession {
 mod pg12_ddl_probe_test;
 
 /// Bind the supported CHECK syntax from the parser AST to durable column IDs.
-fn pg_bind_check_expression(
+pub(super) fn pg_bind_check_expression(
     expression: &ast::ExprNode,
     table: &astersql_meta_model::TableInfo,
 ) -> SessionResult<astersql_meta_model::PostgreSQLCheckExpression> {
