@@ -7516,3 +7516,309 @@ fn pg13_026_contract() {
         original.ID
     );
 }
+
+// Task 27: real shared metadata and TCP sequence declaration contract.
+#[test]
+fn pg13_027_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_027_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_027_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG27 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_027_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let mut typed_created = 0;
+    for (sql, typed) in [
+        (
+            "CREATE SEQUENCE public.probe_i AS integer START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 1 NO CYCLE",
+            true,
+        ),
+        (
+            "CREATE SEQUENCE public.probe_b AS bigint START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 1 NO CYCLE",
+            true,
+        ),
+        (
+            "CREATE SEQUENCE public.probe_default START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 1 NO CYCLE",
+            false,
+        ),
+        (
+            "CREATE SEQUENCE public.probe_bad MINVALUE 10 MAXVALUE 1",
+            false,
+        ),
+        (
+            "CREATE SEQUENCE public.probe_big_edge AS bigint MINVALUE 1 MAXVALUE 9223372036854775807",
+            false,
+        ),
+        (
+            "CREATE SEQUENCE public.probe_small_range AS bigint START WITH 7 MINVALUE 1 MAXVALUE 2147483647 CACHE 2 CYCLE",
+            false,
+        ),
+        (
+            "CREATE TABLE public.probe_identity(id integer GENERATED ALWAYS AS IDENTITY)",
+            false,
+        ),
+        (
+            "SELECT c.oid,c.relname,c.relkind,s.seqtypid,s.seqstart,s.seqincrement,s.seqmin,s.seqmax,s.seqcache,s.seqcycle FROM pg_catalog.pg_class c JOIN pg_catalog.pg_sequence s ON c.oid=s.seqrelid ORDER BY c.relname",
+            false,
+        ),
+        ("SELECT nextval('public.probe_default'::regclass)", false),
+        (
+            "SELECT seqtypid,seqstart,seqincrement,seqmin,seqmax,seqcache,seqcycle FROM pg_catalog.pg_sequence",
+            false,
+        ),
+        ("SELECT currval('public.probe_default'::regclass)", false),
+        ("SELECT nextval('public.probe_default'::regclass)", false),
+    ] {
+        let messages = query(&mut socket, sql);
+        println!("PG27 SQL={sql}");
+        for (tag, body) in &messages {
+            println!(
+                "PG27 wire={} bytes={body:?} text={}",
+                *tag as char,
+                String::from_utf8_lossy(body)
+            );
+        }
+        assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+        if typed && messages.iter().all(|m| m.0 != b'E') {
+            typed_created += 1;
+        }
+    }
+    let tables = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(
+            "pg13_027_contract_probe",
+        ))
+        .unwrap();
+    for table in tables {
+        if let Some(model) = &table.model_meta {
+            println!("PG27 MODEL={}", serde_json::to_string(model).unwrap());
+        }
+    }
+    println!("PG27 scenarios=12 typed_create_success={typed_created}/2");
+    assert_eq!(
+        typed_created, 2,
+        "required standalone AS integer/bigint capability missing"
+    );
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let out = query(socket, sql);
+        assert!(out.iter().all(|m| m.0 != b'E'), "{sql}: {out:?}");
+        assert_eq!(out.last(), Some(&(b'Z', vec![b'I'])));
+        out
+    }
+    fn data(out: &[(u8, Vec<u8>)]) -> Vec<Vec<Option<String>>> {
+        out.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| {
+                let mut offset = 2;
+                (0..u16::from_be_bytes(m.1[..2].try_into().unwrap()))
+                    .map(|_| {
+                        let size = i32::from_be_bytes(m.1[offset..offset + 4].try_into().unwrap());
+                        offset += 4;
+                        if size < 0 {
+                            None
+                        } else {
+                            let v = String::from_utf8(m.1[offset..offset + size as usize].to_vec())
+                                .unwrap();
+                            offset += size as usize;
+                            Some(v)
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+    let projection = "seqrelid,seqtypid,seqstart,seqincrement,seqmin,seqmax,seqcache,seqcycle";
+    for (name, typ, start, inc, min, max, cache, cycle) in [
+        ("probe_i", "23", "7", "3", "1", "100", "1", "f"),
+        ("probe_b", "20", "7", "3", "1", "100", "1", "f"),
+        (
+            "probe_identity__identity_1",
+            "23",
+            "1",
+            "1",
+            "1",
+            "2147483647",
+            "1",
+            "f",
+        ),
+        (
+            "probe_small_range",
+            "20",
+            "7",
+            "1",
+            "1",
+            "2147483647",
+            "2",
+            "t",
+        ),
+    ] {
+        let class = ok(
+            &mut socket,
+            &format!("SELECT oid FROM pg_class WHERE relname='{name}'"),
+        );
+        let oid = data(&class)[0][0].clone().unwrap();
+        let result = ok(
+            &mut socket,
+            &format!("SELECT {projection} FROM pg_catalog.pg_sequence WHERE seqrelid={oid}"),
+        );
+        assert_eq!(
+            data(&result),
+            vec![vec![
+                Some(oid.clone()),
+                Some(typ.into()),
+                Some(start.into()),
+                Some(inc.into()),
+                Some(min.into()),
+                Some(max.into()),
+                Some(cache.into()),
+                Some(cycle.into())
+            ]]
+        );
+        let desc = &result.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(desc).iter().map(|c| c.1).collect::<Vec<_>>(),
+            vec![26, 26, 20, 20, 20, 20, 20, 16]
+        );
+        for predicate in ["0".to_string(), "NULL::oid".to_string()] {
+            let empty = ok(
+                &mut socket,
+                &format!(
+                    "SELECT {projection} FROM pg_catalog.pg_sequence WHERE seqrelid={predicate}"
+                ),
+            );
+            assert!(data(&empty).is_empty());
+            assert_eq!(&empty.iter().find(|m| m.0 == b'T').unwrap().1, desc);
+        }
+    }
+    for (name, decl, typ, maximum) in [
+        ("probe_h", "smallint", "21", "32767"),
+        ("probe_def", "bigint", "20", "9223372036854775807"),
+    ] {
+        ok(
+            &mut socket,
+            &format!("CREATE SEQUENCE public.{name} AS {decl}"),
+        );
+        let r = ok(
+            &mut socket,
+            &format!(
+                "SELECT seqtypid,seqmax FROM pg_sequence WHERE seqrelid='public.{name}'::regclass::oid"
+            ),
+        );
+        assert_eq!(data(&r), vec![vec![Some(typ.into()), Some(maximum.into())]]);
+    }
+    // Invalid parameters never publish a shared relation and permit immediate recovery.
+    for (name, options) in [
+        ("range", "AS smallint MAXVALUE 32768"),
+        ("start", "AS integer MINVALUE 1 MAXVALUE 10 START WITH 11"),
+        ("zero", "INCREMENT BY 0"),
+        ("cache", "CACHE 0"),
+        ("bounds", "MINVALUE 10 MAXVALUE 1"),
+    ] {
+        let r = query(
+            &mut socket,
+            &format!("CREATE SEQUENCE public.bad_{name} {options}"),
+        );
+        let e = &r
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("invalid declaration succeeded")
+            .1;
+        assert!(e.windows(7).any(|s| s == b"C22023\0"), "{r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        assert!(
+            data(&ok(
+                &mut socket,
+                &format!("SELECT oid FROM pg_class WHERE relname='bad_{name}'")
+            ))
+            .is_empty()
+        );
+        ok(&mut socket, "SELECT 1");
+    }
+    let saved = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(
+            "pg13_027_contract_probe",
+        ))
+        .unwrap();
+    let integer = saved
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|t| t.Name.O == "probe_i")
+        .unwrap();
+    assert_eq!(
+        integer.PostgreSQLSequenceType,
+        Some(astersql_meta_model::PostgreSQLSequenceType::Integer)
+    );
+    let encoded = serde_json::to_string(integer).unwrap();
+    let restored: astersql_meta_model::TableInfo = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        restored.PostgreSQLSequenceType,
+        integer.PostgreSQLSequenceType
+    );
+    // The full signed bigint endpoints must allocate once and exhaust without wrapping.
+    for (name, start, increment, min, max) in [
+        ("upper", i64::MAX, 1, i64::MAX - 2, i64::MAX),
+        ("lower", i64::MIN, -1, i64::MIN, i64::MIN + 2),
+    ] {
+        ok(
+            &mut socket,
+            &format!(
+                "CREATE SEQUENCE public.{name} AS bigint START WITH {start} INCREMENT BY {increment} MINVALUE {min} MAXVALUE {max} CACHE 1"
+            ),
+        );
+        let first = ok(
+            &mut socket,
+            &format!("SELECT nextval('public.{name}'::regclass)"),
+        );
+        assert_eq!(data(&first), vec![vec![Some(start.to_string())]]);
+        let end = query(
+            &mut socket,
+            &format!("SELECT nextval('public.{name}'::regclass)"),
+        );
+        assert!(
+            end.iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|s| s == b"C2200H\0")),
+            "{end:?}"
+        );
+    }
+    println!(
+        "pg13_027_contract: declaration=6 identity=1 parameter_rows=4 zero_rows=8 invalid_recovery=5 endpoints=2 model_roundtrip=1"
+    );
+}

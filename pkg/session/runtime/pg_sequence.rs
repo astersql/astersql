@@ -13,6 +13,7 @@ pub enum PgSequenceCommand {
         schema: Option<String>,
         name: String,
         options: String,
+        declared_type: astersql_meta_model::PostgreSQLSequenceType,
     },
     Drop {
         schema: Option<String>,
@@ -142,8 +143,21 @@ impl ConcreteSession {
             database.replace('"', "\"\""),
             physical.replace('"', "\"\"")
         );
-        if let PgSequenceCommand::Create { options, .. } = command {
-            self.execute(&format!("CREATE SEQUENCE {quoted} {options}"))?;
+        if let PgSequenceCommand::Create {
+            options,
+            declared_type,
+            ..
+        } = command
+        {
+            let mut parser = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL);
+            let statement = parser
+                .ParseOneStmt(&format!("CREATE SEQUENCE {quoted} {options}"), "", "")
+                .map_err(|e| namespace_error("42601", &e.to_string()))?;
+            let statement = statement
+                .as_any()
+                .downcast_ref::<ast::CreateSequenceStmt>()
+                .ok_or_else(|| namespace_error("42601", "invalid CREATE SEQUENCE"))?;
+            self.execute_create_sequence_declared(statement, Some(*declared_type))?;
         }
         let table = self
             .domain

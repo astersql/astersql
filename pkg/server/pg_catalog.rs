@@ -1336,6 +1336,7 @@ impl CatalogQuery {
                         ("pg_opclass", 9) => 4,
                         ("pg_attribute", 0) => 1,
                         ("pg_sequence", 0) => 1,
+                        ("pg_sequence", 1) => 2,
                         ("pg_attribute", 3) => 3,
                         ("pg_attribute", 6) => 12,
                         ("pg_attribute", 9) => 15,
@@ -3375,7 +3376,9 @@ fn native_metadata_rows(
             if let Some(sequence) = &model.Sequence {
                 rows.push(vec![
                     Value::Signed(oid),
-                    Value::Signed(20),
+                    Value::Signed(i64::from(sequence_declared_type(
+                        snapshot, database, model,
+                    )?)),
                     Value::Signed(sequence.Start),
                     Value::Signed(sequence.Increment),
                     Value::Signed(sequence.MinValue),
@@ -6240,4 +6243,44 @@ fn namespace_rows_for_context(
             .collect();
     }
     namespace_rows(snapshot, database)
+}
+
+// An identity's durable SequenceID links it to the declared owning column.
+// Independent sequences need their own creation provenance, never range inference.
+fn sequence_declared_type(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    sequence: &astersql_meta_model::TableInfo,
+) -> ConnResult<u32> {
+    if let Some(kind) = sequence.PostgreSQLSequenceType {
+        return Ok(kind.oid());
+    }
+    for table in snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|e| ConnError::Session(e.to_string()))?
+    {
+        if let Some(model) = &table.model_meta {
+            for col in &model.Columns {
+                if col
+                    .PostgreSQLIdentity
+                    .as_ref()
+                    .is_some_and(|i| i.SequenceID == sequence.ID)
+                {
+                    return match col.GetType() {
+                        astersql_meta_model::mysql::TypeShort => Ok(21),
+                        astersql_meta_model::mysql::TypeLong => Ok(23),
+                        astersql_meta_model::mysql::TypeLonglong => Ok(20),
+                        _ => Err(ConnError::UnsupportedCommand(0)),
+                    };
+                }
+            }
+        }
+    }
+    // Native sequence declarations have the native bigint contract. Historical
+    // PG declarations without type provenance are not silently migrated by reads.
+    if sequence.PostgreSQLOwner.is_none() {
+        Ok(20)
+    } else {
+        Err(ConnError::UnsupportedCommand(0))
+    }
 }

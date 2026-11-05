@@ -565,3 +565,27 @@ fn postgresql_bound_view_survives_rename_but_refuses_rebinding() {
             .contains("postgresql_view")
     );
 }
+
+#[test]
+fn pg13_027_sequence_declaration_survives_serialization() {
+    use crate::PostgreSQLSequenceType as T;
+    let legacy: crate::TableInfo =
+        serde_json::from_str(r#"{"sequence":{"sequence_start":7}}"#).unwrap();
+    assert!(legacy.PostgreSQLSequenceType.is_none());
+    for (kind, oid, bounds) in [
+        (T::Smallint, 21, (i16::MIN as i64, i16::MAX as i64)),
+        (T::Integer, 23, (i32::MIN as i64, i32::MAX as i64)),
+        (T::Bigint, 20, (i64::MIN, i64::MAX)),
+    ] {
+        let table = crate::TableInfo {
+            PostgreSQLSequenceType: Some(kind),
+            ..legacy.clone()
+        };
+        let json = serde_json::to_string(&table).unwrap();
+        let restored: crate::TableInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.PostgreSQLSequenceType, Some(kind));
+        assert_eq!(restored.PostgreSQLSequenceType.unwrap().oid(), oid);
+        assert_eq!(kind.bounds(), bounds);
+        assert_eq!(restored.Sequence.unwrap().Start, 7);
+    }
+}

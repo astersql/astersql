@@ -1556,6 +1556,16 @@ impl ConcreteSession {
         &self,
         statement: &ast::CreateSequenceStmt,
     ) -> SessionResult<()> {
+        let declared_type = (self.sql_dialect() == ast::SqlDialect::PostgreSQL)
+            .then_some(astersql_meta_model::PostgreSQLSequenceType::Bigint);
+        self.execute_create_sequence_declared(statement, declared_type)
+    }
+
+    pub(super) fn execute_create_sequence_declared(
+        &self,
+        statement: &ast::CreateSequenceStmt,
+        declared_type: Option<astersql_meta_model::PostgreSQLSequenceType>,
+    ) -> SessionResult<()> {
         let database = if statement.Name.Schema.L.is_empty() {
             self.current_database()
         } else {
@@ -1606,8 +1616,12 @@ impl ConcreteSession {
                 _ => Err(SessionError::new("invalid CREATE SEQUENCE option")),
             })
             .collect::<SessionResult<Vec<_>>>()?;
-        let sequence = astersql_ddl::sequence::build_sequence_info(&options)
-            .map_err(|error| SessionError::new(format!("invalid sequence options: {error}")))?;
+        let sequence = if let Some(kind) = declared_type {
+            pg_declared_sequence(&options, kind)?
+        } else {
+            astersql_ddl::sequence::build_sequence_info(&options)
+                .map_err(|error| SessionError::new(format!("invalid sequence options: {error}")))?
+        };
         let table = astersql_meta_model::TableInfo {
             Name: ast::NewCIStr(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
                 &statement.Name.Name.O
@@ -1628,6 +1642,7 @@ impl ConcreteSession {
             State: astersql_meta_model::StatePublic,
             Charset: "utf8mb4".to_owned(),
             Collate: "utf8mb4_bin".to_owned(),
+            PostgreSQLSequenceType: declared_type,
             Sequence: Some(astersql_meta_model::SequenceInfo {
                 Start: sequence.start,
                 Cache: sequence.cache > 1,
@@ -4832,4 +4847,73 @@ pub(super) fn pg_bind_check_expression(
         }
         _ => return Err(unsupported()),
     })
+}
+
+// PG declarations admit the complete signed endpoint range. Native validation
+// deliberately retains Go's reserved endpoints; allocation is shared and uses i128.
+fn pg_declared_sequence(
+    options: &[astersql_ddl::sequence::SequenceOption],
+    kind: astersql_meta_model::PostgreSQLSequenceType,
+) -> SessionResult<astersql_ddl::sequence::SequenceInfo> {
+    use astersql_ddl::sequence::{SequenceInfo, SequenceOption as O};
+    let error = |message: &str| super::pg_schema::namespace_error("22023", message);
+    let increment = options
+        .iter()
+        .find_map(|o| {
+            if let O::Increment(v) = o {
+                Some(*v)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(1);
+    if increment == 0 {
+        return Err(error("INCREMENT must not be zero"));
+    }
+    let (low, high) = kind.bounds();
+    let mut info = SequenceInfo {
+        start: 0,
+        min_value: if increment > 0 { 1 } else { low },
+        max_value: if increment > 0 { high } else { -1 },
+        increment,
+        cache: 1,
+        cycle: false,
+        comment: String::new(),
+        current: 0,
+    };
+    let mut start = None;
+    for option in options {
+        match option {
+            O::Start(v) => start = Some(*v),
+            O::MinValue(v) => info.min_value = *v,
+            O::MaxValue(v) => info.max_value = *v,
+            O::Cache(v) => info.cache = *v,
+            O::NoCache => info.cache = 1,
+            O::Cycle(v) => info.cycle = *v,
+            O::NoMinValue | O::NoMaxValue | O::Increment(_) => {}
+            _ => return Err(error("unsupported PostgreSQL sequence option")),
+        }
+    }
+    if info.min_value < low
+        || info.min_value > high
+        || info.max_value < low
+        || info.max_value > high
+        || info.min_value >= info.max_value
+    {
+        return Err(error(
+            "sequence bounds are outside the declared type or unordered",
+        ));
+    }
+    info.start = start.unwrap_or(if increment > 0 {
+        info.min_value
+    } else {
+        info.max_value
+    });
+    if info.start < info.min_value || info.start > info.max_value {
+        return Err(error("START is outside sequence bounds"));
+    }
+    if info.cache == 0 {
+        return Err(error("CACHE must be greater than zero"));
+    }
+    Ok(info)
 }

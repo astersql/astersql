@@ -37,16 +37,30 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
             }
             return Ok(Some((Command::Drop { schema, name }, None)));
         }
+        use astersql_meta_model::PostgreSQLSequenceType as Type;
+        let mut declared_type = Type::Bigint;
         if word(tokens.get(i), "as") {
-            if !word(tokens.get(i + 1), "bigint") {
-                return Err(("0A000", "sequence declaration requires bigint".into()));
-            }
+            declared_type = match tokens.get(i + 1) {
+                t if word(t, "smallint") || word(t, "int2") => Type::Smallint,
+                t if word(t, "integer") || word(t, "int") || word(t, "int4") => Type::Integer,
+                t if word(t, "bigint") || word(t, "int8") => Type::Bigint,
+                _ => return Err(("22023", "invalid sequence data type".into())),
+            };
             i += 2;
         }
         let mut options = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         while i < tokens.len() {
             let key = ident(tokens.get(i)).ok_or(("42601", "invalid sequence option".into()))?;
             i += 1;
+            let category = if key == "no" {
+                ident(tokens.get(i)).ok_or(("42601", "expected sequence option".into()))?
+            } else {
+                key.clone()
+            };
+            if !seen.insert(category) {
+                return Err(("42601", "conflicting sequence options".into()));
+            }
             match key.as_str() {
                 "start" | "increment" | "minvalue" | "maxvalue" | "cache" => {
                     if (key == "start" && word(tokens.get(i), "with"))
@@ -72,6 +86,10 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                     i += 1;
                 }
                 "cycle" => options.push("CYCLE".into()),
+                "no" if word(tokens.get(i), "minvalue") || word(tokens.get(i), "maxvalue") => {
+                    options.push(format!("NO {}", ident(tokens.get(i)).unwrap()));
+                    i += 1;
+                }
                 "no" if word(tokens.get(i), "cycle") => {
                     options.push("NO CYCLE".into());
                     i += 1;
@@ -88,6 +106,7 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                 schema,
                 name,
                 options: options.join(" "),
+                declared_type,
             },
             None,
         )));

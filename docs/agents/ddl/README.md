@@ -294,3 +294,21 @@ replacement, rename or drop/recreate read current metadata on new Execute; an
 already materialized portal keeps its existing snapshot. Focused coverage is
 `pg13_026_contract`, `pg13_026_differential`, and the domain test
 `pg13_026_view_replacement_is_atomic_and_preserves_attributes`.
+
+## Rust PostgreSQL sequence declarations
+
+The bounded PG sequence adapter carries an explicit smallint/integer/bigint
+(or default bigint) declaration into `execute_create_sequence_declared`.
+`TableInfo.PostgreSQLSequenceType` and validated parameters are published in the
+same existing `ddl_create_table` operation. PG parameter validation admits the
+full signed type endpoints; native CREATE SEQUENCE retains Go-compatible native
+validation. Both paths reuse the canonical sequence allocator. No read migrates
+legacy metadata or infers a declaration from selected min/max values.
+
+`pg_sequence.seqtypid` consumes that fact. Identity sequences instead use the
+owning column's declared type through its durable `SequenceID` association in the
+same snapshot. Native sequences keep their native bigint contract; historical
+PG independent sequences lacking provenance refuse the type projection rather
+than silently acquire a declaration. Introspection never allocates values.
+Focused coverage is `pg13_027_contract`, `pg13_027_differential`, and the model
+serialization test `pg13_027_sequence_declaration_survives_serialization`.

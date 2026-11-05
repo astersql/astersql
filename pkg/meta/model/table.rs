@@ -247,6 +247,12 @@ pub struct TableInfo {
     /// 序列定义（若本对象是序列）。
     #[serde(rename = "sequence")]
     pub Sequence: Option<SequenceInfo>,
+    /// PG declaration captured before publication; absent on legacy/native sequences.
+    #[serde(
+        rename = "postgresql_sequence_type",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLSequenceType: Option<PostgreSQLSequenceType>,
     /// 表锁信息。
     #[serde(rename = "Lock")]
     pub Lock: Option<TableLockInfo>,
@@ -1147,6 +1153,32 @@ pub const DefaultPositiveSequenceMaxValue: i64 = 9_223_372_036_854_775_806;
 pub const DefaultNegativeSequenceMaxValue: i64 = -1;
 /// 负序列默认最小值。
 pub const DefaultNegativeSequenceMinValue: i64 = -9_223_372_036_854_775_807;
+
+/// Declared PostgreSQL sequence type, independent of its chosen numeric bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PostgreSQLSequenceType {
+    Smallint,
+    Integer,
+    Bigint,
+}
+impl PostgreSQLSequenceType {
+    /// Built-in pg_type identity of this declaration.
+    pub fn oid(self) -> u32 {
+        match self {
+            Self::Smallint => 21,
+            Self::Integer => 23,
+            Self::Bigint => 20,
+        }
+    }
+    /// Inclusive signed bounds admitted by PostgreSQL for this declaration.
+    pub fn bounds(self) -> (i64, i64) {
+        match self {
+            Self::Smallint => (i16::MIN as i64, i16::MAX as i64),
+            Self::Integer => (i32::MIN as i64, i32::MAX as i64),
+            Self::Bigint => (i64::MIN, i64::MAX),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

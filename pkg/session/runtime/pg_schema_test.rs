@@ -163,6 +163,7 @@ fn sequence_allocation_identity_and_recovery() {
     a.pg_schema_command(&PgSchemaCommand::Create("seq_space".into()))
         .unwrap();
     let create = PgSequenceCommand::Create {
+        declared_type: astersql_meta_model::PostgreSQLSequenceType::Bigint,
         schema: Some("seq_space".into()),
         name: "same".into(),
         options: "START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 11 CACHE 1 NO CYCLE".into(),
@@ -232,6 +233,7 @@ fn sequence_set_value_identity_and_recovery() {
     let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     let create = PgSequenceCommand::Create {
+        declared_type: astersql_meta_model::PostgreSQLSequenceType::Bigint,
         schema: None,
         name: "seq_set_local".into(),
         options: "START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE".into(),
@@ -320,6 +322,7 @@ fn sequence_cache_setval_preserves_other_connections() {
     let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     let create = PgSequenceCommand::Create {
+        declared_type: astersql_meta_model::PostgreSQLSequenceType::Bigint,
         schema: None,
         name: "seq_cache_local21".into(),
         options: "START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 3 NO CYCLE".into(),
