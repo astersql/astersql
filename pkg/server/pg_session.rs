@@ -169,6 +169,7 @@ impl PgSession {
                     | "REVOKE"
                     | "ALTER SCHEMA"
                     | "ALTER TABLE"
+                    | "ALTER VIEW"
                     | "TRUNCATE TABLE"
             )
         ) {

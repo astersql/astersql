@@ -363,6 +363,9 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         }
     } else if node.is::<ast::DropIndexStmt>() {
         "DROP INDEX"
+    } else if node.is::<ast::RenameTableStmt>() {
+        // Produced by the bounded ALTER VIEW adapter; raw RENAME is gated there.
+        "ALTER VIEW"
     } else if node.is::<ast::TruncateTableStmt>() {
         "TRUNCATE TABLE"
     } else if node.is::<ast::BeginStmt>() {

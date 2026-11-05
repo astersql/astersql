@@ -668,6 +668,7 @@ impl Resolver<'_> {
             || self.word(i, "drop")
             || self.word(i, "truncate");
         let alter = self.word(i, "alter");
+        let view_rename = alter && self.word(i + 1, "view");
         let create_index = self.word(i, "create")
             && (self.word(i + 1, "index")
                 || self.word(i + 1, "unique") && self.word(i + 2, "index"));
@@ -788,6 +789,20 @@ impl Resolver<'_> {
             } else if self.word(i, "references") || table_ddl && self.word(i, "like") {
                 expect = true;
             } else if alter && table_ddl && self.word(i, "rename") && self.word(i + 1, "to") {
+                // A view rename keeps its existing namespace. Its bare new name
+                // must not be bound in search_path's creation schema.
+                if view_rename {
+                    if let Some(token) = self.tokens.get(i + 2) {
+                        if let Some(name) = &token.name {
+                            self.edits.insert(
+                                token.start,
+                                (token.end, format!("`{}`", name.replace('`', "``"))),
+                            );
+                        }
+                    }
+                    i += 3;
+                    continue;
+                }
                 // RENAME's destination is a declaration, never an existing relation.
                 self.create = true;
                 i += 1;

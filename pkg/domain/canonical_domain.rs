@@ -505,6 +505,93 @@ impl DdlMetadataService {
         })
     }
 
+    /// Replace only a bound PG view in one metadata transaction. Existing output
+    /// attributes, ownership and grants retain the identity of the original view.
+    pub fn replace_postgresql_view(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        expected_id: i64,
+        replacement: TableInfo,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, move |catalog| {
+            let key = (
+                database.to_ascii_lowercase(),
+                catalog_table_name(&replacement),
+            );
+            let old = catalog
+                .tables
+                .get(&key)
+                .ok_or_else(|| kv::errors::New("view changed during replacement"))?;
+            if old.ID != expected_id {
+                return Err(kv::errors::New("view changed during replacement"));
+            }
+            if old.View.is_none()
+                || old.PostgreSQLView.is_none()
+                || replacement.View.is_none()
+                || replacement.PostgreSQLView.is_none()
+            {
+                return Err(kv::errors::New(
+                    "replacement requires a bound PostgreSQL view",
+                ));
+            }
+            // The bound-view slice admits integer and text only. Native flags
+            // and display widths (e.g. nullable column versus literal) are not
+            // part of their PostgreSQL output type identity.
+            if replacement.Columns.len() < old.Columns.len()
+                || old.Columns.iter().zip(&replacement.Columns).any(|(a, b)| {
+                    let same_type = match (
+                        a.FieldType.PostgreSQLTextOid(),
+                        b.FieldType.PostgreSQLTextOid(),
+                    ) {
+                        (Some(25), Some(25)) => true,
+                        (None, None) => a.FieldType.GetType() == 3 && b.FieldType.GetType() == 3,
+                        _ => false,
+                    };
+                    a.Name.O != b.Name.O || !same_type
+                })
+            {
+                return Err(kv::errors::New(
+                    "cannot drop or change existing view columns",
+                ));
+            }
+            let mut updated = old.clone();
+            for (column, replacement) in updated.Columns.iter_mut().zip(&replacement.Columns) {
+                column.FieldType = replacement.FieldType.clone();
+            }
+            let mut next_id = old.Columns.iter().map(|c| c.ID).max().unwrap_or(0);
+            for column in replacement.Columns.iter().skip(old.Columns.len()) {
+                let mut column = column.clone();
+                next_id = next_id
+                    .checked_add(1)
+                    .ok_or_else(|| kv::errors::New("view column identity exhausted"))?;
+                column.ID = next_id;
+                column.Offset = updated.Columns.len() as isize;
+                updated
+                    .PostgreSQLAttributeSlots
+                    .as_mut()
+                    .ok_or_else(|| kv::errors::New("view attribute slots are unavailable"))?
+                    .push((column.ID, false));
+                updated.Columns.push(column);
+            }
+            updated.MaxColumnID = updated.MaxColumnID.max(next_id);
+            let mut definition = replacement.View;
+            if let (Some(previous), Some(next)) = (&old.View, &mut definition) {
+                next.Definer = previous.Definer.clone();
+            }
+            updated.View = definition;
+            updated.PostgreSQLView = replacement.PostgreSQLView;
+            let change = DdlMetadataChange {
+                old_tables: vec![(key.0.clone(), old.clone())],
+                new_tables: vec![(key.0.clone(), updated.clone())],
+                changed: true,
+                ..Default::default()
+            };
+            catalog.tables.insert(key, updated);
+            Ok(change)
+        })
+    }
+
     /// Stage ordinary table metadata on the caller's transaction. No shared
     /// schema is published and the caller retains commit/rollback ownership.
     pub fn stage_create_table(
@@ -845,19 +932,22 @@ impl DdlMetadataService {
         store: &dyn kv::Storage,
         renames: Vec<(String, String, String, String)>,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
-        let renames = renames
-            .into_iter()
-            .map(|(old_database, old_table, new_database, new_table)| {
-                (
-                    (
-                        old_database.to_ascii_lowercase(),
-                        old_table.to_ascii_lowercase(),
-                    ),
-                    (new_database.to_ascii_lowercase(), ast::NewCIStr(&new_table)),
-                )
-            })
-            .collect::<Vec<_>>();
         self.mutate(store, move |catalog| {
+            let renames = renames
+                .into_iter()
+                .map(|(old_db, old_name, new_db, new_name)| {
+                    let db = old_db.to_ascii_lowercase();
+                    let key = if catalog.tables.contains_key(&(db.clone(), old_name.clone())) {
+                        old_name
+                    } else {
+                        old_name.to_ascii_lowercase()
+                    };
+                    (
+                        (db, key),
+                        (new_db.to_ascii_lowercase(), ast::NewCIStr(&new_name)),
+                    )
+                })
+                .collect::<Vec<_>>();
             if renames.is_empty() {
                 return Err(kv::errors::New("RENAME TABLE requires at least one table"));
             }
@@ -870,7 +960,15 @@ impl DdlMetadataService {
                         source.0, source.1
                     )));
                 }
-                let target = (database.clone(), table.L.clone());
+                let exact = catalog.tables.get(source).is_some_and(|t| t.ExactName);
+                let target = (
+                    database.clone(),
+                    if exact {
+                        table.O.clone()
+                    } else {
+                        table.L.clone()
+                    },
+                );
                 if !targets.insert(target.clone()) {
                     return Err(kv::errors::New(format!(
                         "duplicate RENAME TABLE target {}.{}",
@@ -903,7 +1001,14 @@ impl DdlMetadataService {
                     .ok_or_else(|| {
                         kv::errors::New(format!("unknown table {old_database}.{old_table}"))
                     })?;
-                let target = (new_database.clone(), new_name.L.clone());
+                let target = (
+                    new_database.clone(),
+                    if table.ExactName {
+                        new_name.O.clone()
+                    } else {
+                        new_name.L.clone()
+                    },
+                );
                 if catalog.tables.contains_key(&target) {
                     return Err(kv::errors::New(format!(
                         "table {}.{} already exists",
@@ -922,6 +1027,14 @@ impl DdlMetadataService {
                 }
                 if table.AutoIDSchemaID == new_database_id {
                     table.AutoIDSchemaID = 0;
+                }
+                if let Some((namespace, logical)) = table.PostgreSQLNamespace.as_mut() {
+                    let prefix = format!("__astersql_pg_{}_", namespace);
+                    *logical = new_name
+                        .O
+                        .strip_prefix(&prefix)
+                        .ok_or_else(|| kv::errors::New("view rename cannot change namespace"))?
+                        .to_owned();
                 }
                 table.Name = new_name;
                 table.DBID = new_database_id;

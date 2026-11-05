@@ -7267,3 +7267,252 @@ fn pg13_025_contract() {
         "pg13_025_contract: positive_scenarios={scenarios} corrupt_models=5 native_reject=1 missing_dependency=2 null=2 empty_describe=1 recovery=1 serde=1 cleanup=1"
     );
 }
+
+// Task 26 exercises real bound view identity and refresh.
+#[test]
+fn pg13_026_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_026_probe").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_026_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err(), "listener leaked");
+        println!("TASK26_CLEANUP database_dropped=true listener_closed=true");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_026_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(r.iter().all(|m| m.0 != b'E'), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        r
+    }
+    fn scalar(s: &mut TcpStream, sql: &str) -> Option<String> {
+        let r = ok(s, sql);
+        assert_eq!(r.iter().filter(|m| m.0 == b'D').count(), 1);
+        let d = &r.iter().find(|m| m.0 == b'D').unwrap().1;
+        let n = i32::from_be_bytes(d[2..6].try_into().unwrap());
+        (n >= 0).then(|| String::from_utf8(d[6..6 + n as usize].to_vec()).unwrap())
+    }
+    fn execute(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        send(
+            s,
+            b'B',
+            &[
+                b"\0refresh\0".as_slice(),
+                &0u16.to_be_bytes(),
+                &0u16.to_be_bytes(),
+                &0u16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[b"\0".as_slice(), &0u32.to_be_bytes()].concat());
+        send(s, b'S', b"");
+        let r = until_ready(s);
+        assert!(r.iter().all(|m| m.0 != b'E'), "{r:?}");
+        r
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.view_base(id integer,label text)",
+    );
+    ok(
+        &mut socket,
+        "INSERT INTO public.view_base VALUES(1,'AS WITH LOCAL CHECK OPTION')",
+    );
+    ok(
+        &mut socket,
+        "CREATE VIEW public.\"ViewAS\" (\"ID\",\"Label\") AS SELECT id,label FROM public.view_base WHERE id>0 WITH LOCAL CHECK OPTION",
+    );
+    let model = || {
+        domain
+            .info_schema()
+            .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_026_probe"))
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.model_meta.clone())
+            .find(|t| t.View.is_some())
+            .unwrap()
+    };
+    let original = model();
+    let oid = scalar(
+        &mut socket,
+        "SELECT oid FROM pg_class WHERE relname='ViewAS'",
+    )
+    .unwrap();
+    for option in ["", ",false", ",true", ",40"] {
+        let def = scalar(
+            &mut socket,
+            &format!("SELECT pg_get_viewdef({oid}::oid{option})"),
+        )
+        .unwrap();
+        ok(&mut socket, &format!("CREATE VIEW public.clone AS {def}"));
+        let clone = ok(&mut socket, "SELECT * FROM public.clone");
+        assert_eq!(
+            columns(&clone[0].1),
+            vec![("ID".into(), 23), ("Label".into(), 25)]
+        );
+        assert_eq!(
+            clone[1],
+            (b'D', row(&[Some("1"), Some("AS WITH LOCAL CHECK OPTION")]))
+        );
+        ok(&mut socket, "DROP VIEW public.clone");
+    }
+    assert_eq!(
+        scalar(
+            &mut socket,
+            "SELECT pg_get_viewdef('public.\"ViewAS\"'::text,true)"
+        ),
+        scalar(&mut socket, &format!("SELECT pg_get_viewdef({oid}::oid)"))
+    );
+    for arg in ["0::oid", "NULL::oid", "'public.view_base'::regclass::oid"] {
+        assert_eq!(
+            scalar(&mut socket, &format!("SELECT pg_get_viewdef({arg})")),
+            None
+        );
+    }
+    assert_eq!(
+        scalar(
+            &mut socket,
+            &format!("SELECT pg_get_viewdef({oid}::oid,NULL::boolean)")
+        ),
+        None
+    );
+    let sql = format!("SELECT pg_get_viewdef({oid}::oid) AS definition");
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"refresh\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Srefresh\0");
+    send(&mut socket, b'S', b"");
+    let parsed = until_ready(&mut socket);
+    assert_eq!(parsed.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+    assert_eq!(columns(&parsed[2].1), vec![("definition".into(), 25)]);
+    ok(
+        &mut socket,
+        "CREATE OR REPLACE VIEW public.\"ViewAS\" (\"ID\",\"Label\") AS SELECT id,label FROM public.view_base WHERE id>1 WITH LOCAL CHECK OPTION",
+    );
+    let updated = model();
+    assert_eq!(updated.ID, original.ID);
+    assert_eq!(updated.PostgreSQLOwner, original.PostgreSQLOwner);
+    assert_eq!(
+        updated.PostgreSQLAttributeSlots,
+        original.PostgreSQLAttributeSlots
+    );
+    let refreshed = execute(&mut socket);
+    assert!(
+        refreshed
+            .iter()
+            .any(|m| m.0 == b'D' && String::from_utf8_lossy(&m.1).contains("> 1")),
+        "{refreshed:?}"
+    );
+    let renamed = ok(
+        &mut socket,
+        "ALTER VIEW public.\"ViewAS\" RENAME TO \"RenamedAS\"",
+    );
+    assert_eq!(renamed[0], (b'C', b"ALTER VIEW\0".to_vec()));
+    assert_eq!(
+        scalar(
+            &mut socket,
+            "SELECT oid FROM pg_class WHERE relname='RenamedAS'"
+        ),
+        Some(oid.clone())
+    );
+    ok(
+        &mut socket,
+        "ALTER TABLE public.view_base RENAME COLUMN label TO renamed_label",
+    );
+    assert!(
+        scalar(&mut socket, &format!("SELECT pg_get_viewdef({oid}::oid)"))
+            .unwrap()
+            .contains("renamed_label")
+    );
+    for sql in [
+        "CREATE OR REPLACE VIEW public.\"RenamedAS\" AS SELECT id AS changed,renamed_label AS \"Label\" FROM public.view_base",
+        "CREATE OR REPLACE VIEW public.\"RenamedAS\" AS SELECT id AS \"ID\" FROM public.view_base",
+    ] {
+        let r = query(&mut socket, sql);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        assert!(r[0].1.windows(5).any(|b| b == b"42P16"), "{r:?}");
+        assert_eq!(scalar(&mut socket, "SELECT 1"), Some("1".into()));
+        assert!(
+            scalar(&mut socket, &format!("SELECT pg_get_viewdef({oid}::oid)"))
+                .unwrap()
+                .contains("> 1")
+        );
+    }
+    ok(
+        &mut socket,
+        "CREATE OR REPLACE VIEW public.\"RenamedAS\" AS SELECT id AS \"ID\",renamed_label AS \"Label\",id AS extra FROM public.view_base WHERE id>1",
+    );
+    let appended = model();
+    assert_eq!(appended.Columns.len(), 3);
+    assert_eq!(appended.Columns[0].ID, original.Columns[0].ID);
+    ok(&mut socket, "DROP VIEW public.\"RenamedAS\"");
+    assert_eq!(
+        scalar(&mut socket, &format!("SELECT pg_get_viewdef({oid}::oid)")),
+        None
+    );
+    ok(
+        &mut socket,
+        "CREATE VIEW public.\"RenamedAS\" AS SELECT 9 AS n",
+    );
+    assert_ne!(model().ID, original.ID);
+    let gone = execute(&mut socket);
+    assert!(gone.contains(&(b'D', row(&[None]))));
+    let empty = ok(
+        &mut socket,
+        "SELECT pg_get_viewdef(oid) FROM pg_class WHERE oid=0",
+    );
+    assert_eq!(columns(&empty[0].1)[0].1, 25);
+    assert!(empty.iter().all(|m| m.0 != b'D'));
+    let r = query(&mut socket, "SELECT pg_get_viewdef(0::oid,true,false)");
+    assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert_eq!(scalar(&mut socket, "SELECT 1"), Some("1".into()));
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    println!(
+        "pg13_026_contract: signatures=5 null=4 refresh=1 rename=1 base_rename=1 replace_reject=2 append=1 drop_recreate=1 empty_describe=1 recovery=3 shared_model={} cleanup=guard",
+        original.ID
+    );
+}

@@ -3827,6 +3827,23 @@ impl Domain {
         })
     }
 
+    /// Publish a PG view replacement without a drop/create identity transition.
+    pub fn ddl_replace_postgresql_view(
+        &self,
+        database: &str,
+        expected_id: i64,
+        replacement: astersql_meta_model::TableInfo,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .replace_postgresql_view(store, database, expected_id, replacement)
+            })
+            .map_err(|error| DomainError::Ddl(error.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// Persist a materialized-view log and link its base table atomically.
     pub fn ddl_create_materialized_view_log(
         &self,

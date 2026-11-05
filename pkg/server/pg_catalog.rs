@@ -323,10 +323,16 @@ impl CatalogQuery {
         self.parameter_oids = supplied.to_vec();
         self.parameter_oids.resize(count, 0);
         visit_all_select_exprs(&mut select, &mut |expr| {
-            if let Expr::Cast(inner, CastType::Oid) = expr {
+            if let Expr::Cast(inner, target) = expr {
                 if let Expr::Parameter(index) = **inner {
                     if self.parameter_oids[index] == 0 {
-                        self.parameter_oids[index] = 26;
+                        self.parameter_oids[index] = match target {
+                            CastType::Oid => 26,
+                            CastType::Boolean => 16,
+                            CastType::Integer => 23,
+                            CastType::Varchar => 25,
+                            _ => 0,
+                        };
                     }
                 }
             }
@@ -863,6 +869,12 @@ impl CatalogQuery {
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
                 let (code, _) = self.expr_type(inner)?;
+                if *target == CastType::Boolean && !matches!(**inner, Expr::Null) && code != 1 {
+                    return Err((
+                        "0A000",
+                        "catalog boolean casts require boolean input".into(),
+                    ));
+                }
                 if matches!(target, CastType::InternalChar | CastType::Char)
                     && !matches!(**inner, Expr::Null)
                     && !textual_type(code)
@@ -897,6 +909,7 @@ impl CatalogQuery {
                 }
                 Ok((
                     match target {
+                        CastType::Boolean => 1,
                         CastType::InternalChar => {
                             crate::pg_result::CatalogColumnType::InternalChar as u8
                         }
@@ -914,7 +927,11 @@ impl CatalogQuery {
                         | CastType::FunctionName => 253,
                         CastType::IntArray => crate::pg_result::CatalogColumnType::Int4Array as u8,
                     },
-                    0,
+                    if *target == CastType::Boolean {
+                        astersql_parser_mysql::r#type::IsBooleanFlag
+                    } else {
+                        0
+                    },
                 ))
             }
             Expr::Call(path, args) => {
@@ -992,7 +1009,26 @@ impl CatalogQuery {
                     ) if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) => {
                         Ok((253, 0))
                     }
-                    ("pg_get_constraintdef" | "pg_get_viewdef", [oid, pretty])
+                    ("pg_get_viewdef", [arg])
+                        if matches!(arg, Expr::Null)
+                            || matches!(self.expr_type(arg)?.0, 253 | 254 | 15) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_viewdef", [arg, option])
+                        if (matches!(arg, Expr::Null)
+                            || numeric_type(self.expr_type(arg)?.0)
+                            || matches!(self.expr_type(arg)?.0, 253 | 254 | 15))
+                            && (matches!(option, Expr::Null)
+                                || self.expr_type(option)?.0 == 1
+                                || (self.expr_type(option)?.0 == 3
+                                    || matches!(option, Expr::Integer(n) if i32::try_from(*n).is_ok()))
+                                    && (matches!(arg, Expr::Null)
+                                        || numeric_type(self.expr_type(arg)?.0))) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_constraintdef", [oid, pretty])
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(pretty, Expr::Null) || self.expr_type(pretty)?.0 == 1) =>
                     {
@@ -2016,6 +2052,7 @@ impl CatalogQuery {
             Expr::Text(s) => Value::Text(s.clone()),
             Expr::Cast(inner, target) => match (evaluate(inner)?, target) {
                 (Value::Null, _) => Value::Null,
+                (Value::Text(s), CastType::Boolean) => Value::Text(s),
                 (Value::Text(s), CastType::IntArray) => {
                     let values = numeric_array_values(&Value::Text(s))?;
                     for value in &values {
@@ -2363,8 +2400,22 @@ impl CatalogQuery {
                     if values.contains(&Value::Null) {
                         return Ok(Value::Null);
                     }
-                    let Value::Signed(oid) = values[0] else {
-                        unreachable!("validated view oid");
+                    let oid = match &values[0] {
+                        Value::Signed(oid) => *oid,
+                        Value::Text(name) => i64::from(crate::pg_oid::resolve_in_path(
+                            name,
+                            database,
+                            snapshot.ok_or_else(|| {
+                                ConnError::Session("schema snapshot is unavailable".into())
+                            })?,
+                            &self.relation_path,
+                            &execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default(),
+                        )?),
+                        _ => unreachable!("validated view identity"),
                     };
                     let snapshot = snapshot.ok_or_else(|| {
                         ConnError::Session("schema snapshot is unavailable".into())

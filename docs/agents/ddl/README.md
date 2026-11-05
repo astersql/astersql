@@ -278,3 +278,19 @@ reconstructable definition. This bounded path does not introduce arbitrary query
 conversion, a dependency graph, or CHECK OPTION write enforcement. Focused tests
 are `pg13_025_contract`, `pg13_025_differential`, and
 `pg13_025_view_binding_uses_shared_executor`.
+
+
+PG view replacement now uses `DdlMetadataService::replace_postgresql_view` in a
+single canonical metadata transaction. Existing output columns must keep their
+names and types; trailing columns may be appended with new attribute identities.
+The relation ID, existing attribute slots, owner and other stored relation facts
+remain unchanged. Invalid replacements leave the original definition published.
+The native MySQL replacement path retains its existing behavior.
+
+The bounded PG `ALTER VIEW ... RENAME TO` adapter checks the view and owner, then
+uses the existing standalone rename publication chain. Exact names and stored
+namespace identities survive rename. Catalog queries parsed before a committed
+replacement, rename or drop/recreate read current metadata on new Execute; an
+already materialized portal keeps its existing snapshot. Focused coverage is
+`pg13_026_contract`, `pg13_026_differential`, and the domain test
+`pg13_026_view_replacement_is_atomic_and_preserves_attributes`.

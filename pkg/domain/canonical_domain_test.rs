@@ -2196,3 +2196,96 @@ fn pg13_016_add_index_preserves_exact_table_identity() {
         "case-distinct table must remain untouched"
     );
 }
+
+#[test]
+fn pg13_026_view_replacement_is_atomic_and_preserves_attributes() {
+    use astersql_meta_model::{
+        ColumnInfo, PostgreSQLCheckExpression, PostgreSQLView, TableInfo, ViewInfo,
+    };
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    let mut column = ColumnInfo::New(1, NewCIStr("ID"));
+    column.FieldType.SetType(3);
+    let tp = column.FieldType.clone();
+    let source = "SELECT 1 AS ID";
+    let definition = TableInfo {
+        Name: NewCIStr("ViewAS"),
+        ExactName: true,
+        State: astersql_meta_model::StatePublic,
+        PostgreSQLOwner: Some(19),
+        Columns: vec![column],
+        View: Some(ViewInfo {
+            SelectStmt: source.into(),
+            Cols: vec![NewCIStr("ID")],
+            ..Default::default()
+        }),
+        PostgreSQLView: Some(PostgreSQLView {
+            RelationID: None,
+            RelationColumns: vec![],
+            Projection: vec![(PostgreSQLCheckExpression::Literal("1".into()), tp)],
+            Filter: None,
+            SourceSQL: source.into(),
+            CheckOption: Default::default(),
+        }),
+        ..Default::default()
+    };
+    let created = service
+        .create_table(storage.as_ref(), "test", definition, false)
+        .unwrap()
+        .new_tables[0]
+        .1
+        .clone();
+    let mut replacement = created.clone();
+    replacement.View.as_mut().unwrap().SelectStmt = "SELECT 2 AS ID".into();
+    replacement.PostgreSQLView.as_mut().unwrap().SourceSQL = "SELECT 2 AS ID".into();
+    replacement.PostgreSQLView.as_mut().unwrap().Projection[0].0 =
+        PostgreSQLCheckExpression::Literal("2".into());
+    let change = service
+        .replace_postgresql_view(storage.as_ref(), "test", created.ID, replacement.clone())
+        .unwrap();
+    assert_eq!(change.old_tables[0].1.ID, change.new_tables[0].1.ID);
+    assert_eq!(
+        change.new_tables[0].1.PostgreSQLAttributeSlots,
+        created.PostgreSQLAttributeSlots
+    );
+    assert_eq!(change.new_tables[0].1.PostgreSQLOwner, Some(19));
+    let version = change.schema_version;
+    replacement.Columns[0].Name = NewCIStr("changed");
+    assert!(
+        service
+            .replace_postgresql_view(storage.as_ref(), "test", created.ID, replacement)
+            .is_err()
+    );
+    let current = service
+        .rename_tables(
+            storage.as_ref(),
+            vec![(
+                "test".into(),
+                "ViewAS".into(),
+                "test".into(),
+                "RenamedAS".into(),
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        current.schema_version,
+        version + 1,
+        "rejected replacement must not commit metadata"
+    );
+    assert_eq!(current.new_tables[0].1.ID, created.ID);
+    assert_eq!(
+        current.new_tables[0].1.View.as_ref().unwrap().SelectStmt,
+        "SELECT 2 AS ID"
+    );
+    assert!(
+        service
+            .replace_postgresql_view(storage.as_ref(), "test", created.ID, created)
+            .is_err(),
+        "old name cannot replace a renamed view"
+    );
+}

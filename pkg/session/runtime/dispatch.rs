@@ -2266,6 +2266,52 @@ impl ConcreteSession {
                 table.ExactName = true;
                 self.bind_postgresql_view(create, &mut table)?;
             }
+            if replacing && self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                let (_, old) = self
+                    .mdl_stats_table(&database, &create.ViewName.Name.O)
+                    .ok_or_else(|| {
+                        super::pg_schema::namespace_error("42P01", "view does not exist")
+                    })?;
+                if old.View.is_none() {
+                    return Err(super::pg_schema::namespace_error(
+                        "42809",
+                        "relation is not a view",
+                    ));
+                }
+                let actor = self.pg_database_role_id(&self.pg_schema_identity())?;
+                if self.pg_schema_identity() != "root" && old.PostgreSQLOwner != Some(actor) {
+                    return Err(super::pg_schema::namespace_error(
+                        "42501",
+                        "must be owner of view",
+                    ));
+                }
+                self.domain
+                    .ddl_replace_postgresql_view(&database, old.ID, table)
+                    .map_err(|error| {
+                        super::pg_schema::namespace_error(
+                            if error.to_string().contains("changed during replacement") {
+                                "40001"
+                            } else if error
+                                .to_string()
+                                .contains("cannot drop or change existing view columns")
+                            {
+                                "42P16"
+                            } else if error
+                                .to_string()
+                                .contains("requires a bound PostgreSQL view")
+                                || error
+                                    .to_string()
+                                    .contains("attribute slots are unavailable")
+                            {
+                                "0A000"
+                            } else {
+                                "XX000"
+                            },
+                            &error.to_string(),
+                        )
+                    })?;
+                return Ok(None);
+            }
             if replacing {
                 self.domain
                     .ddl_drop_tables(

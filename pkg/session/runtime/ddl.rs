@@ -1364,7 +1364,11 @@ impl ConcreteSession {
             }
             renames.push((
                 old_database,
-                pair.OldTable.Name.L.clone(),
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    pair.OldTable.Name.O.clone()
+                } else {
+                    pair.OldTable.Name.L.clone()
+                },
                 new_database,
                 pair.NewTable.Name.O.clone(),
             ));

@@ -469,6 +469,12 @@ fn adapt_internal(
         };
         return adapt_index(&tokens, context, &path);
     }
+    if first.word("rename") {
+        return Err(error("0A000", "RENAME TABLE is not a PostgreSQL command"));
+    }
+    if first.word("alter") && tokens.get(1).is_some_and(|t| t.word("view")) {
+        return adapt_view_rename(&tokens, context);
+    }
     if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
         adapt_alter(sql, &tokens, edits, context)
     } else if !first.word("create") {
@@ -476,6 +482,92 @@ fn adapt_internal(
     } else {
         adapt_create(sql, &tokens, edits)
     }
+}
+
+// pg_name has already resolved both identifiers to this connection's storage
+// database. Reuse standalone rename, which supports views, rather than ALTER
+// TABLE's deliberate BASE TABLE gate.
+fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> ParseResult<String> {
+    let context = context.ok_or_else(|| error("0A000", "view rename requires catalog context"))?;
+    let (database, source, action) = alter_table_parts(tokens)?;
+    let end = tokens.len() - usize::from(tokens.last().is_some_and(|t| t.symbol(b';')));
+    if !tokens.get(action).is_some_and(|t| t.word("rename"))
+        || !tokens.get(action + 1).is_some_and(|t| t.word("to"))
+    {
+        return Err(error("0A000", "only ALTER VIEW RENAME TO is supported"));
+    }
+    let dest = action + 2;
+    let target = if dest + 1 == end {
+        token_name(&tokens[dest])
+    } else {
+        None
+    }
+    .ok_or_else(|| error("42601", "expected ALTER VIEW name RENAME TO name"))?;
+    let database =
+        database.ok_or_else(|| error("3D000", "view storage database is unavailable"))?;
+    let snapshot = context
+        .schema_snapshot()
+        .ok_or_else(|| error("0A000", "schema snapshot is unavailable"))?;
+    let model = snapshot
+        .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(&database), &source)
+        .map_err(|_| error("42P01", "view does not exist"))?;
+    if model.View.is_none() {
+        return Err(error("42809", "relation is not a view"));
+    }
+    let namespaces = context
+        .pg_namespace_facts()
+        .transpose()
+        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?
+        .unwrap_or_default();
+    if !namespaces.iter().any(|fact| {
+        model
+            .PostgreSQLNamespace
+            .as_ref()
+            .map_or(fact.name == "public", |(id, _)| fact.id == *id)
+            && fact.can_create
+    }) {
+        return Err(error("42501", "permission denied for view schema"));
+    }
+    let identity = context
+        .user_identity()
+        .map_err(|_| error("XX000", "cannot read authenticated role"))?;
+    let actor = identity.split('@').next().unwrap_or("");
+    if actor != "root" {
+        let facts = context
+            .pg_database_facts(None)
+            .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+        if model
+            .PostgreSQLOwner
+            .and_then(|id| facts.first()?.roles.get(&id))
+            .map(String::as_str)
+            != Some(actor)
+        {
+            return Err(error("42501", "must be owner of view"));
+        }
+    }
+    // An unqualified RENAME destination stays in the source namespace even when
+    // search_path's creation schema is different.
+    let target = if let Some((id, _)) = model.PostgreSQLNamespace.as_ref() {
+        let logical = target
+            .strip_prefix(&format!("__astersql_pg_{id}_"))
+            .unwrap_or(target);
+        format!("__astersql_pg_{id}_{logical}")
+    } else {
+        target.to_owned()
+    };
+    if snapshot
+        .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(&database), &target)
+        .is_ok()
+    {
+        return Err(error("42P07", "relation already exists"));
+    }
+    Ok(format!(
+        "RENAME TABLE {}.{} TO {}.{}",
+        quote(&database),
+        quote(&source),
+        quote(&database),
+        quote(&target)
+    ))
 }
 
 // Resolve a PG schema relation back to its table-local native index. The
