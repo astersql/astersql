@@ -1342,6 +1342,10 @@ fn namespace_catalog_live_metadata() {
         .unwrap();
     socket.write_all(&body).unwrap();
     while read(&mut socket).0 != b'Z' {}
+    assert_eq!(
+        query(&mut socket, "ALTER DATABASE test OWNER TO root")[0].0,
+        b'C'
+    );
     let sql = r#"select N.oid::bigint as id, N.xmin as state_number, nspname as name, D.description, pg_catalog.pg_get_userbyid(N.nspowner) as "owner" from pg_catalog.pg_namespace N left join pg_catalog.pg_description D on N.oid = D.objoid order by case when nspname = pg_catalog.current_schema() then -1::bigint else N.oid::bigint end"#;
     let before = query(&mut socket, sql);
     assert_eq!(before[0].0, b'T', "{before:?}");
@@ -1363,7 +1367,7 @@ fn namespace_catalog_live_metadata() {
         assert!(r[0].as_ref().unwrap().parse::<u32>().unwrap() > 0);
         assert_eq!(r[1], None);
         assert_eq!(r[3], None);
-        assert_eq!(r[4], None);
+        assert_eq!(r[4].as_deref(), Some("root"));
     }
     for pair in rows[1..].windows(2) {
         assert!(

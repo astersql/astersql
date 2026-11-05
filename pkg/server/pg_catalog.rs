@@ -731,7 +731,10 @@ impl CatalogQuery {
                     ("pg_namespace", "nspname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
-                    ("pg_namespace", "nspowner") => Some((5, 8, 0)),
+                    ("pg_namespace", "nspowner") => Some((5, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_namespace", "nspacl") => {
+                        Some((6, crate::pg_result::CatalogColumnType::AclArray as u8, 0))
+                    }
                     ("pg_namespace", "xmin") => Some((8, 8, 0)),
                     ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_tablespace", "spcname") => Some((1, 253, 0)),
@@ -1190,6 +1193,7 @@ impl CatalogQuery {
                         ("pg_namespace", 0) => 1,
                         ("pg_namespace", 1) => 2,
                         ("pg_namespace", 5) => 3,
+                        ("pg_namespace", 6) => 4,
                         ("pg_attribute", 3) => 3,
                         ("pg_attribute", 6) => 12,
                         ("pg_attribute", 9) => 15,
@@ -1682,6 +1686,18 @@ impl CatalogQuery {
                 {
                     return Err(database_identity_unavailable(
                         "PostgreSQL database owner or policy requires explicit administrator migration",
+                    ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_namespace")
+                    && slot % CATALOG_ROW_WIDTH == 5
+                    && row[slot - 5] != Value::Null
+                    && row[slot] == Value::Null
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL namespace owner identity is unavailable",
                     ));
                 }
                 row[slot].clone()
@@ -4102,13 +4118,15 @@ pub(crate) fn namespace_names(context: &dyn TiDBContext) -> ConnResult<Vec<Strin
     let snapshot = context
         .schema_snapshot()
         .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
-    Ok(namespace_rows(snapshot.as_ref(), database)?
-        .into_iter()
-        .filter_map(|row| match row.into_iter().nth(1) {
-            Some(Value::Text(name)) => Some(name),
-            _ => None,
-        })
-        .collect())
+    Ok(
+        namespace_rows_for_context(context, snapshot.as_ref(), database)?
+            .into_iter()
+            .filter_map(|row| match row.into_iter().nth(1) {
+                Some(Value::Text(name)) => Some(name),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 fn namespace_rows_for_context(
@@ -4120,14 +4138,17 @@ fn namespace_rows_for_context(
         return facts?
             .into_iter()
             .map(|fact| {
-                Ok(namespace_row(
+                let mut row = namespace_row(
                     if fact.name == "pg_catalog" {
                         11
                     } else {
                         namespace_oid(fact.id)?
                     },
                     &fact.name,
-                ))
+                );
+                row[5] = fact.owner.map_or(Value::Null, Value::Signed);
+                row[6] = fact.acl.map_or(Value::Null, Value::Text);
+                Ok(row)
             })
             .collect();
     }

@@ -3501,3 +3501,114 @@ fn pg13_002_contract() {
         "pg13_002_contract: policy=4 cross_connection=4 startup=4 invalid=1 empty=1 recovery=1 missing_source=3 migration=2 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_003_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_003_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_003_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_003_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_003_admin")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_003_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_003_admin");
+    let (mut c, _) = connect("pg13_003_policy");
+    let sql = "SELECT oid,nspname FROM pg_catalog.pg_namespace WHERE nspname = 'ns_user'";
+    assert_eq!(query(&mut a, sql).len(), 3);
+    assert_eq!(query(&mut b, "CREATE SCHEMA ns_user")[0].0, b'C');
+    let initial = query(&mut a, sql);
+    assert_eq!(initial[0].0, b'T', "{initial:?}");
+    assert_eq!(
+        columns(&initial[0].1),
+        vec![("oid".into(), 26), ("nspname".into(), 19)]
+    );
+    assert_eq!(initial.len(), 4, "{initial:?}");
+    assert_eq!(
+        query(&mut b, "ALTER SCHEMA ns_user RENAME TO ns_renamed")[0].0,
+        b'C'
+    );
+    let old_oid = initial[1].1[2..].to_vec();
+    assert_eq!(query(&mut c, sql).len(), 3);
+    let renamed = query(
+        &mut a,
+        "SELECT oid,nspname FROM pg_catalog.pg_namespace WHERE nspname = 'ns_renamed'",
+    );
+    assert_eq!(renamed.len(), 4, "{renamed:?}");
+    // Only the name changes; the first field retains the persistent OID.
+    let width = i32::from_be_bytes(old_oid[..4].try_into().unwrap()) as usize;
+    assert_eq!(&old_oid[..4 + width], &renamed[1].1[2..6 + width]);
+    let empty = query(
+        &mut a,
+        "SELECT oid,nspname FROM pg_catalog.pg_namespace LIMIT 0",
+    );
+    assert_eq!(
+        columns(&empty[0].1),
+        vec![("oid".into(), 26), ("nspname".into(), 19)]
+    );
+    assert_eq!(empty[1], (b'C', b"SELECT 0\0".to_vec()));
+    assert_eq!(query(&mut a, "SET search_path TO ns_renamed")[0].0, b'C');
+    assert_eq!(
+        query(
+            &mut a,
+            "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname='ns_renamed'"
+        )[1],
+        (b'D', row(&[Some("ns_renamed")]))
+    );
+    assert_eq!(query(&mut b, "DROP SCHEMA ns_renamed")[0].0, b'C');
+    assert_eq!(query(&mut a, sql).len(), 3);
+    drop(c);
+    drop(a);
+    drop(b);
+    drop(cleanup);
+    println!("pg13_003_contract: create=1 rename=1 drop=1 cross_connection=3 empty=2 cleanup=1");
+}

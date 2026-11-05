@@ -88,7 +88,7 @@ fn namespace_identity_relation_ownership_and_recreation() {
 }
 
 #[test]
-fn legacy_empty_namespace_migrates_once_without_reusing_global_ids() {
+fn legacy_empty_namespace_requires_explicit_migration_without_reusing_global_ids() {
     let (domain, _) = CreateAnalyzeSession().unwrap();
     let database = domain
         .info_schema()
@@ -102,11 +102,26 @@ fn legacy_empty_namespace_migrates_once_without_reusing_global_ids() {
         })
     }).unwrap();
     let first = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    assert_eq!(
+        first
+            .pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    first
+        .pg_schema_command(&PgSchemaCommand::Rename {
+            schema: "legacy".into(),
+            name: "migrated".into(),
+        })
+        .unwrap();
     let identity = first
         .pg_namespace_facts()
         .unwrap()
         .into_iter()
-        .find(|f| f.name == "legacy")
+        .find(|f| f.name == "migrated")
         .unwrap()
         .id;
     let second = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
@@ -115,7 +130,7 @@ fn legacy_empty_namespace_migrates_once_without_reusing_global_ids() {
             .pg_namespace_facts()
             .unwrap()
             .into_iter()
-            .find(|f| f.name == "legacy")
+            .find(|f| f.name == "migrated")
             .unwrap()
             .id,
         identity
@@ -133,7 +148,7 @@ fn legacy_empty_namespace_migrates_once_without_reusing_global_ids() {
             .id
             > identity
     );
-    for schema in ["legacy", "new_namespace"] {
+    for schema in ["migrated", "new_namespace"] {
         second
             .pg_schema_command(&PgSchemaCommand::Drop(schema.into()))
             .unwrap();
@@ -695,4 +710,66 @@ fn identity_prepare_validates_without_allocating() {
         .remove(0);
     assert_eq!(rows.next_row().unwrap().unwrap(), vec!["10"]);
     session.execute("DROP TABLE identity_prepare").unwrap();
+}
+
+#[test]
+fn namespace_rename_preserves_table_identity_and_reads_do_not_allocate() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_schema_command(&PgSchemaCommand::Create("ns_identity".into()))
+        .unwrap();
+    let first = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "ns_identity")
+        .unwrap();
+    let physical = pg.pg_bind_relation(Some("ns_identity"), "t", true).unwrap();
+    pg.execute(&format!("CREATE TABLE \"{physical}\" (id integer)"))
+        .unwrap();
+    pg.pg_schema_command(&PgSchemaCommand::Rename {
+        schema: "ns_identity".into(),
+        name: "ns_after".into(),
+    })
+    .unwrap();
+    let read_id = || {
+        domain.storage_handle().with_storage(|store| {
+            let ctx = kv::Context::default();
+            let mut value = Vec::new();
+            kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                value = txn
+                    .Get(
+                        &ctx,
+                        astersql_meta::transaction_meta_string_key(b"NextGlobalID"),
+                        &[],
+                    )?
+                    .Value;
+                Ok(())
+            })
+            .unwrap();
+            value
+        })
+    };
+    let before = read_id();
+    let other = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    for _ in 0..3 {
+        let facts = other.pg_namespace_facts().unwrap();
+        let renamed = facts.iter().find(|f| f.name == "ns_after").unwrap();
+        assert_eq!(renamed.id, first.id);
+        assert_eq!(renamed.owner, first.owner);
+        assert!(!facts.iter().any(|f| f.name == "ns_identity"));
+        assert_eq!(
+            other
+                .pg_bind_relation(Some("ns_after"), "t", false)
+                .unwrap(),
+            physical
+        );
+    }
+    assert_eq!(before, read_id());
+    other
+        .execute(&format!("DROP TABLE \"{physical}\""))
+        .unwrap();
+    other
+        .pg_schema_command(&PgSchemaCommand::Drop("ns_after".into()))
+        .unwrap();
 }

@@ -167,6 +167,7 @@ impl PgSession {
                     | "DROP SCHEMA"
                     | "GRANT"
                     | "REVOKE"
+                    | "ALTER SCHEMA"
                     | "ALTER TABLE"
                     | "TRUNCATE TABLE"
             )
@@ -461,8 +462,13 @@ impl SessionQuery {
                 }
             },
             Self::SchemaUtility(command) => match command {
-                astersql_session::runtime::PgSchemaCommand::Create(_) => "CREATE SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::Create(_)
+                | astersql_session::runtime::PgSchemaCommand::CreateOwned { .. } => "CREATE SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::Drop(_) => "DROP SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::Rename { .. }
+                | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::RevokeAll { .. } => "REVOKE",
+                astersql_session::runtime::PgSchemaCommand::TableSelect { .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
             },
@@ -602,6 +608,76 @@ impl SessionQuery {
         }
         if word(tokens.first(), "alter") && word(tokens.get(1), "database") {
             return Err(("0A000", "unsupported PostgreSQL database policy".into()));
+        }
+        if tokens.len() == 8
+            && word(tokens.first(), "grant")
+            && word(tokens.get(1), "select")
+            && word(tokens.get(2), "on")
+            && word(tokens.get(6), "to")
+            && matches!(tokens.get(4), Some(Token::Symbol('.')))
+            && let (Some(schema), Some(table), Some(grantee)) = (
+                identifier(&tokens[3]),
+                identifier(&tokens[5]),
+                identifier(&tokens[7]),
+            )
+        {
+            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::TableSelect {
+                schema,
+                table,
+                grantee,
+            })));
+        }
+        if tokens.len() == 5
+            && word(tokens.first(), "create")
+            && word(tokens.get(1), "schema")
+            && word(tokens.get(3), "authorization")
+            && let (Some(schema), Some(owner)) = (identifier(&tokens[2]), identifier(&tokens[4]))
+        {
+            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::CreateOwned {
+                schema,
+                owner,
+            })));
+        }
+        if tokens.len() == 6
+            && word(tokens.first(), "alter")
+            && word(tokens.get(1), "schema")
+            && word(tokens.get(3), "owner")
+            && word(tokens.get(4), "to")
+            && let (Some(schema), Some(owner)) = (identifier(&tokens[2]), identifier(&tokens[5]))
+        {
+            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Owner {
+                schema,
+                owner,
+            })));
+        }
+        if tokens.len() == 7
+            && word(tokens.first(), "revoke")
+            && word(tokens.get(1), "all")
+            && word(tokens.get(2), "on")
+            && word(tokens.get(3), "schema")
+            && word(tokens.get(5), "from")
+            && let (Some(schema), Some(mut grantee)) =
+                (identifier(&tokens[4]), identifier(&tokens[6]))
+        {
+            if word(tokens.get(6), "public") {
+                grantee = "PUBLIC".into();
+            }
+            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::RevokeAll {
+                schema,
+                grantee,
+            })));
+        }
+        if tokens.len() == 6
+            && word(tokens.first(), "alter")
+            && word(tokens.get(1), "schema")
+            && word(tokens.get(3), "rename")
+            && word(tokens.get(4), "to")
+            && let (Some(schema), Some(name)) = (identifier(&tokens[2]), identifier(&tokens[5]))
+        {
+            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Rename {
+                schema,
+                name,
+            })));
         }
         if tokens.len() == 3 && word(tokens.get(1), "schema") {
             if let Some(name) = identifier(&tokens[2]) {

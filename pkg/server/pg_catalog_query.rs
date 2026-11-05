@@ -699,7 +699,7 @@ impl Parser {
                 "char" if quoted => CastType::InternalChar,
                 "char" => CastType::Char,
                 "bigint" => CastType::Bigint,
-                "varchar" => CastType::Varchar,
+                "varchar" | "text" => CastType::Varchar,
                 "oid" => CastType::Oid,
                 "regclass" => CastType::Regclass,
                 // Keep the supported name conversion atomic: a standalone
