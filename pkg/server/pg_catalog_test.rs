@@ -5020,3 +5020,108 @@ fn pg13_012_contract() {
     assert!(TcpStream::connect(addr).is_err());
     println!("pg13_012_contract: associations=12 connections=3 zero_rows=1 cleanup=1");
 }
+
+#[test]
+fn pg13_013_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_013_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_013_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_013_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_013_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_013_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_013_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_013_admin");
+    let (mut c, _) = connect("pg13_013_policy");
+    let cases = [
+        ("23,-1", Some("integer")),
+        ("1043,28", Some("character varying(24)")),
+        ("1700,786439", Some("numeric(12,3)")),
+        ("1042,NULL", Some("character")),
+        ("1042,-1", Some("bpchar")),
+        ("1007,-1", Some("integer[]")),
+        ("1015,28", Some("character varying(24)[]")),
+        ("1185,3", Some("timestamp(3) with time zone[]")),
+        ("NULL,-1", None),
+        ("0,-1", Some("-")),
+        ("4294967295,-1", Some("???")),
+        ("2950,-1", Some("uuid")),
+    ];
+    for (args, expected) in cases {
+        let sql = format!("SELECT pg_catalog.format_type({args}) AS type_name");
+        let got = query(&mut a, &sql);
+        assert_eq!(got[0].0, b'T', "{sql}: {got:?}");
+        assert_eq!(columns(&got[0].1)[0].1, 25);
+        assert!(got.contains(&(b'D', row(&[expected]))), "{sql}: {got:?}");
+        assert_eq!(query(&mut b, &sql), got);
+        assert_eq!(query(&mut c, &sql), got);
+    }
+    let empty = query(
+        &mut a,
+        "SELECT pg_catalog.format_type(23,-1) AS type_name LIMIT 0",
+    );
+    assert_eq!(empty[0].0, b'T');
+    assert_eq!(empty.iter().filter(|m| m.0 == b'D').count(), 0);
+    let got = query(&mut a, "SELECT pg_catalog.format_type(790,-1)");
+    assert_eq!(got[0].0, b'E', "{got:?}");
+    assert!(got[0].1.windows(6).any(|w| w == b"0A000\0"));
+    assert_eq!(query(&mut a, "SELECT 1")[0].0, b'T');
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_013_contract: format=12 refusal=1 recovery=1 connections=3 zero_rows=1 cleanup=1"
+    );
+}

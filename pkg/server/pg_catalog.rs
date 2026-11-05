@@ -4411,6 +4411,20 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
     Ok((oid, modifier))
 }
 
+// Known PostgreSQL 18.6 builtin identities outside COLUMN_TYPES. Source:
+// src/include/catalog/pg_type.dat (including array_type_oid); no type rows are
+// synthesized from this list. It only distinguishes unsupported from unknown.
+const PG18_UNMAPPED_TYPE_OIDS: &[i64] = &[
+    24, 27, 28, 29, 32, 71, 75, 81, 83, 142, 143, 194, 210, 269, 270, 271, 272, 273, 325, 600, 601,
+    602, 603, 604, 628, 629, 650, 651, 705, 718, 719, 774, 775, 790, 791, 829, 869, 1008, 1010,
+    1011, 1012, 1017, 1018, 1019, 1020, 1027, 1040, 1041, 1263, 1266, 1270, 1560, 1561, 1562, 1563,
+    1790, 2201, 2202, 2203, 2204, 2207, 2208, 2209, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2283,
+    2776, 2949, 2970, 3115, 3220, 3221, 3310, 3361, 3402, 3500, 3614, 3615, 3642, 3643, 3644, 3645,
+    3734, 3735, 3769, 3770, 3831, 3838, 3908, 3909, 3910, 3911, 3912, 3913, 3926, 3927, 4072, 4073,
+    4089, 4090, 4096, 4097, 4191, 4192, 4451, 4532, 4533, 4534, 4535, 4536, 4537, 4538, 4600, 4601,
+    5017, 5038, 5039, 5069, 5077, 5078, 5079, 5080, 6150, 6151, 6152, 6153, 6155, 6157,
+];
+
 fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
     u32::try_from(oid).map_err(|_| ConnError::Session("PG oid conversion out of range".into()))?;
     if let Some(modifier) = modifier {
@@ -4421,8 +4435,19 @@ fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
         return Ok("-".into());
     }
     let Some(builtin) = COLUMN_TYPES.iter().find(|t| t.oid == oid) else {
+        // PostgreSQL 18.6 pg_type.dat identities include generated array OIDs.
+        // A known but unregistered builtin must not masquerade as nonexistent.
+        if PG18_UNMAPPED_TYPE_OIDS.contains(&oid) {
+            return Err(ConnError::UnsupportedCommand(0));
+        }
         return Ok("???".into());
     };
+    if builtin.category == "A" && builtin.name.starts_with('_') {
+        return Ok(format!(
+            "{}[]",
+            format_column_type(builtin.element, modifier)?
+        ));
+    }
     let name = builtin.display;
     let Some(modifier) = modifier else {
         return Ok(name.into());
@@ -4435,6 +4460,33 @@ fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
         });
     }
     Ok(match oid {
+        1186 => {
+            // intervaltypmodout in PostgreSQL 18.6 timestamp.c: the upper
+            // bits select fields, the lower bits carry optional precision.
+            let fields = match (modifier >> 16) & 0x7fff {
+                4 => " year",
+                2 => " month",
+                8 => " day",
+                1024 => " hour",
+                2048 => " minute",
+                4096 => " second",
+                6 => " year to month",
+                1032 => " day to hour",
+                3080 => " day to minute",
+                7176 => " day to second",
+                3072 => " hour to minute",
+                7168 => " hour to second",
+                6144 => " minute to second",
+                32767 => "",
+                _ => return Err(ConnError::UnsupportedCommand(0)),
+            };
+            let precision = modifier & 0xffff;
+            if precision == 0xffff {
+                format!("interval{fields}")
+            } else {
+                format!("interval{fields}({precision})")
+            }
+        }
         1042 | 1043 if modifier >= 4 => format!("{name}({})", modifier - 4),
         1700 if modifier >= 4 => {
             let n = modifier - 4;
@@ -4445,7 +4497,8 @@ fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
         }
         1083 if (0..=6).contains(&modifier) => format!("time({modifier}) without time zone"),
         1114 if (0..=6).contains(&modifier) => format!("timestamp({modifier}) without time zone"),
-        1042 | 1043 | 1083 | 1700 | 1114 => return Err(ConnError::UnsupportedCommand(0)),
+        1184 if (0..=6).contains(&modifier) => format!("timestamp({modifier}) with time zone"),
+        1042 | 1043 | 1083 | 1700 | 1114 | 1184 => return Err(ConnError::UnsupportedCommand(0)),
         _ => name.into(),
     })
 }
