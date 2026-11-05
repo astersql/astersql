@@ -451,7 +451,8 @@ impl SessionQuery {
                 "RESET"
             }
             Self::DatabaseUtility(command) => match command {
-                astersql_session::runtime::PgDatabaseCommand::Owner { .. } => "ALTER DATABASE",
+                astersql_session::runtime::PgDatabaseCommand::Owner { .. }
+                | astersql_session::runtime::PgDatabaseCommand::Policy { .. } => "ALTER DATABASE",
                 astersql_session::runtime::PgDatabaseCommand::Connect { grant: true, .. } => {
                     "GRANT"
                 }
@@ -576,6 +577,25 @@ impl SessionQuery {
                         database,
                         role,
                         grant,
+                    })));
+                }
+            }
+        }
+        if tokens.len() == 5 && word(tokens.first(), "alter") && word(tokens.get(1), "database") {
+            let value = if word(tokens.get(4), "true") {
+                Some(true)
+            } else if word(tokens.get(4), "false") {
+                Some(false)
+            } else {
+                None
+            };
+            if let (Some(database), Some(value)) = (identifier(&tokens[2]), value) {
+                if word(tokens.get(3), "is_template") || word(tokens.get(3), "allow_connections") {
+                    return Ok(Some(Self::DatabaseUtility(PgDatabaseCommand::Policy {
+                        database,
+                        is_template: word(tokens.get(3), "is_template").then_some(value),
+                        allow_connections: word(tokens.get(3), "allow_connections")
+                            .then_some(value),
                     })));
                 }
             }

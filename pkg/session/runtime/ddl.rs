@@ -1576,12 +1576,26 @@ impl ConcreteSession {
                 .iter()
                 .find(|s| s.name.lower == name)
             {
-                let allowed = self
+                let fact = self
                     .pg_database_facts(None)?
                     .into_iter()
-                    .find(|f| f.id == schema.id)
-                    .is_some_and(|f| f.can_connect);
-                if !allowed {
+                    .find(|f| f.id == schema.id);
+                match fact.as_ref().and_then(|f| f.allow_connections) {
+                    Some(true) => {}
+                    Some(false) => {
+                        return Err(super::pg_schema::namespace_error(
+                            "55000",
+                            "database is not currently accepting connections",
+                        ));
+                    }
+                    None => {
+                        return Err(super::pg_schema::namespace_error(
+                            "0A000",
+                            "database connection policy requires explicit administrator migration",
+                        ));
+                    }
+                }
+                if !fact.is_some_and(|f| f.can_connect) {
                     return Err(super::pg_schema::namespace_error(
                         "42501",
                         "permission denied for database",

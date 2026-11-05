@@ -277,6 +277,11 @@ impl DdlMetadataService {
             if !astersql_meta_metadef::IsReservedID(id) {
                 catalog.next_id = catalog.next_id.max(id);
             }
+            // Ordinary databases start with explicit durable policy, in the identity transaction.
+            transaction.Set(
+                tidb_hash_key(b"PgDatabasePolicy", id.to_string().as_bytes()),
+                br#"{"is_template":false,"allow_connections":true}"#.to_vec(),
+            )?;
             if let Some(owner) = owner {
                 transaction.Set(
                     tidb_hash_key(b"PgDatabaseOwners", id.to_string().as_bytes()),
@@ -335,6 +340,7 @@ impl DdlMetadataService {
                 for hash in [
                     b"PgDatabaseOwners".as_slice(),
                     b"PgDatabaseConnect".as_slice(),
+                    b"PgDatabasePolicy".as_slice(),
                 ] {
                     transaction.Delete(tidb_hash_key(hash, database.ID.to_string().as_bytes()))?;
                 }

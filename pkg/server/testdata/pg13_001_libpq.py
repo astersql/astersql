@@ -377,11 +377,8 @@ order by case when datname = pg_catalog.current_database() then -1::bigint else 
         assert bad['errors']['C'] == ('42703' if side == 0 else '0A000'),bad
         assert text(run(conn,'SELECT 1 AS ok')['rows'][0]) == ['1']
         for policy in ('ALLOW_CONNECTIONS false', 'IS_TEMPLATE true'):
-            out = run(conn,f'ALTER DATABASE {b} {policy}',1 if side == 0 else 7)
-            if side == 1:
-                assert out['errors']['C'] == '0A000',out
-            else:
-                run(conn,f'ALTER DATABASE {b} '+('ALLOW_CONNECTIONS true' if policy.startswith('ALLOW') else 'IS_TEMPLATE false'),1)
+            run(conn,f'ALTER DATABASE {b} {policy}',1)
+            run(conn,f'ALTER DATABASE {b} '+('ALLOW_CONNECTIONS true' if policy.startswith('ALLOW') else 'IS_TEMPLATE false'),1)
         assert run(conn,base_sql)['rows'] == pair[side]['rows']
         open_conn(side,base+'_absent',expect=False)
     count += 1

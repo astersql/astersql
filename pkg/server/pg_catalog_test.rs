@@ -3342,3 +3342,162 @@ fn pg13_001_contract() {
         "pg13_001_contract: BASE=1 EMPTY=2 cross_connection=1 reload=1 migration=2 role_recreation=1 transaction_recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_002_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_002_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_002_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_002_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_002_admin")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_002_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_002_admin");
+    let sql = "SELECT datistemplate, datallowconn FROM pg_catalog.pg_database WHERE datname = 'pg13_002_policy'";
+    let initial = query(&mut a, sql);
+    assert_eq!(initial[1], (b'D', row(&[Some("f"), Some("t")])));
+    assert_eq!(
+        columns(&initial[0].1),
+        vec![("datistemplate".into(), 16), ("datallowconn".into(), 16)]
+    );
+    for (command, expected) in [
+        ("ALLOW_CONNECTIONS false", ["f", "f"]),
+        ("IS_TEMPLATE true", ["t", "f"]),
+        ("ALLOW_CONNECTIONS true", ["t", "t"]),
+        ("IS_TEMPLATE false", ["f", "t"]),
+    ] {
+        let out = query(&mut b, &format!("ALTER DATABASE pg13_002_policy {command}"));
+        assert_eq!(out[0].0, b'C', "policy update must succeed: {out:?}");
+        assert_eq!(
+            query(&mut a, sql)[1],
+            (b'D', row(&[Some(expected[0]), Some(expected[1])]))
+        );
+        let (fresh, messages) = connect("pg13_002_policy");
+        if expected[1] == "f" {
+            assert_eq!(messages[0].0, b'E', "global switch must reject even root");
+            assert!(messages[0].1.windows(6).any(|w| w == b"55000\0"));
+        } else {
+            assert_eq!(messages.last().unwrap().0, b'Z');
+        }
+        drop(fresh);
+    }
+    let invalid = query(
+        &mut b,
+        "ALTER DATABASE pg13_002_policy ALLOW_CONNECTIONS nonsense",
+    );
+    assert_eq!(invalid[0].0, b'E');
+    assert_eq!(query(&mut a, sql), initial);
+    let empty = query(&mut a, &format!("{sql} LIMIT 0"));
+    assert_eq!(empty[0], initial[0]);
+    assert_eq!(empty[1], (b'C', b"SELECT 0\0".to_vec()));
+    assert_eq!(
+        query(&mut b, "SELECT 1 AS ok")[1],
+        (b'D', row(&[Some("1")]))
+    );
+    // Remove only a persisted model fact; oid/name remain readable and no read repairs it.
+    let schema = domain
+        .info_schema()
+        .SchemaByName(&astersql_infoschema::CiString::new("pg13_002_policy"))
+        .unwrap();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&astersql_kv::Context::default(), store, true, |_, txn| {
+                txn.Delete(astersql_meta::transaction_meta_hash_key(
+                    b"PgDatabasePolicy",
+                    schema.id.to_string().as_bytes(),
+                ))
+            })
+        })
+        .unwrap();
+    let missing = query(&mut a, sql);
+    assert_eq!(missing.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(missing[0].1.windows(6).any(|w| w == b"0A000\0"));
+    assert_eq!(
+        query(
+            &mut a,
+            "SELECT oid, datname FROM pg_catalog.pg_database WHERE datname = 'pg13_002_policy'"
+        )[1]
+        .0,
+        b'D'
+    );
+    // Updating one legacy fact must not silently invent its sibling.
+    assert_eq!(
+        query(&mut b, "ALTER DATABASE pg13_002_policy IS_TEMPLATE false")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut a,
+            "SELECT datistemplate FROM pg_catalog.pg_database WHERE datname = 'pg13_002_policy'"
+        )[1],
+        (b'D', row(&[Some("f")]))
+    );
+    assert_eq!(query(&mut a, sql)[0].0, b'E');
+    assert_eq!(
+        query(
+            &mut b,
+            "ALTER DATABASE pg13_002_policy ALLOW_CONNECTIONS true"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(query(&mut a, sql), initial);
+    drop(a);
+    drop(b);
+    drop(cleanup);
+    assert!(TcpListener::bind(addr).is_ok());
+    println!(
+        "pg13_002_contract: policy=4 cross_connection=4 startup=4 invalid=1 empty=1 recovery=1 missing_source=3 migration=2 cleanup=1"
+    );
+}

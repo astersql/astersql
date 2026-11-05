@@ -8038,6 +8038,7 @@ dependencies = [
  "astersql-infoschema-issyncer-mdldef",
  "astersql-keyspace",
  "astersql-kv",
+ "astersql-meta",
  "astersql-meta-model",
  "astersql-metrics",
  "astersql-param",

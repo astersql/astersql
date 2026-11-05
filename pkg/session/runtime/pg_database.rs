@@ -12,6 +12,11 @@ pub enum PgDatabaseCommand {
         database: String,
         role: String,
     },
+    Policy {
+        database: String,
+        is_template: Option<bool>,
+        allow_connections: Option<bool>,
+    },
     Connect {
         database: String,
         role: String,
@@ -25,6 +30,16 @@ pub struct PgDatabaseFact {
     pub id: i64,
     pub owner: Option<(i64, String)>,
     pub can_connect: bool,
+    pub is_template: Option<bool>,
+    pub allow_connections: Option<bool>,
+    pub roles: Arc<BTreeMap<i64, String>>,
+}
+
+// Missing legacy facts remain unknown until an administrator explicitly sets them.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct DatabasePolicy {
+    is_template: Option<bool>,
+    allow_connections: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,6 +74,9 @@ fn role_key() -> kv::Key {
 }
 fn owner_key(id: i64) -> kv::Key {
     astersql_meta::transaction_meta_hash_key(b"PgDatabaseOwners", id.to_string().as_bytes())
+}
+fn policy_key(id: i64) -> kv::Key {
+    astersql_meta::transaction_meta_hash_key(b"PgDatabasePolicy", id.to_string().as_bytes())
 }
 fn access_key(id: i64) -> kv::Key {
     astersql_meta::transaction_meta_hash_key(b"PgDatabaseConnect", id.to_string().as_bytes())
@@ -139,7 +157,8 @@ impl ConcreteSession {
         let target = match command {
             Some(
                 PgDatabaseCommand::Owner { database, .. }
-                | PgDatabaseCommand::Connect { database, .. },
+                | PgDatabaseCommand::Connect { database, .. }
+                | PgDatabaseCommand::Policy { database, .. },
             ) => Some(
                 schemas
                     .iter()
@@ -150,7 +169,10 @@ impl ConcreteSession {
             None => None,
         };
         // Assigning ownership of a legacy database is always an explicit admin operation.
-        if command.is_some() && actor != "root" {
+        if command.is_some()
+            && !matches!(command, Some(PgDatabaseCommand::Policy { .. }))
+            && actor != "root"
+        {
             return Err(namespace_error(
                 "42501",
                 "database administration requires root",
@@ -212,6 +234,43 @@ impl ConcreteSession {
                         )?;
                     }
                     let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    if let (
+                        Some(id),
+                        Some(PgDatabaseCommand::Policy {
+                            is_template,
+                            allow_connections,
+                            ..
+                        }),
+                    ) = (target, command)
+                    {
+                        let owner: Option<i64> = load(txn, &ctx, owner_key(id))?;
+                        if actor != "root"
+                            && !roles.get(&actor).is_some_and(|oid| Some(*oid) == owner)
+                        {
+                            return Err(kv::errors::New("database policy requires owner"));
+                        }
+                        if *allow_connections == Some(false)
+                            && schemas
+                                .iter()
+                                .any(|s| s.id == id && s.name.original == self.current_database())
+                        {
+                            return Err(kv::errors::New(
+                                "cannot disallow connections for current database",
+                            ));
+                        }
+                        let mut policy: DatabasePolicy = load(txn, &ctx, policy_key(id))?;
+                        if is_template.is_some() {
+                            policy.is_template = *is_template;
+                        }
+                        if allow_connections.is_some() {
+                            policy.allow_connections = *allow_connections;
+                        }
+                        txn.Set(
+                            policy_key(id),
+                            serde_json::to_vec(&policy)
+                                .map_err(|e| kv::errors::New(e.to_string()))?,
+                        )?;
+                    }
                     if roles
                         .values()
                         .any(|oid| !(0x6000_0001..0x8000_0000).contains(oid))
@@ -222,7 +281,9 @@ impl ConcreteSession {
                         .iter()
                         .map(|(name, id)| (*id, name.clone()))
                         .collect::<BTreeMap<_, _>>();
+                    let role_names = Arc::new(role_names);
                     for schema in &schemas {
+                        let policy: DatabasePolicy = load(txn, &ctx, policy_key(schema.id))?;
                         let owner: Option<i64> = load(txn, &ctx, owner_key(schema.id))?;
                         let owner = owner
                             .map(|oid| {
@@ -245,13 +306,20 @@ impl ConcreteSession {
                             id: schema.id,
                             owner,
                             can_connect,
+                            is_template: policy.is_template,
+                            allow_connections: policy.allow_connections,
+                            roles: role_names.clone(),
                         });
                     }
                     Ok(())
                 })
             })
             .map_err(|e| {
-                if e.to_string() == "database owner identity is unavailable" {
+                if e.to_string() == "database policy requires owner" {
+                    namespace_error("42501", "must be owner of database")
+                } else if e.to_string() == "cannot disallow connections for current database" {
+                    namespace_error("22023", "cannot disallow connections for current database")
+                } else if e.to_string() == "database owner identity is unavailable" {
                     namespace_error("0A000", "database owner identity is unavailable")
                 } else {
                     session_error("read database ownership", e)

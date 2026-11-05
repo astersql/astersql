@@ -34,8 +34,9 @@ impl Execution<'_> {
     fn database_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>> {
         if self.database_facts.borrow().is_none() {
             let facts = self.context.pg_database_facts(None)?;
-            *self.database_role_names.borrow_mut() =
-                facts.iter().filter_map(|f| f.owner.clone()).collect();
+            *self.database_role_names.borrow_mut() = facts
+                .first()
+                .map_or_else(Default::default, |f| (*f.roles).clone());
             *self.database_facts.borrow_mut() = Some(facts);
         }
         Ok(self.database_facts.borrow().as_ref().unwrap().clone())
@@ -500,6 +501,7 @@ impl CatalogQuery {
                     relation.name.as_str(),
                     "__pg_scalar"
                         | "pg_user"
+                        | "pg_authid"
                         | "pg_class"
                         | "pg_attribute"
                         | "pg_type"
@@ -738,6 +740,10 @@ impl CatalogQuery {
                     // representation; no native tablespace rows currently exist.
                     ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
                     ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
+                    ("pg_authid", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_authid", "rolname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
                     ("pg_user", "usename") => Some((0, 253, 0)),
                     ("pg_user", "usesuper") => Some((1, 1, boolean)),
                     ("pg_locks", "transactionid") => Some((0, 8, 0)),
@@ -1174,6 +1180,8 @@ impl CatalogQuery {
                         ("pg_shdescription", 6) => 1,
                         ("pg_shdescription", 7) => 2,
                         ("pg_shdescription", 2) => 3,
+                        ("pg_authid", 0) => 1,
+                        ("pg_authid", 1) => 2,
                         ("pg_database", 0) => 1,
                         ("pg_database", 1) => 2,
                         ("pg_database", 5) => 3,
@@ -1460,6 +1468,28 @@ impl CatalogQuery {
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
             "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
+            "pg_authid" => {
+                // This bounded provider exposes only registered PG identity facts,
+                // never native account credentials. Keep the catalog administrator-only.
+                if context.user_identity()?.split('@').next() != Some("root") {
+                    return Err(ConnError::PgFunction(
+                        astersql_session::runtime::PgFunctionError {
+                            state: "42501",
+                            message: "permission denied for table pg_authid".into(),
+                            detail: None,
+                            hint: None,
+                            position: None,
+                        },
+                    ));
+                }
+                execution.database_facts()?;
+                execution
+                    .database_role_names
+                    .borrow()
+                    .iter()
+                    .map(|(oid, name)| vec![Value::Signed(*oid), Value::Text(name.clone())])
+                    .collect()
+            }
             "pg_user" => {
                 let results = context.execute_query(
                     "SELECT User, Super_priv FROM mysql.user",
@@ -1557,11 +1587,15 @@ impl CatalogQuery {
                             Ok(vec![
                                 Value::Signed(oid),
                                 Value::Text(schema.name.original.clone()),
-                                // Ordinary native databases have no template/disable policy.
-                                // Ownership is explicitly migrated or recorded at PG creation.
                                 Value::Null,
-                                Value::Text("false".into()),
-                                Value::Text("true".into()),
+                                facts
+                                    .get(&schema.id)
+                                    .and_then(|f| f.is_template)
+                                    .map_or(Value::Null, |v| Value::Text(v.to_string())),
+                                facts
+                                    .get(&schema.id)
+                                    .and_then(|f| f.allow_connections)
+                                    .map_or(Value::Null, |v| Value::Text(v.to_string())),
                                 facts
                                     .get(&schema.id)
                                     .and_then(|f| f.owner.as_ref())
@@ -1640,14 +1674,14 @@ impl CatalogQuery {
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "pg_database")
-                    && slot % CATALOG_ROW_WIDTH == 5
+                    && matches!(slot % CATALOG_ROW_WIDTH, 3..=5)
                     // NULL-extension of an unmatched outer join is a SQL NULL,
                     // not a legacy database with missing ownership metadata.
-                    && row[slot - 5] != Value::Null
+                    && row[slot - slot % CATALOG_ROW_WIDTH] != Value::Null
                     && row[slot] == Value::Null
                 {
                     return Err(database_identity_unavailable(
-                        "PostgreSQL database owner requires explicit administrator migration",
+                        "PostgreSQL database owner or policy requires explicit administrator migration",
                     ));
                 }
                 row[slot].clone()
