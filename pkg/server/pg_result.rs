@@ -462,6 +462,7 @@ pub(crate) enum CatalogColumnType {
     AclArray = 241,
     Name = 242,
     PgNodeTree = 243,
+    Varchar = 244,
 }
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
@@ -480,6 +481,7 @@ impl CatalogColumnType {
             241 => Self::AclArray,
             242 => Self::Name,
             243 => Self::PgNodeTree,
+            244 => Self::Varchar,
             _ => return None,
         })
     }
@@ -488,6 +490,7 @@ impl CatalogColumnType {
             Self::InternalChar => (18, 1),
             Self::Name => (19, 64),
             Self::PgNodeTree => (194, -1),
+            Self::Varchar => (1043, -1),
             Self::Char => (1042, -1),
             Self::AclArray => (1034, -1),
             Self::Oid => (26, 4),

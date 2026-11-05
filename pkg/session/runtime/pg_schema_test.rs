@@ -825,6 +825,7 @@ fn namespace_owner_revocation_preserves_identity_and_removes_effective_privilege
     assert!(!owned.usage && !owned.can_create);
     admin
         .pg_schema_command(&PgSchemaCommand::Usage {
+            create: false,
             schema: "owner_acl".into(),
             grantee: "ns_acl_owner".into(),
             grant: true,
@@ -841,4 +842,88 @@ fn namespace_owner_revocation_preserves_identity_and_removes_effective_privilege
         .pg_schema_command(&PgSchemaCommand::Drop("owner_acl".into()))
         .unwrap();
     native.execute("DROP USER 'ns_acl_owner'@'%'").unwrap();
+}
+
+#[test]
+fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_initialize_standard_schema().unwrap();
+    let read = || {
+        domain.storage_handle().with_storage(|store| {
+            let ctx = kv::Context::default();
+            let mut values = Vec::new();
+            kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                values.clear();
+                for key in [b"NextGlobalID".as_slice(), b"PgStandardSchema".as_slice()] {
+                    values.push(
+                        txn.Get(&ctx, astersql_meta::transaction_meta_string_key(key), &[])?
+                            .Value,
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+            values
+        })
+    };
+    let before = read();
+    let first = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    let ids = [
+        first.namespace,
+        first.sql_identifier,
+        first.character_data,
+        first.schemata,
+    ];
+    assert_eq!(
+        ids.into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+    let other = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    other.pg_initialize_standard_schema().unwrap();
+    for _ in 0..3 {
+        let facts = other.pg_namespace_facts().unwrap();
+        let standard = facts
+            .iter()
+            .find(|f| f.name == "information_schema")
+            .unwrap();
+        assert_eq!(standard.id, first.namespace);
+        assert_eq!(
+            standard.standard.as_ref().unwrap().sql_identifier,
+            first.sql_identifier
+        );
+        assert!(standard.acl_available);
+    }
+    assert_eq!(read(), before);
+    let mut corrupt = first.clone();
+    corrupt.character_data = corrupt.sql_identifier;
+    domain.storage_handle().with_storage(|store| {
+        let ctx = kv::Context::default();
+        kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                serde_json::to_vec(&corrupt).unwrap(),
+            )
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        other
+            .pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    println!(
+        "pg13_030: durable_identity=4 second_session=1 no_allocation=1 corrupt_identity_rejected=1"
+    );
 }

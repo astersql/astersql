@@ -801,6 +801,9 @@ impl Parser {
         let name = match path.as_slice() {
             [name] => name.clone(),
             [catalog, name] if catalog == "pg_catalog" => name.clone(),
+            [schema, name] if schema == "information_schema" && name == "schemata" => {
+                "information_schema.schemata".into()
+            }
             _ => return Err(unsupported("unsupported catalog relation qualification")),
         };
         let cte_id = if path.len() == 1 {
@@ -817,7 +820,8 @@ impl Parser {
                 "mixed public and catalog relations are unsupported",
             ));
         }
-        if cte_id.is_none() && !is_catalog_relation(&name) {
+        let standard = matches!(path.as_slice(), [schema, relation] if schema == "information_schema" && relation == "schemata");
+        if cte_id.is_none() && !is_catalog_relation(&name) && !standard {
             return Err((
                 "42P01",
                 format!("relation pg_catalog.{name} does not exist"),
@@ -825,6 +829,8 @@ impl Parser {
         }
         let alias = if self.word("as") || self.is_alias() {
             self.identifier()?
+        } else if standard {
+            "schemata".into()
         } else {
             name.clone()
         };
@@ -1177,7 +1183,13 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
     };
     // Determine ownership without rewriting tokens: lexical CTE scope must
     // take precedence over a same-named public relation during parsing.
-    let catalog = tokens.windows(4).enumerate().any(|(index, w)| {
+    let standard = tokens.windows(4).any(|w| {
+        matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
+            && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "information_schema")
+            && w[2] == Token::Symbol('.')
+            && matches!(&w[3], Token::Word(s) | Token::Quoted(s) if s == "schemata")
+    });
+    let catalog = standard || tokens.windows(4).enumerate().any(|(index, w)| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
             && w[2] == Token::Symbol('.')

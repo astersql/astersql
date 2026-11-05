@@ -721,7 +721,7 @@ impl SessionQuery {
         }
         if tokens.len() == 7
             && (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
-            && word(tokens.get(1), "usage")
+            && (word(tokens.get(1), "usage") || word(tokens.get(1), "create"))
             && word(tokens.get(2), "on")
             && word(tokens.get(3), "schema")
         {
@@ -734,6 +734,7 @@ impl SessionQuery {
                     grantee = "PUBLIC".into();
                 }
                 return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Usage {
+                    create: word(tokens.get(1), "create"),
                     schema,
                     grantee,
                     grant,
@@ -745,7 +746,7 @@ impl SessionQuery {
         if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
             && word(tokens.get(1), "schema")
             || (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
-                && word(tokens.get(1), "usage")
+                && (word(tokens.get(1), "usage") || word(tokens.get(1), "create"))
                 && word(tokens.get(3), "schema")
         {
             return Err(("0A000", "unsupported PostgreSQL schema utility form".into()));

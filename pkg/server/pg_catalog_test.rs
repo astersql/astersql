@@ -8273,3 +8273,135 @@ fn pg13_029_contract() {
         "pg13_029_contract: identity_modes=2 internal_edges=2 sequence_types=2 internal_drop_recovery=2 drop_columns=2 owned_lookup=1 nulls=3 detach_attach=2 rename=2 no_allocation=1 invalid_recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_030_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_030_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_030_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG30 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_030_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    for sql in [
+        "CREATE SCHEMA empty_schema",
+        "CREATE TABLE public.schemata(id integer)",
+    ] {
+        ok(&mut socket, sql);
+    }
+    let sql = "SELECT catalog_name,schema_name,schema_owner,default_character_set_catalog,default_character_set_schema,default_character_set_name,sql_path FROM information_schema.schemata WHERE schema_name='empty_schema'";
+    let result = ok(&mut socket, sql);
+    assert!(
+        result.contains(&(
+            b'D',
+            row(&[
+                Some("pg13_030_contract_probe"),
+                Some("empty_schema"),
+                Some("root"),
+                None,
+                None,
+                None,
+                None
+            ])
+        )),
+        "{result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 19, 19, 19, 19, 19, 1043]
+    );
+    let zero = ok(&mut socket, &sql.replace("empty_schema", "absent_schema"));
+    assert_eq!(zero[0], result[0]);
+    assert!(!zero.iter().any(|m| m.0 == b'D'));
+    let error = query(
+        &mut socket,
+        "SELECT absent FROM information_schema.schemata",
+    );
+    assert!(
+        error
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703")),
+        "{error:?}"
+    );
+    ok(&mut socket, "SELECT id FROM public.schemata");
+    ok(&mut socket, "DROP TABLE public.schemata");
+    ok(&mut socket, "DROP SCHEMA empty_schema");
+    let database = domain
+        .info_schema()
+        .SchemaByName(&astersql_infoschema::CiString::new(
+            "pg13_030_contract_probe",
+        ))
+        .unwrap();
+    domain.storage_handle().with_storage(|store| {
+        let ctx = astersql_kv::Context::default();
+        astersql_kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            txn.Set(
+                astersql_meta::transaction_meta_hash_key(
+                    b"PgNamespaces",
+                    database.id.to_string().as_bytes(),
+                ),
+                br#"{"legacy":{"id":42,"owner":"missing_role","usage":[],"explicit_acl":null}}"#
+                    .to_vec(),
+            )
+        })
+        .unwrap();
+    });
+    let missing = query(&mut socket, sql);
+    assert!(
+        missing
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"0A000")),
+        "{missing:?}"
+    );
+    ok(&mut socket, "SELECT 1");
+    println!(
+        "pg13_030_contract: seven_fields=1 nulls=4 empty_schema=1 zero_rows=1 unknown_column_recovery=1 public_isolation=1 cleanup=1"
+    );
+}

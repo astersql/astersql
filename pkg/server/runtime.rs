@@ -1002,6 +1002,11 @@ fn run_session_worker(
                 .execute(&format!("USE `{}`", database.replace('`', "``")))
                 .map_err(|error| ConnError::Session(error.to_string()))?;
         }
+        if dialect == astersql_parser_ast::SqlDialect::PostgreSQL {
+            session
+                .pg_initialize_standard_schema()
+                .map_err(session_protocol_error)?;
+        }
         Ok::<_, ConnError>(session)
     })();
     let mut session = match setup {

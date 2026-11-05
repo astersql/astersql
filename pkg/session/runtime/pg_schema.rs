@@ -40,6 +40,8 @@ pub enum PgSchemaCommand {
         grantee: String,
     },
     Usage {
+        /// Select CREATE rather than USAGE for this bounded schema grant.
+        create: bool,
         schema: String,
         grantee: String,
         grant: bool,
@@ -54,6 +56,8 @@ struct Namespace {
     #[serde(default)]
     owner_id: Option<i64>,
     usage: BTreeSet<String>,
+    #[serde(default)]
+    create: BTreeSet<String>,
     #[serde(default)]
     explicit_acl: Option<bool>,
     #[serde(default = "owner_privilege_default")]
@@ -73,8 +77,8 @@ impl ConcreteSession {
         self.state.borrow_mut().pg_search_path = path;
     }
 
-    // Bootstrap PG authentication currently admits root only. SET ROLE already
-    // verifies membership in the shared role owner before replacing this actor.
+    // Authentication establishes the login identity. SET ROLE verifies shared
+    // membership before replacing this actor; ACL evaluation also expands its closure.
     pub(super) fn pg_schema_identity(&self) -> String {
         self.active_roles
             .borrow()
@@ -109,6 +113,7 @@ impl ConcreteSession {
             self.pg_database_role_id(grantee)?;
         }
         let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        let standard = self.pg_standard_schema(false)?;
         let mut result = BTreeMap::new();
         self.domain
             .storage_handle()
@@ -133,6 +138,7 @@ impl ConcreteSession {
                                         owner: "root".into(),
                                         owner_id: None,
                                         usage: BTreeSet::from(["PUBLIC".into()]),
+                                        create: BTreeSet::new(),
                                     },
                                 ),
                                 (
@@ -145,13 +151,40 @@ impl ConcreteSession {
                                         owner: "root".into(),
                                         owner_id: None,
                                         usage: BTreeSet::from(["PUBLIC".into()]),
+                                        create: BTreeSet::new(),
                                     },
                                 ),
                             ]),
                             Err(error) => return Err(error),
                         };
+                    if let Some(standard) = &standard {
+                        namespaces
+                            .entry("information_schema".into())
+                            .or_insert_with(|| Namespace {
+                                id: standard.namespace,
+                                owner: "root".into(),
+                                owner_id: None,
+                                usage: BTreeSet::from(["PUBLIC".into()]),
+                                create: BTreeSet::new(),
+                                explicit_acl: Some(false),
+                                owner_usage: true,
+                                owner_create: true,
+                            });
+                    }
+                    if let Some(standard) = &standard
+                        && namespaces
+                            .get("information_schema")
+                            .is_none_or(|ns| ns.id != standard.namespace)
+                    {
+                        return Err(kv::errors::New("standard schema identity is unavailable"));
+                    }
                     for (name, namespace) in &mut namespaces {
-                        if namespace.id == 0 && !matches!(name.as_str(), "public" | "pg_catalog") {
+                        if namespace.id == 0
+                            && !matches!(
+                                name.as_str(),
+                                "public" | "pg_catalog" | "information_schema"
+                            )
+                        {
                             if command.is_none() {
                                 return Err(kv::errors::New(
                                     "namespace identity requires explicit migration",
@@ -185,6 +218,7 @@ impl ConcreteSession {
                                         owner: actor.clone(),
                                         owner_id: command_owner_id,
                                         usage: BTreeSet::new(),
+                                        create: BTreeSet::new(),
                                     },
                                 );
                             }
@@ -204,6 +238,7 @@ impl ConcreteSession {
                                         owner: owner.clone(),
                                         owner_id: command_owner_id,
                                         usage: BTreeSet::new(),
+                                        create: BTreeSet::new(),
                                         explicit_acl: Some(false),
                                         owner_usage: true,
                                         owner_create: true,
@@ -232,11 +267,14 @@ impl ConcreteSession {
                                     existing.owner_create = false;
                                 }
                                 existing.usage.remove(grantee);
+                                existing.create.remove(grantee);
                                 existing.explicit_acl = Some(true);
                             }
                             PgSchemaCommand::Rename { schema, name } => {
-                                if matches!(schema.as_str(), "public" | "pg_catalog")
-                                    || name.starts_with("pg_")
+                                if matches!(
+                                    schema.as_str(),
+                                    "public" | "pg_catalog" | "information_schema"
+                                ) || name.starts_with("pg_")
                                 {
                                     return Err(kv::errors::New(
                                         "renaming built-in schema is unsupported",
@@ -255,7 +293,10 @@ impl ConcreteSession {
                                 namespaces.insert(name.clone(), existing);
                             }
                             PgSchemaCommand::Drop(name) => {
-                                if matches!(name.as_str(), "public" | "pg_catalog") {
+                                if matches!(
+                                    name.as_str(),
+                                    "public" | "pg_catalog" | "information_schema"
+                                ) {
                                     return Err(kv::errors::New(
                                         "dropping built-in schema is unsupported",
                                     ));
@@ -288,6 +329,7 @@ impl ConcreteSession {
                                 namespaces.remove(name);
                             }
                             PgSchemaCommand::Usage {
+                                create,
                                 schema,
                                 grantee,
                                 grant,
@@ -300,20 +342,33 @@ impl ConcreteSession {
                                 }
                                 schema.explicit_acl = Some(true);
                                 if grantee == &schema.owner {
-                                    schema.owner_usage = *grant;
-                                } else if *grant {
-                                    schema.usage.insert(grantee.clone());
+                                    if *create {
+                                        schema.owner_create = *grant;
+                                    } else {
+                                        schema.owner_usage = *grant;
+                                    }
                                 } else {
-                                    schema.usage.remove(grantee);
+                                    let privileges = if *create {
+                                        &mut schema.create
+                                    } else {
+                                        &mut schema.usage
+                                    };
+                                    if *grant {
+                                        privileges.insert(grantee.clone());
+                                    } else {
+                                        privileges.remove(grantee);
+                                    }
                                 }
                             }
                         }
                         // Remove the empty extension record after the last owned schema
                         // is dropped, retaining modified built-in ACLs when present.
-                        let defaults = namespaces.len() == 2
+                        let defaults = namespaces.len() == (if standard.is_some() { 3 } else { 2 })
                             && namespaces.iter().all(|(name, ns)| {
-                                matches!(name.as_str(), "public" | "pg_catalog")
-                                    && ns.explicit_acl == Some(false)
+                                matches!(
+                                    name.as_str(),
+                                    "public" | "pg_catalog" | "information_schema"
+                                ) && ns.explicit_acl == Some(false)
                                     && ns.owner == "root"
                                     && ns.usage == BTreeSet::from(["PUBLIC".into()])
                             });
@@ -332,6 +387,9 @@ impl ConcreteSession {
                 })
             })
             .map_err(|e| match e.to_string().as_str() {
+                "standard schema identity is unavailable" => {
+                    namespace_error("0A000", "standard schema identity is unavailable")
+                }
                 "namespace identity requires explicit migration" => namespace_error(
                     "0A000",
                     "namespace identity requires explicit administrator migration",
@@ -445,14 +503,15 @@ impl ConcreteSession {
     pub fn pg_effective_path(&self) -> SessionResult<Vec<String>> {
         let namespaces = self.pg_namespaces(None)?;
         let actor = self.pg_schema_identity();
+        let enabled = self.pg_enabled_namespace_roles();
         let mut result = Vec::new();
         for entry in &self.state.borrow().pg_search_path {
             let name = if entry == "$user" { &actor } else { entry };
             if let Some(schema) = namespaces.get(name)
                 && (actor == "root"
-                    || (actor == schema.owner && schema.owner_usage)
+                    || (enabled.contains(&schema.owner) && schema.owner_usage)
                     || schema.usage.contains("PUBLIC")
-                    || schema.usage.contains(&actor))
+                    || schema.usage.iter().any(|r| enabled.contains(r)))
                 && !result.contains(name)
             {
                 result.push(name.clone());
@@ -468,12 +527,15 @@ pub struct PgNamespaceFact {
     pub id: i64,
     pub name: String,
     pub usage: bool,
-    /// Creation is currently limited to the namespace owner or bootstrap admin.
+    /// Effective CREATE from the owner, enabled roles, PUBLIC, or bootstrap admin.
     pub can_create: bool,
     pub owner: Option<i64>,
     pub acl: Option<String>,
     /// A default SQL NULL is only valid when the persisted ACL state is known.
     pub acl_available: bool,
+    /// Ownership visibility is independent of the owner's revoked ACL bits.
+    pub owner_usable: bool,
+    pub standard: Option<PgStandardSchema>,
 }
 
 fn allocate_namespace_id(
@@ -509,6 +571,23 @@ pub(super) fn namespace_error(state: &'static str, message: &str) -> SessionErro
 }
 
 impl ConcreteSession {
+    fn pg_enabled_namespace_roles(&self) -> BTreeSet<String> {
+        let actor = self.pg_schema_identity();
+        let mut enabled = BTreeSet::from([actor.clone()]);
+        if let (Some(user), Some(host)) = (
+            self.login_user.as_deref(),
+            self.authenticated_host.as_deref(),
+        ) {
+            let privileges = runtime_privilege_handle(&self.domain).Get();
+            enabled.extend(
+                privileges
+                    .FindAllUserEffectiveRoles(user, host, &self.active_roles.borrow())
+                    .iter()
+                    .map(|r| r.Username.clone()),
+            );
+        }
+        enabled
+    }
     pub fn pg_namespace_facts(&self) -> SessionResult<Vec<PgNamespaceFact>> {
         let actor = self.pg_schema_identity();
         let database = self
@@ -521,16 +600,24 @@ impl ConcreteSession {
             .first()
             .map(|f| (*f.roles).clone())
             .unwrap_or_default();
+        let enabled = self.pg_enabled_namespace_roles();
+        let standard = self.pg_standard_schema(false)?;
         Ok(self
             .pg_namespaces(None)?
             .into_iter()
             .map(|(name, namespace)| PgNamespaceFact {
+                standard: (name == "information_schema")
+                    .then(|| standard.clone())
+                    .flatten(),
+                owner_usable: actor == "root" || enabled.contains(&namespace.owner),
                 owner: namespace
                     .owner_id
                     .filter(|id| roles.get(id) == Some(&namespace.owner))
                     .or_else(|| {
-                        (matches!(name.as_str(), "public" | "pg_catalog")
-                            && namespace.owner == "root")
+                        (matches!(
+                            name.as_str(),
+                            "public" | "pg_catalog" | "information_schema"
+                        ) && namespace.owner == "root")
                             .then(|| {
                                 roles
                                     .iter()
@@ -547,6 +634,7 @@ impl ConcreteSession {
                     && namespace
                         .usage
                         .iter()
+                        .chain(namespace.create.iter())
                         .all(|r| r == "PUBLIC" || roles.values().any(|name| name == r)),
                 acl: (namespace.explicit_acl == Some(true)).then(|| {
                     fn quoted(value: &str) -> String {
@@ -567,23 +655,30 @@ impl ConcreteSession {
                             grantor
                         ));
                     }
-                    entries.extend(
-                        namespace
-                            .usage
-                            .iter()
-                            .filter(|r| **r != namespace.owner)
-                            .map(|role| {
-                                format!(
-                                    "{}=U/{}",
-                                    if role == "PUBLIC" {
-                                        String::new()
-                                    } else {
-                                        quoted(role)
-                                    },
-                                    grantor
-                                )
-                            }),
-                    );
+                    let grantees: BTreeSet<_> = namespace.usage.union(&namespace.create).collect();
+                    entries.extend(grantees.into_iter().filter(|r| **r != namespace.owner).map(
+                        |role| {
+                            format!(
+                                "{}={}{}/{}",
+                                if role == "PUBLIC" {
+                                    String::new()
+                                } else {
+                                    quoted(role)
+                                },
+                                if namespace.usage.contains(role) {
+                                    "U"
+                                } else {
+                                    ""
+                                },
+                                if namespace.create.contains(role) {
+                                    "C"
+                                } else {
+                                    ""
+                                },
+                                grantor
+                            )
+                        },
+                    ));
                     format!(
                         "{{{}}}",
                         entries
@@ -598,11 +693,14 @@ impl ConcreteSession {
                 } else {
                     namespace.id
                 },
-                can_create: actor == "root" || (actor == namespace.owner && namespace.owner_create),
+                can_create: actor == "root"
+                    || (enabled.contains(&namespace.owner) && namespace.owner_create)
+                    || namespace.create.contains("PUBLIC")
+                    || namespace.create.iter().any(|r| enabled.contains(r)),
                 usage: actor == "root"
-                    || (actor == namespace.owner && namespace.owner_usage)
+                    || (enabled.contains(&namespace.owner) && namespace.owner_usage)
                     || namespace.usage.contains("PUBLIC")
-                    || namespace.usage.contains(&actor),
+                    || namespace.usage.iter().any(|r| enabled.contains(r)),
                 name,
             })
             .collect())
@@ -718,5 +816,85 @@ impl ConcreteSession {
             return Err(namespace_error("42501", "permission denied for schema"));
         }
         Ok(Some((id, name.into())))
+    }
+}
+
+/// Durable identities for the bounded standard schema. OIDs are derived by the
+/// server from these globally allocated IDs, never copied from a reference build.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PgStandardSchema {
+    /// Owner of the standard view, independent of later schema ownership changes.
+    pub owner: i64,
+    pub namespace: i64,
+    pub sql_identifier: i64,
+    pub character_data: i64,
+    pub schemata: i64,
+}
+impl ConcreteSession {
+    pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
+        self.pg_standard_schema(true)?;
+        Ok(())
+    }
+    fn pg_standard_schema(&self, initialize: bool) -> SessionResult<Option<PgStandardSchema>> {
+        let owner = if initialize {
+            Some(self.pg_database_role_id("root")?)
+        } else {
+            None
+        };
+        let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        let mut result = None;
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+                    let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                    result = match txn.Get(&ctx, key.clone(), &[]) {
+                        Ok(value) => Some(
+                            serde_json::from_slice(&value.Value)
+                                .map_err(|e| kv::errors::New(e.to_string()))?,
+                        ),
+                        Err(e) if kv::IsErrNotFound(&e) && initialize => {
+                            let standard = PgStandardSchema {
+                                owner: owner.expect("initialization has an owner"),
+                                namespace: allocate_namespace_id(txn, &ctx)?,
+                                sql_identifier: allocate_namespace_id(txn, &ctx)?,
+                                character_data: allocate_namespace_id(txn, &ctx)?,
+                                schemata: allocate_namespace_id(txn, &ctx)?,
+                            };
+                            txn.Set(
+                                key,
+                                serde_json::to_vec(&standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                            Some(standard)
+                        }
+                        Err(e) if kv::IsErrNotFound(&e) => None,
+                        Err(e) => return Err(e),
+                    };
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("PostgreSQL standard schema metadata", e))?;
+        if let Some(standard) = &result {
+            let ids = [
+                standard.namespace,
+                standard.sql_identifier,
+                standard.character_data,
+                standard.schemata,
+            ];
+            let unique: BTreeSet<_> = ids.into_iter().collect();
+            if unique.len() != 4
+                || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
+                || ids
+                    .iter()
+                    .any(|id| *id <= 0 || *id > (0x4000_0000 - 16384 - 1) / 2)
+            {
+                return Err(namespace_error(
+                    "0A000",
+                    "standard schema identity is unavailable",
+                ));
+            }
+        }
+        Ok(result)
     }
 }
