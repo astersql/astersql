@@ -801,8 +801,11 @@ impl Parser {
         let name = match path.as_slice() {
             [name] => name.clone(),
             [catalog, name] if catalog == "pg_catalog" => name.clone(),
-            [schema, name] if schema == "information_schema" && name == "schemata" => {
-                "information_schema.schemata".into()
+            [schema, name]
+                if schema == "information_schema"
+                    && matches!(name.as_str(), "schemata" | "tables") =>
+            {
+                format!("information_schema.{name}")
             }
             _ => return Err(unsupported("unsupported catalog relation qualification")),
         };
@@ -820,7 +823,7 @@ impl Parser {
                 "mixed public and catalog relations are unsupported",
             ));
         }
-        let standard = matches!(path.as_slice(), [schema, relation] if schema == "information_schema" && relation == "schemata");
+        let standard = matches!(path.as_slice(), [schema, relation] if schema == "information_schema" && matches!(relation.as_str(), "schemata" | "tables"));
         if cte_id.is_none() && !is_catalog_relation(&name) && !standard {
             return Err((
                 "42P01",
@@ -830,7 +833,7 @@ impl Parser {
         let alias = if self.word("as") || self.is_alias() {
             self.identifier()?
         } else if standard {
-            "schemata".into()
+            path.last().unwrap().clone()
         } else {
             name.clone()
         };
@@ -1187,7 +1190,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "information_schema")
             && w[2] == Token::Symbol('.')
-            && matches!(&w[3], Token::Word(s) | Token::Quoted(s) if s == "schemata")
+            && matches!(&w[3], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "schemata" | "tables"))
     });
     let catalog = standard || tokens.windows(4).enumerate().any(|(index, w)| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))

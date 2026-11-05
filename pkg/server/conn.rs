@@ -924,6 +924,18 @@ pub trait TiDBContext: Send + Sync {
             "PostgreSQL sequence service unavailable".into(),
         ))
     }
+    /// Connection-local models never appear in another connection's Domain snapshot.
+    fn pg_local_temporary_models(&self) -> ConnResult<Vec<astersql_meta_model::TableInfo>> {
+        Ok(Vec::new())
+    }
+    /// Evaluate shared owner/table/column ACL facts for an execution-snapshot model.
+    fn pg_standard_table_visible(
+        &self,
+        _database: String,
+        _table: std::sync::Arc<astersql_meta_model::TableInfo>,
+    ) -> ConnResult<bool> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     /// All current-database namespace identities and USAGE facts for this actor.
     /// None preserves contexts without PostgreSQL namespace support.
     fn pg_namespace_facts(

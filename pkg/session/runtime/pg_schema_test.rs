@@ -879,12 +879,14 @@ fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
         first.sql_identifier,
         first.character_data,
         first.schemata,
+        first.tables,
+        first.yes_or_no,
     ];
     assert_eq!(
         ids.into_iter()
             .collect::<std::collections::BTreeSet<_>>()
             .len(),
-        4
+        6
     );
     let other = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     other.pg_initialize_standard_schema().unwrap();
@@ -924,6 +926,103 @@ fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
         "0A000"
     );
     println!(
-        "pg13_030: durable_identity=4 second_session=1 no_allocation=1 corrupt_identity_rejected=1"
+        "pg13_030: durable_identity=6 second_session=1 no_allocation=1 corrupt_identity_rejected=1"
+    );
+}
+
+#[test]
+fn pg13_031_standard_schema_upgrade_is_explicit() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_initialize_standard_schema().unwrap();
+    let original = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    domain.storage_handle().with_storage(|store| {
+        let ctx = kv::Context::default();
+        kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            let mut legacy = serde_json::to_value(&original).unwrap();
+            legacy.as_object_mut().unwrap().remove("tables");
+            legacy.as_object_mut().unwrap().remove("yes_or_no");
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                serde_json::to_vec(&legacy).unwrap(),
+            )
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        pg.pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    pg.pg_initialize_standard_schema().unwrap();
+    let upgraded = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    assert_eq!(original.namespace, upgraded.namespace);
+    assert_eq!(original.schemata, upgraded.schemata);
+    assert_eq!(original.sql_identifier, upgraded.sql_identifier);
+    assert!(upgraded.tables > original.tables && upgraded.yes_or_no > original.yes_or_no);
+    println!("pg13_031 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=3");
+}
+
+#[test]
+fn pg13_031_temporary_catalog_identities_are_private() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let first = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let second = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    for session in [&first, &second] {
+        session.pg_initialize_standard_schema().unwrap();
+        session
+            .execute("CREATE TEMPORARY TABLE pg13_031_local(id integer)")
+            .unwrap();
+    }
+    let a = first.pg_local_temporary_models();
+    let b = second.pg_local_temporary_models();
+    assert_eq!(a.len(), 1);
+    assert_eq!(b.len(), 1);
+    assert_ne!(a[0].ID, b[0].ID);
+    assert_ne!(a[0].PostgreSQLNamespace, b[0].PostgreSQLNamespace);
+    assert!(a[0].ID > 0 && a[0].ID < (0x4000_0000 - 16384 - 1) / 2);
+    let namespace = a[0].PostgreSQLNamespace.as_ref().unwrap().0;
+    assert!(
+        first
+            .pg_namespace_facts()
+            .unwrap()
+            .iter()
+            .any(|f| f.id == namespace && f.name.starts_with("pg_temp_"))
+    );
+    assert!(
+        !second
+            .pg_namespace_facts()
+            .unwrap()
+            .iter()
+            .any(|f| f.id == namespace)
+    );
+    assert!(
+        domain
+            .info_schema()
+            .TableByName(
+                &astersql_infoschema::CiString::new("test"),
+                &astersql_infoschema::CiString::new("pg13_031_local")
+            )
+            .is_err()
+    );
+    first.execute("DROP TABLE pg13_031_local").unwrap();
+    assert!(first.pg_local_temporary_models().is_empty());
+    assert_eq!(second.pg_local_temporary_models()[0].ID, b[0].ID);
+    second.execute("DROP TABLE pg13_031_local").unwrap();
+    println!(
+        "pg13_031 temporary: private_relations=2 private_namespaces=2 bounded_ids=1 shared_domain_unchanged=1 cleanup=2"
     );
 }

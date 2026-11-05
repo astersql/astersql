@@ -34,6 +34,8 @@ pub enum PgSchemaCommand {
         schema: String,
         table: String,
         grantee: String,
+        column: Option<String>,
+        grant: bool,
     },
     RevokeAll {
         schema: String,
@@ -444,6 +446,8 @@ impl ConcreteSession {
             schema,
             table,
             grantee,
+            column,
+            grant,
         } = command
         {
             if self.pg_schema_identity() != "root" {
@@ -460,9 +464,14 @@ impl ConcreteSession {
                 ConcreteSession::new_with_dialect(self.domain.clone(), ast::SqlDialect::MySQL);
             let ident = |name: &str| format!("`{}`", name.replace('`', "``"));
             native.execute(&format!(
-                "GRANT SELECT ON {}.{} TO '{}'@'%'",
+                "{} SELECT{} ON {}.{} {} '{}'@'%'",
+                if *grant { "GRANT" } else { "REVOKE" },
+                column
+                    .as_ref()
+                    .map_or(String::new(), |c| format!("({})", ident(c))),
                 ident(&self.current_database()),
                 ident(&physical),
+                if *grant { "TO" } else { "FROM" },
                 grantee.replace('\\', "\\\\").replace('\'', "''")
             ))?;
             return Ok(());
@@ -602,7 +611,7 @@ impl ConcreteSession {
             .unwrap_or_default();
         let enabled = self.pg_enabled_namespace_roles();
         let standard = self.pg_standard_schema(false)?;
-        Ok(self
+        let mut facts: Vec<_> = self
             .pg_namespaces(None)?
             .into_iter()
             .map(|(name, namespace)| PgNamespaceFact {
@@ -703,7 +712,27 @@ impl ConcreteSession {
                     || namespace.usage.iter().any(|r| enabled.contains(r)),
                 name,
             })
-            .collect())
+            .collect();
+        if let Some((id, owner)) = self
+            .state
+            .borrow()
+            .pg_temporary_namespaces
+            .get(&self.current_database())
+            .copied()
+        {
+            facts.push(PgNamespaceFact {
+                id,
+                name: format!("pg_temp_{id}"),
+                usage: true,
+                can_create: true,
+                owner: Some(owner),
+                acl: None,
+                acl_available: true,
+                owner_usable: true,
+                standard: None,
+            });
+        }
+        Ok(facts)
     }
 
     /// Resolve logical PG identity to the existing native table storage key.
@@ -829,6 +858,10 @@ pub struct PgStandardSchema {
     pub sql_identifier: i64,
     pub character_data: i64,
     pub schemata: i64,
+    #[serde(default)]
+    pub tables: i64,
+    #[serde(default)]
+    pub yes_or_no: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -860,9 +893,11 @@ impl ConcreteSession {
                                 sql_identifier: allocate_namespace_id(txn, &ctx)?,
                                 character_data: allocate_namespace_id(txn, &ctx)?,
                                 schemata: allocate_namespace_id(txn, &ctx)?,
+                                tables: allocate_namespace_id(txn, &ctx)?,
+                                yes_or_no: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
-                                key,
+                                key.clone(),
                                 serde_json::to_vec(&standard)
                                     .map_err(|e| kv::errors::New(e.to_string()))?,
                             )?;
@@ -871,6 +906,18 @@ impl ConcreteSession {
                         Err(e) if kv::IsErrNotFound(&e) => None,
                         Err(e) => return Err(e),
                     };
+                    // Upgrade only at explicit startup, never during catalog reads.
+                    if initialize && let Some(standard) = &mut result {
+                        if standard.tables == 0 && standard.yes_or_no == 0 {
+                            standard.tables = allocate_namespace_id(txn, &ctx)?;
+                            standard.yes_or_no = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                key,
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
+                    }
                     Ok(())
                 })
             })
@@ -881,9 +928,11 @@ impl ConcreteSession {
                 standard.sql_identifier,
                 standard.character_data,
                 standard.schemata,
+                standard.tables,
+                standard.yes_or_no,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 4
+            if unique.len() != 6
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()
@@ -896,5 +945,114 @@ impl ConcreteSession {
             }
         }
         Ok(result)
+    }
+}
+
+impl ConcreteSession {
+    /// Shared ACLs and effective roles; namespace USAGE and path do not filter
+    /// standard table listings. The caller supplies its execution-snapshot model.
+    pub fn pg_standard_table_visible(
+        &self,
+        database: &str,
+        table: &astersql_meta_model::TableInfo,
+    ) -> SessionResult<bool> {
+        let actor = self.pg_schema_identity();
+        let roles = self
+            .pg_database_facts(None)?
+            .first()
+            .map(|f| (*f.roles).clone())
+            .unwrap_or_default();
+        if actor == "root" {
+            return Ok(true);
+        }
+        let (Some(login), Some(login_host)) = (
+            self.login_user.as_deref(),
+            self.authenticated_host.as_deref(),
+        ) else {
+            return Err(namespace_error(
+                "0A000",
+                "authenticated relation ACL source is unavailable",
+            ));
+        };
+        let selected = self.active_roles.borrow().first().cloned();
+        let (user, host) = selected.as_ref().map_or((login, login_host), |r| {
+            (r.Username.as_str(), r.Hostname.as_str())
+        });
+        let privileges = runtime_privilege_handle(&self.domain).Get();
+        // PostgreSQL enables inherited memberships on login; native MySQL
+        // default-role activation is a separate contract and stays unchanged.
+        let active = privileges.getAllRoles(user, host);
+        let inherited = privileges.FindAllRole(&active);
+        let owner = table.PostgreSQLOwner.and_then(|id| roles.get(&id));
+        if owner.is_some_and(|name| name == user || inherited.iter().any(|r| &r.Username == name)) {
+            return Ok(true);
+        }
+        let mask = astersql_parser_mysql::privs::AllPrivMask.0;
+        Ok(
+            privileges.RequestVerification(&active, user, host, database, &table.Name.O, "", mask)
+                || table
+                    .Columns
+                    .iter()
+                    .filter(|c| c.State == astersql_meta_model::StatePublic && !c.Hidden)
+                    .any(|c| {
+                        privileges.RequestVerification(
+                            &active,
+                            user,
+                            host,
+                            database,
+                            &table.Name.O,
+                            &c.Name.O,
+                            mask,
+                        )
+                    }),
+        )
+    }
+}
+
+impl ConcreteSession {
+    /// Local table identities share the allocator, but never publish a relation
+    /// into Domain. Only this connection retains the namespace and table models.
+    pub(super) fn pg_allocate_temporary_identity(&self) -> SessionResult<(i64, i64)> {
+        let database = self.current_database();
+        let existing = self
+            .state
+            .borrow()
+            .pg_temporary_namespaces
+            .get(&database)
+            .copied();
+        let owner = match existing {
+            Some((_, owner)) => owner,
+            None => self.pg_database_role_id(&self.pg_schema_identity())?,
+        };
+        let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        let mut ids = (0, 0);
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+                    ids.0 = match existing {
+                        Some((id, _)) => id,
+                        None => allocate_namespace_id(txn, &ctx)?,
+                    };
+                    ids.1 = allocate_namespace_id(txn, &ctx)?;
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("allocate PG temporary identities", e))?;
+        self.state
+            .borrow_mut()
+            .pg_temporary_namespaces
+            .insert(database, (ids.0, owner));
+        Ok(ids)
+    }
+    pub fn pg_local_temporary_models(&self) -> Vec<astersql_meta_model::TableInfo> {
+        let database = self.current_database();
+        self.state
+            .borrow()
+            .local_temporary_tables
+            .iter()
+            .filter(|((db, _), _)| db == &database)
+            .map(|(_, model)| model.clone())
+            .collect()
     }
 }

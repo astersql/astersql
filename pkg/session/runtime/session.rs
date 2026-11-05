@@ -131,6 +131,8 @@ pub(super) struct SessionState {
     pub(super) native_sequence_values: HashMap<i64, i64>,
     /// Reserved next/end values are connection-local and survive user rollback.
     pub(super) pg_sequence_cache: HashMap<i64, (i64, i64)>,
+    /// Connection-private PG namespace and fixed creating owner, keyed by database.
+    pub(super) pg_temporary_namespaces: HashMap<String, (i64, i64)>,
     /// Local temporary tables shadow the Domain catalog only for this session.
     /// Their independently allocated physical IDs keep their KV rows private.
     pub(super) local_temporary_tables: HashMap<(String, String), astersql_meta_model::TableInfo>,
@@ -452,6 +454,7 @@ impl Default for SessionState {
             native_sequence_values: HashMap::new(),
             pg_sequence_cache: HashMap::new(),
             local_temporary_tables: HashMap::new(),
+            pg_temporary_namespaces: HashMap::new(),
             local_temporary_auto_ids: HashMap::new(),
             global_temporary_tables_in_transaction: HashMap::new(),
             current_database: "test".to_owned(),

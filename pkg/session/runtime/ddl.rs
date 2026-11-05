@@ -1017,9 +1017,19 @@ impl ConcreteSession {
         }
         if is_local_temporary {
             // Go local temporary tables live in SessionExtendedInfoSchema rather
-            // than the shared InfoSchema. A process-wide high ID gives the
-            // existing relational KV executor a non-colliding keyspace.
-            table.ID = NEXT_RUNTIME_LOCAL_TEMPORARY_TABLE_ID.fetch_add(1, Ordering::AcqRel);
+            // than the shared InfoSchema. Native tables retain the process-wide
+            // high ID stream; PG uses bounded IDs for its existing OID mapping.
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                let (namespace, id) = self.pg_allocate_temporary_identity()?;
+                let logical_name = table
+                    .PostgreSQLNamespace
+                    .as_ref()
+                    .map_or_else(|| table.Name.O.clone(), |(_, name)| name.clone());
+                table.ID = id;
+                table.PostgreSQLNamespace = Some((namespace, logical_name));
+            } else {
+                table.ID = NEXT_RUNTIME_LOCAL_TEMPORARY_TABLE_ID.fetch_add(1, Ordering::AcqRel);
+            }
             self.state.borrow_mut().local_temporary_tables.insert(
                 (
                     database.to_ascii_lowercase(),

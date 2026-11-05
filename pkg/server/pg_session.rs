@@ -472,7 +472,12 @@ impl SessionQuery {
                 | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::RelationOwner { .. } => "ALTER TABLE",
                 astersql_session::runtime::PgSchemaCommand::RevokeAll { .. } => "REVOKE",
-                astersql_session::runtime::PgSchemaCommand::TableSelect { .. } => "GRANT",
+                astersql_session::runtime::PgSchemaCommand::TableSelect { grant: true, .. } => {
+                    "GRANT"
+                }
+                astersql_session::runtime::PgSchemaCommand::TableSelect {
+                    grant: false, ..
+                } => "REVOKE",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
             },
@@ -639,23 +644,38 @@ impl SessionQuery {
         if word(tokens.first(), "alter") && word(tokens.get(1), "database") {
             return Err(("0A000", "unsupported PostgreSQL database policy".into()));
         }
-        if tokens.len() == 8
-            && word(tokens.first(), "grant")
+        if (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
             && word(tokens.get(1), "select")
-            && word(tokens.get(2), "on")
-            && word(tokens.get(6), "to")
-            && matches!(tokens.get(4), Some(Token::Symbol('.')))
-            && let (Some(schema), Some(table), Some(grantee)) = (
-                identifier(&tokens[3]),
-                identifier(&tokens[5]),
-                identifier(&tokens[7]),
-            )
         {
-            return Ok(Some(Self::SchemaUtility(PgSchemaCommand::TableSelect {
-                schema,
-                table,
-                grantee,
-            })));
+            let grant = word(tokens.first(), "grant");
+            let (on, column) = if tokens.get(2) == Some(&Token::Symbol('('))
+                && tokens.get(4) == Some(&Token::Symbol(')'))
+            {
+                (5, identifier(&tokens[3]))
+            } else {
+                (2, None)
+            };
+            if on == 5 && column.is_none() {
+                return Err(("42601", "expected a column identifier".into()));
+            }
+            if tokens.len() == on + 6
+                && word(tokens.get(on), "on")
+                && tokens.get(on + 2) == Some(&Token::Symbol('.'))
+                && word(tokens.get(on + 4), if grant { "to" } else { "from" })
+                && let (Some(schema), Some(table), Some(grantee)) = (
+                    identifier(&tokens[on + 1]),
+                    identifier(&tokens[on + 3]),
+                    identifier(&tokens[on + 5]),
+                )
+            {
+                return Ok(Some(Self::SchemaUtility(PgSchemaCommand::TableSelect {
+                    schema,
+                    table,
+                    grantee,
+                    column,
+                    grant,
+                })));
+            }
         }
         if tokens.len() == 5
             && word(tokens.first(), "create")

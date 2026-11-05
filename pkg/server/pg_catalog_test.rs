@@ -8405,3 +8405,187 @@ fn pg13_030_contract() {
         "pg13_030_contract: seven_fields=1 nulls=4 empty_schema=1 zero_rows=1 unknown_column_recovery=1 public_isolation=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_031_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_031_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_031_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG31 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_031_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    for sql in [
+        "CREATE SCHEMA other_schema",
+        "CREATE TABLE public.is_map_t(id integer)",
+        "CREATE TABLE other_schema.is_map_t(id integer)",
+        "CREATE VIEW public.is_map_v AS SELECT id FROM public.is_map_t",
+        "CREATE SEQUENCE public.is_map_s",
+        "CREATE INDEX is_map_i ON public.is_map_t(id)",
+    ] {
+        ok(&mut socket, sql);
+    }
+    let sql = "SELECT table_catalog,table_schema,table_name,table_type,self_referencing_column_name,reference_generation,user_defined_type_catalog,user_defined_type_schema,user_defined_type_name,is_insertable_into,is_typed,commit_action FROM information_schema.tables WHERE table_schema='public' AND table_name='is_map_t'";
+    let result = ok(&mut socket, sql);
+    assert!(
+        result.contains(&(
+            b'D',
+            row(&[
+                Some("pg13_031_contract_probe"),
+                Some("public"),
+                Some("is_map_t"),
+                Some("BASE TABLE"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("YES"),
+                Some("NO"),
+                None
+            ])
+        )),
+        "{result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 19, 19, 1043, 19, 1043, 19, 19, 19, 1043, 1043, 1043]
+    );
+    let zero = ok(&mut socket, &sql.replace("is_map_t", "absent_table"));
+    assert_eq!(zero[0], result[0]);
+    assert!(!zero.iter().any(|m| m.0 == b'D'));
+    let kinds = ok(
+        &mut socket,
+        "SELECT table_name,table_type FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('is_map_t','is_map_v','is_map_s','is_map_i') ORDER BY table_name",
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            row(&[Some("is_map_t"), Some("BASE TABLE")]),
+            row(&[Some("is_map_v"), Some("VIEW")])
+        ]
+    );
+    ok(&mut socket, "SET search_path TO pg_catalog");
+    assert_eq!(ok(&mut socket, sql), result);
+    let both = ok(
+        &mut socket,
+        "SELECT table_schema FROM information_schema.tables WHERE table_name='is_map_t' ORDER BY table_schema",
+    );
+    assert_eq!(both.iter().filter(|m| m.0 == b'D').count(), 2);
+    for command in [
+        "SELECT absent FROM information_schema.tables",
+        "BEGIN",
+        "SELECT absent FROM information_schema.tables",
+        "ROLLBACK",
+        "SELECT 1",
+    ] {
+        let m = query(&mut socket, command);
+        if command.contains("absent") {
+            assert!(
+                m.iter()
+                    .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703")),
+                "{m:?}"
+            );
+        }
+    }
+    // Native CREATE VIEW deliberately lacks the durable PG binding. Its name
+    // stays readable, while only the unsupported insertability flag refuses.
+    native.execute("CREATE VIEW pg13_031_contract_probe.legacy_v AS SELECT id FROM pg13_031_contract_probe.is_map_t").unwrap();
+    let legacy = ok(
+        &mut socket,
+        "SELECT table_name FROM information_schema.tables WHERE table_name='legacy_v'",
+    );
+    assert!(legacy.contains(&(b'D', row(&[Some("legacy_v")]))));
+    let unsupported = query(
+        &mut socket,
+        "SELECT is_insertable_into FROM information_schema.tables WHERE table_name='legacy_v'",
+    );
+    assert!(
+        unsupported
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"0A000")),
+        "{unsupported:?}"
+    );
+    ok(&mut socket, sql);
+    native
+        .execute("DROP VIEW pg13_031_contract_probe.legacy_v")
+        .unwrap();
+    native.execute("CREATE GLOBAL TEMPORARY TABLE pg13_031_contract_probe.legacy_global(id INT) ON COMMIT DELETE ROWS").unwrap();
+    let global = ok(
+        &mut socket,
+        "SELECT table_name FROM information_schema.tables WHERE table_name='legacy_global'",
+    );
+    assert!(global.contains(&(b'D', row(&[Some("legacy_global")]))));
+    let kind = query(
+        &mut socket,
+        "SELECT table_type FROM information_schema.tables WHERE table_name='legacy_global'",
+    );
+    assert!(
+        kind.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"0A000")),
+        "{kind:?}"
+    );
+    ok(&mut socket, sql);
+    native
+        .execute("DROP TABLE pg13_031_contract_probe.legacy_global")
+        .unwrap();
+    ok(&mut socket, "DROP VIEW public.is_map_v");
+    ok(&mut socket, "DROP TABLE public.is_map_t");
+    ok(&mut socket, "DROP TABLE other_schema.is_map_t");
+    ok(&mut socket, "DROP SEQUENCE public.is_map_s");
+    ok(&mut socket, "DROP SCHEMA other_schema");
+    println!(
+        "pg13_031_contract: scenarios=18 twelve_fields typed_null zero_rows relation_kinds path schemas recovery cleanup"
+    );
+}

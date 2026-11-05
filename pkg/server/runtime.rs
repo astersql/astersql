@@ -838,6 +838,14 @@ pub(crate) enum SessionRequest {
         command: astersql_session::runtime::PgSequenceCommand,
         response: mpsc::SyncSender<ConnResult<Option<i64>>>,
     },
+    PgLocalTemporaryModels {
+        response: mpsc::SyncSender<Vec<astersql_meta_model::TableInfo>>,
+    },
+    PgStandardTableVisible {
+        database: String,
+        table: Arc<astersql_meta_model::TableInfo>,
+        response: mpsc::SyncSender<ConnResult<bool>>,
+    },
     PgNamespaceFacts {
         response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>>,
     },
@@ -1048,6 +1056,20 @@ fn run_session_worker(
                 let _ = response.send(
                     session
                         .pg_sequence(&command)
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::PgLocalTemporaryModels { response } => {
+                let _ = response.send(session.pg_local_temporary_models());
+            }
+            SessionRequest::PgStandardTableVisible {
+                database,
+                table,
+                response,
+            } => {
+                let _ = response.send(
+                    session
+                        .pg_standard_table_visible(&database, &table)
                         .map_err(session_protocol_error),
                 );
             }
@@ -2024,6 +2046,24 @@ impl TiDBContext for ConcreteTiDBContext {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgDatabaseFacts {
             command,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_local_temporary_models(&self) -> ConnResult<Vec<astersql_meta_model::TableInfo>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgLocalTemporaryModels { response: tx })?;
+        rx.recv().map_err(packet_error)
+    }
+    fn pg_standard_table_visible(
+        &self,
+        database: String,
+        table: Arc<astersql_meta_model::TableInfo>,
+    ) -> ConnResult<bool> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgStandardTableVisible {
+            database,
+            table,
             response: tx,
         })?;
         rx.recv().map_err(packet_error)?
