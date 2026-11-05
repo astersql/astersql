@@ -3788,3 +3788,174 @@ fn pg13_004_contract() {
         "pg13_004_contract: default_null=1 explicit_empty=1 cross_connection=2 empty_description=1 missing_source=3 invalid=1 recovery=3 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_005_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_005_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_005_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_005_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_005_admin")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_005_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_005_admin");
+    let (mut c, _) = connect("pg13_005_policy");
+    for sql in [
+        "CREATE TABLE pg13_005_admin.rel_t(id integer, KEY rel_ix(id))",
+        "CREATE VIEW pg13_005_admin.rel_v AS SELECT id FROM pg13_005_admin.rel_t",
+        "CREATE SEQUENCE pg13_005_admin.rel_s START WITH 10",
+    ] {
+        native.execute(sql).unwrap();
+    }
+    let qr = "SELECT c.oid,c.relname,c.relnamespace,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname IN ('rel_t','rel_ix','rel_v','rel_s','rel_renamed') ORDER BY c.relname";
+    let initial = query(&mut a, qr);
+    assert_eq!(initial[0].0, b'T', "{initial:?}");
+    assert_eq!(
+        columns(&initial[0].1),
+        vec![
+            ("oid".into(), 26),
+            ("relname".into(), 19),
+            ("relnamespace".into(), 26),
+            ("relkind".into(), 18)
+        ]
+    );
+    assert_eq!(
+        initial.iter().filter(|m| m.0 == b'D').count(),
+        4,
+        "{initial:?}"
+    );
+    assert_eq!(query(&mut b, qr), initial);
+    assert_eq!(query(&mut c, qr).iter().filter(|m| m.0 == b'D').count(), 0);
+    for sql in [
+        "SELECT i.indrelid=i_t.oid,i.indexrelid=x.oid FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class i_t ON i_t.oid=i.indrelid JOIN pg_catalog.pg_class x ON x.oid=i.indexrelid WHERE i_t.relname='rel_t' AND x.relname='rel_ix'",
+        "SELECT s.seqrelid=c.oid FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid WHERE c.relname='rel_s'",
+        "SELECT a.attrelid=c.oid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid WHERE c.relname='rel_t' AND a.attname='id'",
+    ] {
+        let got = query(&mut a, sql);
+        assert_eq!(
+            got.iter().filter(|m| m.0 == b'D').count(),
+            1,
+            "{sql}: {got:?}"
+        );
+        assert!(!got.iter().any(|m| m.0 == b'E'), "{got:?}");
+    }
+    let ids = |messages: &Vec<(u8, Vec<u8>)>| {
+        messages
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>()
+    };
+    let oid_sql = "SELECT oid FROM pg_catalog.pg_class WHERE relname IN ('rel_t','rel_renamed','rel_ix') ORDER BY oid";
+    let before = ids(&query(&mut a, oid_sql));
+    native
+        .execute("RENAME TABLE pg13_005_admin.rel_t TO pg13_005_admin.rel_renamed")
+        .unwrap();
+    assert_eq!(ids(&query(&mut a, oid_sql)), before);
+    assert_eq!(query(&mut a, qr), query(&mut b, qr));
+    native.execute("DROP VIEW pg13_005_admin.rel_v").unwrap();
+    native
+        .execute("DROP TABLE pg13_005_admin.rel_renamed")
+        .unwrap();
+    assert!(ids(&query(&mut a, oid_sql)).is_empty());
+    native
+        .execute("CREATE TABLE pg13_005_admin.rel_t(id integer, KEY rel_ix(id))")
+        .unwrap();
+    let after = ids(&query(&mut a, oid_sql));
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|id| !before.contains(id)));
+    assert_eq!(query(&mut a, qr), query(&mut b, qr));
+    for id in [0, i64::MIN, i64::MAX] {
+        assert!(crate::pg_oid::namespace_oid(id).is_err());
+        assert!(crate::pg_oid::table_oid(id).is_err());
+    }
+    assert!(crate::pg_oid::index_oid(0, 1).is_err());
+    assert!(crate::pg_oid::index_oid(1, i64::MAX).is_err());
+    let pairs = [(42, 1), (43, 1), (42, -1)].map(|(t, i)| crate::pg_oid::index_oid(t, i).unwrap());
+    assert_eq!(
+        pairs
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    // Invalid canonical metadata is injected here, never precomputed catalog rows.
+    let mut model = astersql_meta_model::TableInfo::default();
+    model.ID = i64::MAX;
+    model.Name = astersql_parser_ast::NewCIStr("bad_range");
+    model.State = astersql_meta_model::StatePublic;
+    let mut bad = astersql_infoschema::infoSchema::new(1);
+    bad.add_schema(
+        astersql_infoschema::DBInfo {
+            id: 42,
+            name: astersql_infoschema::CiString::new("invalid"),
+            ..Default::default()
+        },
+        vec![astersql_infoschema::Table::new(
+            astersql_infoschema::TableInfo {
+                id: model.ID,
+                db_id: 42,
+                name: astersql_infoschema::CiString::new("bad_range"),
+                model_meta: Some(Arc::new(model)),
+                ..Default::default()
+            },
+        )],
+    );
+    let error = crate::pg_catalog::class_rows(&bad, "invalid").unwrap_err();
+    assert_eq!(crate::pg_conn::sqlstate(&error), "0A000");
+    drop(a);
+    drop(b);
+    drop(c);
+    drop(cleanup);
+    println!("pg13_005_contract: base=4 connections=3 key=3 lifecycle=3 range=9 cleanup=1");
+}

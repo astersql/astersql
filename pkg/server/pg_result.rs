@@ -330,6 +330,8 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         "DELETE"
     } else if node.is::<ast::CreateIndexStmt>() {
         "CREATE INDEX"
+    } else if node.is::<ast::CreateViewStmt>() {
+        "CREATE VIEW"
     } else if node.is::<ast::CreateTableStmt>() {
         "CREATE TABLE"
     } else if let Some(drop) = node.downcast_ref::<ast::DropTableStmt>() {

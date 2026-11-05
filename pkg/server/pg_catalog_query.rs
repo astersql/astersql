@@ -976,7 +976,7 @@ impl Parser {
         let from = if self.word("from") {
             self.relation()?
         } else {
-            if !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if s == "pg_get_serial_sequence") && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
+            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if s == "pg_get_serial_sequence") && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
                 matches!(&w[0],Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
                 && matches!(&w[2],Token::Word(s) if matches!(s.as_str(),"pg_is_in_recovery" | "txid_current"))
                 && w[3]==Token::Symbol('(')
@@ -1147,6 +1147,17 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// Standalone OID constants use the same checked catalog codec as catalog fields.
+// Queries with native relations retain their existing executor ownership.
+fn oid_scalar(tokens: &[Token]) -> bool {
+    !tokens
+        .iter()
+        .any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
+        && tokens
+            .windows(2)
+            .any(|w| w[0] == Token::Cast && matches!(&w[1], Token::Word(s) if s == "oid"))
+}
+
 pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Option<Select>> {
     let tokens = match lex(sql) {
         Ok(tokens) => tokens,
@@ -1181,7 +1192,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
     let implicit_catalog = implicit_positions(&tokens)
         .iter()
         .any(|(_, name)| !shadowed.contains(name));
-    if !catalog && !implicit_catalog && !scalar_catalog {
+    if !catalog && !implicit_catalog && !scalar_catalog && !oid_scalar(&tokens) {
         return Ok(None);
     }
     if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select" || s == "with") {

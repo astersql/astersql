@@ -1194,6 +1194,10 @@ impl CatalogQuery {
                         ("pg_namespace", 1) => 2,
                         ("pg_namespace", 5) => 3,
                         ("pg_namespace", 6) => 4,
+                        ("pg_index", 0) => 1,
+                        ("pg_index", 1) => 2,
+                        ("pg_attribute", 0) => 1,
+                        ("pg_sequence", 0) => 1,
                         ("pg_attribute", 3) => 3,
                         ("pg_attribute", 6) => 12,
                         ("pg_attribute", 9) => 15,
@@ -2905,7 +2909,7 @@ fn class_row(oid: u32, name: &str, namespace: u32, kind: &str) -> Vec<Value> {
 
 // One execution snapshot supplies identities and full model metadata. Native
 // auto-increment columns are not sequences; only actual Sequence objects are S.
-fn class_rows(
+pub(crate) fn class_rows(
     snapshot: &dyn astersql_infoschema::InfoSchema,
     database: &str,
 ) -> ConnResult<Vec<Vec<Value>>> {
@@ -2920,7 +2924,10 @@ fn class_rows(
     else {
         return Ok(rows);
     };
-    let namespace = crate::pg_oid::namespace_oid(schema.id)?;
+    // Invalid native identity is a metadata capability gate; literal OID casts
+    // retain their separate 22003 numeric-overflow contract.
+    let namespace =
+        crate::pg_oid::namespace_oid(schema.id).map_err(|_| ConnError::UnsupportedCommand(0))?;
     for table in snapshot
         .SchemaTableInfos(&schema.name)
         .map_err(|e| ConnError::Session(e.to_string()))?
@@ -2935,7 +2942,8 @@ fn class_rows(
         let namespace = model
             .PostgreSQLNamespace
             .as_ref()
-            .map_or(Ok(namespace), |(id, _)| crate::pg_oid::namespace_oid(*id))?;
+            .map_or(Ok(namespace), |(id, _)| crate::pg_oid::namespace_oid(*id))
+            .map_err(|_| ConnError::UnsupportedCommand(0))?;
         let partitioned = model.GetPartitionInfo().is_some();
         let kind = if model.View.is_some() {
             "v"
@@ -2947,7 +2955,7 @@ fn class_rows(
             "r"
         };
         rows.push(class_row(
-            crate::pg_oid::table_oid(model.ID)?,
+            crate::pg_oid::table_oid(model.ID).map_err(|_| ConnError::UnsupportedCommand(0))?,
             model
                 .PostgreSQLNamespace
                 .as_ref()
@@ -2958,7 +2966,8 @@ fn class_rows(
         for index in &catalog_indexes(model)? {
             if index.State == astersql_meta_model::StatePublic {
                 rows.push(class_row(
-                    crate::pg_oid::index_oid(model.ID, index.ID)?,
+                    crate::pg_oid::index_oid(model.ID, index.ID)
+                        .map_err(|_| ConnError::UnsupportedCommand(0))?,
                     &index.Name.O,
                     namespace,
                     if partitioned { "I" } else { "i" },

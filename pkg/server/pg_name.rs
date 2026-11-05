@@ -645,7 +645,14 @@ impl Resolver<'_> {
                 ctes.insert(name);
             }
         }
-        let select = self.word(i, "select");
+        // A view's SELECT sources share the ordinary query namespace boundary.
+        // Its declaration is still handled separately as a DDL target below.
+        let select = self.word(i, "select")
+            || self.word(i, "create")
+                && (self.word(i + 1, "view")
+                    || self.word(i + 1, "or")
+                        && self.word(i + 2, "replace")
+                        && self.word(i + 3, "view"));
         let insert = self.word(i, "insert");
         let update = self.word(i, "update");
         let delete = self.word(i, "delete");
@@ -719,6 +726,8 @@ impl Resolver<'_> {
             } else if self.word(i, "references") || table_ddl && self.word(i, "like") {
                 expect = true;
             } else if alter && table_ddl && self.word(i, "rename") && self.word(i + 1, "to") {
+                // RENAME's destination is a declaration, never an existing relation.
+                self.create = true;
                 i += 1;
                 expect = true;
             } else if list && self.symbol(i, b',') {
@@ -799,7 +808,10 @@ fn rewrite_with_context<'a>(
         snapshot,
         context,
         create: tokens.first().is_some_and(|t| t.word("create"))
-            && tokens.iter().take(4).any(|t| t.word("table")),
+            && tokens
+                .iter()
+                .take(4)
+                .any(|t| t.word("table") || t.word("view")),
         tokens,
         sql,
         database,

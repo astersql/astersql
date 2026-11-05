@@ -1309,3 +1309,21 @@ fn pg11_30_drop_if_exists_notice() {
         crate::pg_name::drop_if_exists_notices("DROP TABLE public.absent", ctx.as_ref()).is_empty()
     );
 }
+
+#[test]
+fn pg13_005_view_source_namespace() {
+    assert_eq!(
+        crate::pg_result::command("CREATE VIEW public.rel_v AS SELECT id FROM public.rel_t")
+            .unwrap(),
+        Some("CREATE VIEW")
+    );
+    assert_eq!(
+        rewrite(
+            "CREATE VIEW public.rel_v AS SELECT id FROM public.rel_t",
+            "db",
+            true
+        )
+        .unwrap(),
+        "CREATE VIEW `db`.rel_v AS SELECT id FROM `db`.rel_t"
+    );
+}
