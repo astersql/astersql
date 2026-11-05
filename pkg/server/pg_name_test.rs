@@ -49,8 +49,8 @@ fn pg_introspection_names_token_scopes() {
             "CREATE TABLE IF NOT EXISTS `db`.t (id INT)",
         ),
         (
-            "ALTER TABLE public.t RENAME TO public.u",
-            "ALTER TABLE `db`.t RENAME TO `db`.u",
+            "ALTER TABLE public.t RENAME TO u",
+            "ALTER TABLE `db`.t RENAME TO `u`",
         ),
         (
             "DROP TABLE IF EXISTS public.t, public.u",

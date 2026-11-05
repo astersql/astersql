@@ -4156,6 +4156,23 @@ impl Domain {
         self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
+    /// Publish validated sequence ownership in the shared metadata snapshot.
+    pub fn ddl_set_sequence_owner(
+        &self,
+        database: &str,
+        id: i64,
+        owner: Option<(i64, i64)>,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .set_sequence_owner(store, database, id, owner)
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// Classic IMPORT INTO 的同步表模式 DDL；按库表 ID 定位目标。
     pub fn ddl_set_table_mode_by_ids(
         &self,

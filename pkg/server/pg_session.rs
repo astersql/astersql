@@ -435,6 +435,8 @@ impl SessionQuery {
             Self::Sequence(command, _) => match command {
                 astersql_session::runtime::PgSequenceCommand::Create { .. } => "CREATE SEQUENCE",
                 astersql_session::runtime::PgSequenceCommand::Drop { .. } => "DROP SEQUENCE",
+                astersql_session::runtime::PgSequenceCommand::OwnedBy { .. }
+                | astersql_session::runtime::PgSequenceCommand::Rename { .. } => "ALTER SEQUENCE",
                 astersql_session::runtime::PgSequenceCommand::Grant { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSequenceCommand::Grant { grant: false, .. } => {
                     "REVOKE"

@@ -312,3 +312,22 @@ PG independent sequences lacking provenance refuse the type projection rather
 than silently acquire a declaration. Introspection never allocates values.
 Focused coverage is `pg13_027_contract`, `pg13_027_differential`, and the model
 serialization test `pg13_027_sequence_declaration_survives_serialization`.
+
+## Rust PostgreSQL sequence ownership
+
+The bounded PG sequence adapter persists `OWNED BY` as a relation ID and column
+ID in `TableInfo.PostgreSQLSequenceOwner`. Creation and ownership changes validate
+the current target, owner and namespace inside the canonical metadata transaction.
+`OWNED BY NONE` clears that association. The catalog maps it to an `a` edge using
+the existing stable attribute slots and preserves the independent namespace `n`
+edge; namespace identity comes from the sequence's stored namespace.
+
+Table/column renames preserve the reference. Exact-ID and native table drops,
+and column drops, remove owned sequences in the same metadata publication.
+Identity sequences continue to use `ColumnInfo.PostgreSQLIdentity.SequenceID`
+and `i` edges; direct sequence drops remain protected. The identity ALTER gate
+admits only the existing DROP COLUMN path for this lifecycle increment. Other
+sequence ALTER options retain their existing capability gate. These metadata
+changes use the current canonical fast path, without a new dependency graph or
+backfill. Focused coverage is `pg13_028_contract`, `pg13_028_differential`, and
+`pg13_028_sequence_owner_publication_is_atomic`.

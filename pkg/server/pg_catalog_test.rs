@@ -7822,3 +7822,228 @@ fn pg13_027_contract() {
         "pg13_027_contract: declaration=6 identity=1 parameter_rows=4 zero_rows=8 invalid_recovery=5 endpoints=2 model_roundtrip=1"
     );
 }
+
+#[test]
+fn pg13_028_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_028_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_028_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG28 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_028_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for sql in [
+        "CREATE TABLE public.owned_table (gone integer, id bigint, plain bigint)",
+        "CREATE SEQUENCE public.owned_seq START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 1 OWNED BY public.owned_table.id",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(messages.iter().all(|m| m.0 != b'E'), "{sql}: {messages:?}");
+        assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    let snapshot = domain.info_schema();
+    let table = snapshot
+        .ModelTableInfoByExactName(
+            &astersql_infoschema::CiString::new("pg13_028_contract_probe"),
+            "owned_table",
+        )
+        .unwrap();
+    let seq = snapshot
+        .ModelTableInfoByExactName(
+            &astersql_infoschema::CiString::new("pg13_028_contract_probe"),
+            "owned_seq",
+        )
+        .unwrap();
+    assert_eq!(
+        seq.PostgreSQLSequenceOwner,
+        Some((table.ID, table.Columns[1].ID))
+    );
+    let restored: astersql_meta_model::TableInfo =
+        serde_json::from_slice(&serde_json::to_vec(&*seq).unwrap()).unwrap();
+    assert_eq!(
+        restored.PostgreSQLSequenceOwner,
+        seq.PostgreSQLSequenceOwner
+    );
+    let sid = crate::pg_oid::table_oid(seq.ID).unwrap().to_string();
+    let tid = crate::pg_oid::table_oid(table.ID).unwrap().to_string();
+    let sql = format!(
+        "SELECT classid,objid,objsubid,refclassid,refobjid,refobjsubid,deptype FROM pg_catalog.pg_depend WHERE objid={sid} ORDER BY refclassid"
+    );
+    let m = ok(&mut socket, &sql);
+    assert_eq!(
+        columns(&m[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![26, 26, 23, 26, 26, 23, 18]
+    );
+    assert!(m.contains(&(
+        b'D',
+        row(&[
+            Some("1259"),
+            Some(&sid),
+            Some("0"),
+            Some("1259"),
+            Some(&tid),
+            Some("2"),
+            Some("a")
+        ])
+    )));
+    assert_eq!(m.iter().filter(|m| m.0 == b'D').count(), 2);
+    ok(
+        &mut socket,
+        "ALTER TABLE public.owned_table DROP COLUMN gone",
+    );
+    let m = ok(&mut socket, &sql);
+    assert!(m.contains(&(
+        b'D',
+        row(&[
+            Some("1259"),
+            Some(&sid),
+            Some("0"),
+            Some("1259"),
+            Some(&tid),
+            Some("2"),
+            Some("a")
+        ])
+    )));
+    ok(
+        &mut socket,
+        "ALTER TABLE public.owned_table RENAME COLUMN id TO renamed_id",
+    );
+    ok(
+        &mut socket,
+        "ALTER TABLE public.owned_table RENAME TO renamed_table",
+    );
+    ok(
+        &mut socket,
+        "ALTER SEQUENCE public.owned_seq RENAME TO renamed_seq",
+    );
+    assert_eq!(
+        ok(&mut socket, &sql).iter().filter(|m| m.0 == b'D').count(),
+        2
+    );
+    ok(
+        &mut socket,
+        "ALTER SEQUENCE public.renamed_seq OWNED BY NONE",
+    );
+    assert_eq!(
+        ok(&mut socket, &sql).iter().filter(|m| m.0 == b'D').count(),
+        1
+    );
+    ok(
+        &mut socket,
+        "ALTER SEQUENCE public.renamed_seq OWNED BY public.renamed_table.renamed_id",
+    );
+    for invalid in [
+        "ALTER SEQUENCE public.renamed_seq OWNED BY public.renamed_table.absent",
+        "SELECT missing_field FROM pg_catalog.pg_depend",
+        "DELETE FROM pg_catalog.pg_depend",
+    ] {
+        let m = query(&mut socket, invalid);
+        assert!(m.iter().any(|m| m.0 == b'E'), "{invalid}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        assert_eq!(
+            ok(&mut socket, &sql).iter().filter(|m| m.0 == b'D').count(),
+            2
+        );
+    }
+    for (q, expected) in [
+        ("SELECT nextval('public.renamed_seq'::regclass)", "7"),
+        ("SELECT currval('public.renamed_seq'::regclass)", "7"),
+        ("SELECT nextval('public.renamed_seq'::regclass)", "10"),
+    ] {
+        assert!(ok(&mut socket, q).contains(&(b'D', row(&[Some(expected)]))));
+        ok(&mut socket, &sql);
+    }
+    ok(
+        &mut socket,
+        "ALTER TABLE public.renamed_table DROP COLUMN renamed_id",
+    );
+    assert_eq!(
+        ok(&mut socket, &sql).iter().filter(|m| m.0 == b'D').count(),
+        0
+    );
+    ok(
+        &mut socket,
+        "CREATE TABLE public.identity_owner(id integer GENERATED ALWAYS AS IDENTITY, plain integer)",
+    );
+    let snapshot = domain.info_schema();
+    let identity = snapshot
+        .ModelTableInfoByExactName(
+            &astersql_infoschema::CiString::new("pg13_028_contract_probe"),
+            "identity_owner",
+        )
+        .unwrap();
+    let internal = identity.Columns[0]
+        .PostgreSQLIdentity
+        .as_ref()
+        .unwrap()
+        .SequenceID;
+    let seq = snapshot.TableByID(internal).unwrap().ModelMeta().unwrap();
+    let m = query(&mut socket, &format!("DROP SEQUENCE public.{}", seq.Name.O));
+    assert!(m.iter().any(|m| m.0 == b'E'));
+    ok(
+        &mut socket,
+        "ALTER TABLE public.identity_owner DROP COLUMN id",
+    );
+    assert!(domain.info_schema().TableByID(internal).is_none());
+    ok(
+        &mut socket,
+        "CREATE SEQUENCE public.drop_independent OWNED BY public.renamed_table.plain",
+    );
+    ok(&mut socket, "DROP SEQUENCE public.drop_independent");
+    ok(
+        &mut socket,
+        "CREATE SEQUENCE public.drop_with_table OWNED BY public.renamed_table.plain",
+    );
+    ok(&mut socket, "DROP TABLE public.renamed_table");
+    let m = ok(
+        &mut socket,
+        "SELECT objid FROM pg_catalog.pg_depend WHERE deptype='a'",
+    );
+    assert_eq!(m.iter().filter(|m| m.0 == b'D').count(), 0);
+    println!(
+        "pg13_028_contract: owned=1 stable_slots=1 rename=3 detach_attach=2 invalid_recovery=3 no_allocation=1 drop_column=2 drop_sequence=1 drop_table=1 model_roundtrip=1"
+    );
+}

@@ -2289,3 +2289,103 @@ fn pg13_026_view_replacement_is_atomic_and_preserves_attributes() {
         "old name cannot replace a renamed view"
     );
 }
+
+#[test]
+fn pg13_028_sequence_owner_publication_is_atomic() {
+    use astersql_meta_model::{ColumnInfo, SequenceInfo, StatePublic, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    let mut column = ColumnInfo::New(1, NewCIStr("id"));
+    column.State = StatePublic;
+    let target = service
+        .create_table(
+            storage.as_ref(),
+            "test",
+            TableInfo {
+                Name: NewCIStr("owner"),
+                State: StatePublic,
+                PostgreSQLOwner: Some(1),
+                Columns: vec![column],
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap()
+        .new_tables[0]
+        .1
+        .clone();
+    let owner = (target.ID, target.Columns[0].ID);
+    let definition = TableInfo {
+        Name: NewCIStr("s"),
+        State: StatePublic,
+        PostgreSQLOwner: Some(1),
+        Sequence: Some(SequenceInfo::default()),
+        PostgreSQLSequenceOwner: Some(owner),
+        ..Default::default()
+    };
+    let created = service
+        .create_table(storage.as_ref(), "test", definition.clone(), false)
+        .unwrap();
+    let seq = &created.new_tables[0].1;
+    for bad in [(target.ID, i64::MAX), (i64::MAX, owner.1)] {
+        assert!(
+            service
+                .set_sequence_owner(storage.as_ref(), "test", seq.ID, Some(bad))
+                .is_err()
+        );
+    }
+    let detached = service
+        .set_sequence_owner(storage.as_ref(), "test", seq.ID, None)
+        .unwrap();
+    assert_eq!(
+        detached.schema_version,
+        created.schema_version + 1,
+        "failed changes publish nothing"
+    );
+    assert_eq!(
+        detached.old_tables[0].1.PostgreSQLSequenceOwner,
+        Some(owner)
+    );
+    assert_eq!(detached.new_tables[0].1.PostgreSQLSequenceOwner, None);
+    let mut bad = definition;
+    bad.Name = NewCIStr("bad");
+    bad.PostgreSQLOwner = Some(2);
+    assert!(
+        service
+            .create_table(storage.as_ref(), "test", bad.clone(), false)
+            .is_err()
+    );
+    bad.PostgreSQLOwner = Some(1);
+    bad.PostgreSQLNamespace = Some((999, "bad".into()));
+    assert!(
+        service
+            .create_table(storage.as_ref(), "test", bad, false)
+            .is_err()
+    );
+    let restored = service
+        .set_sequence_owner(storage.as_ref(), "test", seq.ID, Some(owner))
+        .unwrap();
+    assert_eq!(restored.schema_version, detached.schema_version + 1);
+    // Each mutation reloads the committed association before publishing a new version.
+    let renamed = service
+        .rename_tables(
+            storage.as_ref(),
+            vec![("test".into(), "s".into(), "test".into(), "renamed".into())],
+        )
+        .unwrap();
+    assert_eq!(renamed.new_tables[0].1.PostgreSQLSequenceOwner, Some(owner));
+    let dropped = service
+        .drop_tables(
+            storage.as_ref(),
+            vec![("test".into(), "owner".into())],
+            false,
+        )
+        .unwrap();
+    assert_eq!(dropped.old_tables.len(), 2);
+    assert!(dropped.old_tables.iter().any(|(_, t)| t.ID == seq.ID));
+}

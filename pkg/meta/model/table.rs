@@ -253,6 +253,12 @@ pub struct TableInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub PostgreSQLSequenceType: Option<PostgreSQLSequenceType>,
+    /// Stable OWNED BY relation/column IDs; independent of names and column offsets.
+    #[serde(
+        rename = "postgresql_sequence_owner",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLSequenceOwner: Option<(i64, i64)>,
     /// 表锁信息。
     #[serde(rename = "Lock")]
     pub Lock: Option<TableLockInfo>,

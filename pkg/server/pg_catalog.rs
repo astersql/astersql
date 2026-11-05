@@ -1351,6 +1351,11 @@ impl CatalogQuery {
                         ("pg_sequence", 5) => 5,
                         ("pg_sequence", 6) => 7,
                         ("pg_sequence", 7) => 8,
+                        ("pg_depend", 0) => 1,
+                        ("pg_depend", 1) => 2,
+                        ("pg_depend", 6) => 3,
+                        ("pg_depend", 2) => 4,
+                        ("pg_depend", 3) => 5,
                         ("pg_depend", 4) => 6,
                         ("pg_depend", 5) => 7,
                         ("pg_class", 0) => 1,
@@ -3506,6 +3511,38 @@ fn sequence_dependency_rows(
         if model.State != astersql_meta_model::StatePublic || model.Sequence.is_none() {
             continue;
         }
+        if let Some((id, column)) = model.PostgreSQLSequenceOwner {
+            let target = snapshot
+                .TableByID(id)
+                .and_then(|t| t.ModelMeta().ok())
+                .filter(|t| t.DBID == model.DBID && t.State == astersql_meta_model::StatePublic)
+                .ok_or(ConnError::UnsupportedCommand(0))?;
+            let attnum = target
+                .postgresql_attribute_number(column)
+                .map_err(|_| ConnError::UnsupportedCommand(0))?;
+            if !target
+                .Columns
+                .iter()
+                .any(|c| c.ID == column && c.State == astersql_meta_model::StatePublic && !c.Hidden)
+            {
+                return Err(ConnError::UnsupportedCommand(0));
+            }
+            rows.push(vec![
+                Value::Signed(classid),
+                Value::Signed(i64::from(crate::pg_oid::table_oid(model.ID)?)),
+                Value::Signed(classid),
+                Value::Signed(i64::from(crate::pg_oid::table_oid(id)?)),
+                Value::Signed(i64::from(attnum)),
+                Value::Text("a".into()),
+                Value::Signed(0),
+            ]);
+        }
+        let namespace = model
+            .PostgreSQLNamespace
+            .as_ref()
+            .map_or(Ok(namespace), |(id, _)| {
+                crate::pg_oid::namespace_oid(*id).map(i64::from)
+            })?;
         rows.push(vec![
             Value::Signed(classid),
             Value::Signed(i64::from(crate::pg_oid::table_oid(model.ID)?)),

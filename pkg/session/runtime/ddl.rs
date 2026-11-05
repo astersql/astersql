@@ -1566,6 +1566,15 @@ impl ConcreteSession {
         statement: &ast::CreateSequenceStmt,
         declared_type: Option<astersql_meta_model::PostgreSQLSequenceType>,
     ) -> SessionResult<()> {
+        self.execute_create_sequence_owned(statement, declared_type, None)
+    }
+
+    pub(super) fn execute_create_sequence_owned(
+        &self,
+        statement: &ast::CreateSequenceStmt,
+        declared_type: Option<astersql_meta_model::PostgreSQLSequenceType>,
+        owned_by: Option<(i64, i64)>,
+    ) -> SessionResult<()> {
         let database = if statement.Name.Schema.L.is_empty() {
             self.current_database()
         } else {
@@ -1643,6 +1652,7 @@ impl ConcreteSession {
             Charset: "utf8mb4".to_owned(),
             Collate: "utf8mb4_bin".to_owned(),
             PostgreSQLSequenceType: declared_type,
+            PostgreSQLSequenceOwner: owned_by,
             Sequence: Some(astersql_meta_model::SequenceInfo {
                 Start: sequence.start,
                 Cache: sequence.cache > 1,
@@ -2421,6 +2431,10 @@ impl ConcreteSession {
                     .iter()
                     .any(|column| column.PostgreSQLIdentity.is_some())
             })
+            && !statement
+                .Specs
+                .iter()
+                .all(|spec| spec.Tp == ast::AlterTableType::DropColumn)
         {
             return Err(super::query::pg_union_error(
                 "ALTER of identity tables is not supported in this identity generation increment",

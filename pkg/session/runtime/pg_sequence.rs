@@ -14,6 +14,17 @@ pub enum PgSequenceCommand {
         name: String,
         options: String,
         declared_type: astersql_meta_model::PostgreSQLSequenceType,
+        owned_by: Option<(Option<String>, String, String)>,
+    },
+    OwnedBy {
+        schema: Option<String>,
+        name: String,
+        owner: Option<(Option<String>, String, String)>,
+    },
+    Rename {
+        schema: Option<String>,
+        name: String,
+        new_name: String,
     },
     Drop {
         schema: Option<String>,
@@ -106,6 +117,30 @@ impl ConcreteSession {
         Ok(result)
     }
 
+    fn pg_sequence_owner(
+        &self,
+        owner: Option<&(Option<String>, String, String)>,
+    ) -> SessionResult<Option<(i64, i64)>> {
+        let Some((schema, name, column)) = owner else {
+            return Ok(None);
+        };
+        let physical = self.pg_bind_relation(schema.as_deref(), name, false)?;
+        let target = self
+            .domain
+            .info_schema()
+            .ModelTableInfoByExactName(
+                &astersql_infoschema::CiString::new(&self.current_database()),
+                &physical,
+            )
+            .map_err(|_| namespace_error("42P01", "OWNED BY relation does not exist"))?;
+        let column = target
+            .Columns
+            .iter()
+            .find(|c| c.Name.O == *column && !c.Hidden)
+            .ok_or_else(|| namespace_error("42703", "OWNED BY column does not exist"))?;
+        Ok(Some((target.ID, column.ID)))
+    }
+
     /// Execute against the shared object and ACL, updating currval only on success.
     pub fn pg_sequence(&self, command: &PgSequenceCommand) -> SessionResult<Option<i64>> {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
@@ -132,6 +167,8 @@ impl ConcreteSession {
                 ..
             }
             | PgSequenceCommand::Create { schema, name, .. }
+            | PgSequenceCommand::OwnedBy { schema, name, .. }
+            | PgSequenceCommand::Rename { schema, name, .. }
             | PgSequenceCommand::Drop { schema, name }
             | PgSequenceCommand::Grant { schema, name, .. } => (schema.as_deref(), name.as_str()),
         };
@@ -146,6 +183,7 @@ impl ConcreteSession {
         if let PgSequenceCommand::Create {
             options,
             declared_type,
+            owned_by,
             ..
         } = command
         {
@@ -157,7 +195,17 @@ impl ConcreteSession {
                 .as_any()
                 .downcast_ref::<ast::CreateSequenceStmt>()
                 .ok_or_else(|| namespace_error("42601", "invalid CREATE SEQUENCE"))?;
-            self.execute_create_sequence_declared(statement, Some(*declared_type))?;
+            let owner = self.pg_sequence_owner(owned_by.as_ref())?;
+            self.execute_create_sequence_owned(statement, Some(*declared_type), owner)
+                .map_err(|error| {
+                    if error.to_string().contains("must have same owner")
+                        || error.to_string().contains("must be in same schema")
+                    {
+                        namespace_error("55000", &error.to_string())
+                    } else {
+                        error
+                    }
+                })?;
         }
         let table = self
             .domain
@@ -173,6 +221,35 @@ impl ConcreteSession {
             return Ok(None);
         }
         match command {
+            PgSequenceCommand::OwnedBy { owner, .. } => {
+                if actor != "root" && actor != acl.owner {
+                    return Err(namespace_error("42501", "must be owner of sequence"));
+                }
+                let owner = self.pg_sequence_owner(owner.as_ref())?;
+                self.domain
+                    .ddl_set_sequence_owner(&database, table.ID, owner)
+                    .map_err(|e| {
+                        namespace_error(
+                            if e.to_string().contains("internal identity") {
+                                "0A000"
+                            } else {
+                                "55000"
+                            },
+                            &e.to_string(),
+                        )
+                    })?;
+                Ok(None)
+            }
+            PgSequenceCommand::Rename { new_name, .. } => {
+                if actor != "root" && actor != acl.owner {
+                    return Err(namespace_error("42501", "must be owner of sequence"));
+                }
+                let target = self.pg_bind_relation(schema, new_name, true)?;
+                self.domain
+                    .ddl_rename_tables(vec![(database.clone(), physical, database, target)])
+                    .map_err(|e| session_error("rename sequence", e))?;
+                Ok(None)
+            }
             PgSequenceCommand::Drop { .. } => {
                 if actor != "root" && actor != acl.owner {
                     return Err(namespace_error("42501", "must be owner of sequence"));
@@ -180,7 +257,16 @@ impl ConcreteSession {
                 // Drop the already checked physical identity, preserving exact names.
                 self.domain
                     .ddl_drop_table_ids(&[table.ID])
-                    .map_err(|error| session_error("drop sequence metadata", error))?;
+                    .map_err(|error| {
+                        if error.to_string().contains("internal identity") {
+                            namespace_error(
+                                "2BP01",
+                                "cannot drop internal identity sequence without its table",
+                            )
+                        } else {
+                            session_error("drop sequence metadata", error)
+                        }
+                    })?;
                 Ok(None)
             }
             PgSequenceCommand::Grant {

@@ -24,7 +24,55 @@ fn relation(tokens: &[Token], i: &mut usize) -> ParseResult<(Option<String>, Str
         Ok((None, first))
     }
 }
+fn owned_target(
+    tokens: &[Token],
+    i: &mut usize,
+) -> ParseResult<Option<(Option<String>, String, String)>> {
+    if word(tokens.get(*i), "none") {
+        *i += 1;
+        return Ok(None);
+    }
+    let (first, second) = relation(tokens, i)?;
+    if tokens.get(*i) == Some(&Token::Symbol('.')) {
+        *i += 1;
+        let column = ident(tokens.get(*i)).ok_or(("42601", "expected owner column".into()))?;
+        *i += 1;
+        Ok(Some((first, second, column)))
+    } else if let Some(table) = first {
+        Ok(Some((None, table, second)))
+    } else {
+        Err(("42601", "OWNED BY requires table.column".into()))
+    }
+}
 pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<String>)>> {
+    if word(tokens.first(), "alter") && word(tokens.get(1), "sequence") {
+        let mut i = 2;
+        let (schema, name) = relation(tokens, &mut i)?;
+        let command = if word(tokens.get(i), "owned") && word(tokens.get(i + 1), "by") {
+            i += 2;
+            Command::OwnedBy {
+                schema,
+                name,
+                owner: owned_target(tokens, &mut i)?,
+            }
+        } else if word(tokens.get(i), "rename") && word(tokens.get(i + 1), "to") {
+            i += 2;
+            let new_name =
+                ident(tokens.get(i)).ok_or(("42601", "expected sequence name".into()))?;
+            i += 1;
+            Command::Rename {
+                schema,
+                name,
+                new_name,
+            }
+        } else {
+            return Err(("0A000", "unsupported ALTER SEQUENCE form".into()));
+        };
+        if i != tokens.len() {
+            return Err(("42601", "unexpected ALTER SEQUENCE tokens".into()));
+        }
+        return Ok(Some((command, None)));
+    }
     if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
         && word(tokens.get(1), "sequence")
     {
@@ -49,6 +97,7 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
             i += 2;
         }
         let mut options = Vec::new();
+        let mut owned_by = None;
         let mut seen = std::collections::HashSet::new();
         while i < tokens.len() {
             let key = ident(tokens.get(i)).ok_or(("42601", "invalid sequence option".into()))?;
@@ -62,6 +111,10 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                 return Err(("42601", "conflicting sequence options".into()));
             }
             match key.as_str() {
+                "owned" if word(tokens.get(i), "by") => {
+                    i += 1;
+                    owned_by = owned_target(tokens, &mut i)?;
+                }
                 "start" | "increment" | "minvalue" | "maxvalue" | "cache" => {
                     if (key == "start" && word(tokens.get(i), "with"))
                         || (key == "increment" && word(tokens.get(i), "by"))
@@ -107,6 +160,7 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                 name,
                 options: options.join(" "),
                 declared_type,
+                owned_by,
             },
             None,
         )));

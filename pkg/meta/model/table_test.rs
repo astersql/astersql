@@ -589,3 +589,21 @@ fn pg13_027_sequence_declaration_survives_serialization() {
         assert_eq!(restored.Sequence.unwrap().Start, 7);
     }
 }
+
+#[test]
+fn pg13_028_owned_sequence_reference_roundtrip() {
+    let legacy: crate::TableInfo = serde_json::from_str("{}").unwrap();
+    assert_eq!(legacy.PostgreSQLSequenceOwner, None);
+    assert!(
+        !serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("postgresql_sequence_owner")
+    );
+    let table = crate::TableInfo {
+        PostgreSQLSequenceOwner: Some((123, 456)),
+        ..legacy
+    };
+    let restored: crate::TableInfo =
+        serde_json::from_str(&serde_json::to_string(&table).unwrap()).unwrap();
+    assert_eq!(restored.PostgreSQLSequenceOwner, Some((123, 456)));
+}

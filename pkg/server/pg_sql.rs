@@ -473,9 +473,15 @@ fn adapt_internal(
         return Err(error("0A000", "RENAME TABLE is not a PostgreSQL command"));
     }
     if first.word("alter") && tokens.get(1).is_some_and(|t| t.word("view")) {
-        return adapt_view_rename(&tokens, context);
+        return adapt_relation_rename(&tokens, context);
     }
     if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
+        let (_, _, action) = alter_table_parts(&tokens)?;
+        if tokens.get(action).is_some_and(|t| t.word("rename"))
+            && tokens.get(action + 1).is_some_and(|t| t.word("to"))
+        {
+            return adapt_relation_rename(&tokens, context);
+        }
         adapt_alter(sql, &tokens, edits, context)
     } else if !first.word("create") {
         return apply(sql, edits);
@@ -484,17 +490,20 @@ fn adapt_internal(
     }
 }
 
-// pg_name has already resolved both identifiers to this connection's storage
-// database. Reuse standalone rename, which supports views, rather than ALTER
-// TABLE's deliberate BASE TABLE gate.
-fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> ParseResult<String> {
-    let context = context.ok_or_else(|| error("0A000", "view rename requires catalog context"))?;
+// pg_name resolves the source to its storage database and leaves the new name
+// unqualified. Both table and view renames retain the source namespace.
+fn adapt_relation_rename(
+    tokens: &[Token],
+    context: Option<&dyn TiDBContext>,
+) -> ParseResult<String> {
+    let context =
+        context.ok_or_else(|| error("0A000", "relation rename requires catalog context"))?;
     let (database, source, action) = alter_table_parts(tokens)?;
     let end = tokens.len() - usize::from(tokens.last().is_some_and(|t| t.symbol(b';')));
     if !tokens.get(action).is_some_and(|t| t.word("rename"))
         || !tokens.get(action + 1).is_some_and(|t| t.word("to"))
     {
-        return Err(error("0A000", "only ALTER VIEW RENAME TO is supported"));
+        return Err(error("0A000", "only ALTER relation RENAME TO is supported"));
     }
     let dest = action + 2;
     let target = if dest + 1 == end {
@@ -502,17 +511,18 @@ fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> Par
     } else {
         None
     }
-    .ok_or_else(|| error("42601", "expected ALTER VIEW name RENAME TO name"))?;
+    .ok_or_else(|| error("42601", "expected ALTER relation name RENAME TO name"))?;
     let database =
-        database.ok_or_else(|| error("3D000", "view storage database is unavailable"))?;
+        database.ok_or_else(|| error("3D000", "relation storage database is unavailable"))?;
     let snapshot = context
         .schema_snapshot()
         .ok_or_else(|| error("0A000", "schema snapshot is unavailable"))?;
     let model = snapshot
         .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(&database), &source)
-        .map_err(|_| error("42P01", "view does not exist"))?;
-    if model.View.is_none() {
-        return Err(error("42809", "relation is not a view"));
+        .map_err(|_| error("42P01", "relation does not exist"))?;
+    let view = tokens.get(1).is_some_and(|t| t.word("view"));
+    if view != model.View.is_some() || model.Sequence.is_some() {
+        return Err(error("42809", "relation has the wrong kind for RENAME"));
     }
     let namespaces = context
         .pg_namespace_facts()
@@ -526,7 +536,7 @@ fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> Par
             .map_or(fact.name == "public", |(id, _)| fact.id == *id)
             && fact.can_create
     }) {
-        return Err(error("42501", "permission denied for view schema"));
+        return Err(error("42501", "permission denied for relation schema"));
     }
     let identity = context
         .user_identity()
@@ -542,7 +552,7 @@ fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> Par
             .map(String::as_str)
             != Some(actor)
         {
-            return Err(error("42501", "must be owner of view"));
+            return Err(error("42501", "must be owner of relation"));
         }
     }
     // An unqualified RENAME destination stays in the source namespace even when
@@ -561,13 +571,23 @@ fn adapt_view_rename(tokens: &[Token], context: Option<&dyn TiDBContext>) -> Par
     {
         return Err(error("42P07", "relation already exists"));
     }
-    Ok(format!(
-        "RENAME TABLE {}.{} TO {}.{}",
-        quote(&database),
-        quote(&source),
-        quote(&database),
-        quote(&target)
-    ))
+    Ok(if view {
+        format!(
+            "RENAME TABLE {}.{} TO {}.{}",
+            quote(&database),
+            quote(&source),
+            quote(&database),
+            quote(&target)
+        )
+    } else {
+        format!(
+            "ALTER TABLE {}.{} RENAME TO {}.{}",
+            quote(&database),
+            quote(&source),
+            quote(&database),
+            quote(&target)
+        )
+    })
 }
 
 // Resolve a PG schema relation back to its table-local native index. The

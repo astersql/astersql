@@ -72,6 +72,47 @@ pub struct DdlMetadataService {
     writer: Mutex<()>,
 }
 
+fn validate_sequence_owner(
+    catalog: &MetadataCatalog,
+    database: &str,
+    sequence: &TableInfo,
+    owner: Option<(i64, i64)>,
+) -> Result<(), kv::errors::SharedError> {
+    let Some((id, column)) = owner else {
+        return Ok(());
+    };
+    let target = catalog
+        .tables
+        .iter()
+        .find(|((db, _), t)| db == database && t.ID == id)
+        .map(|(_, t)| t)
+        .ok_or_else(|| kv::errors::New("OWNED BY relation no longer exists"))?;
+    if sequence.Sequence.is_none()
+        || target.State != astersql_meta_model::StatePublic
+        || target.Sequence.is_some()
+        || target.View.is_some()
+        || !target
+            .Columns
+            .iter()
+            .any(|c| c.ID == column && !c.Hidden && c.State == astersql_meta_model::StatePublic)
+    {
+        return Err(kv::errors::New("invalid OWNED BY relation or column"));
+    }
+    if target.PostgreSQLOwner != sequence.PostgreSQLOwner {
+        return Err(kv::errors::New(
+            "sequence and OWNED BY table must have same owner",
+        ));
+    }
+    if target.PostgreSQLNamespace.as_ref().map(|v| v.0)
+        != sequence.PostgreSQLNamespace.as_ref().map(|v| v.0)
+    {
+        return Err(kv::errors::New(
+            "sequence and OWNED BY table must be in same schema",
+        ));
+    }
+    Ok(())
+}
+
 impl DdlMetadataService {
     /// Enumerate configured replicas from committed metadata for the physical
     /// status poller. The table ID is rechecked inside each update transaction.
@@ -458,6 +499,7 @@ impl DdlMetadataService {
             .get(&database)
             .expect("database inserted above");
         table.DBID = database_info.ID;
+        validate_sequence_owner(catalog, &database, &table, table.PostgreSQLSequenceOwner)?;
         assign_table_physical_ids(catalog, &mut table);
         // Assign once at creation, before any native offset changes. Hidden
         // implementation columns have no PostgreSQL system-column identity.
@@ -804,6 +846,15 @@ impl DdlMetadataService {
                     }
                 }
             }
+            for table in catalog.tables.values() {
+                if table
+                    .PostgreSQLSequenceOwner
+                    .is_some_and(|(id, _)| requested.contains(&id))
+                    && !all.contains(&table.ID)
+                {
+                    all.push(table.ID);
+                }
+            }
             for id in &all {
                 let key = catalog
                     .tables
@@ -878,6 +929,17 @@ impl DdlMetadataService {
                         .filter_map(|c| c.PostgreSQLIdentity.as_ref().map(|i| i.SequenceID))
                 })
                 .collect::<Vec<_>>();
+            let mut owned = owned;
+            owned.extend(
+                catalog
+                    .tables
+                    .values()
+                    .filter(|t| {
+                        t.PostgreSQLSequenceOwner
+                            .is_some_and(|(id, _)| removed.contains(&id))
+                    })
+                    .map(|t| t.ID),
+            );
             for id in owned {
                 if let Some(key) = catalog
                     .tables
@@ -1293,6 +1355,48 @@ impl DdlMetadataService {
         })
     }
 
+    /// Atomically validate and publish a sequence's persistent column ownership.
+    pub fn set_sequence_owner(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        sequence_id: i64,
+        owner: Option<(i64, i64)>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, |catalog| {
+            let (key, old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), t)| db == database && t.ID == sequence_id)
+                .map(|(key, t)| (key.clone(), t.clone()))
+                .ok_or_else(|| kv::errors::New("sequence no longer exists"))?;
+            if old.Sequence.is_none() {
+                return Err(kv::errors::New("object is not a sequence"));
+            }
+            validate_sequence_owner(catalog, database, &old, owner)?;
+            if catalog.tables.values().any(|t| {
+                t.Columns.iter().any(|c| {
+                    c.PostgreSQLIdentity
+                        .as_ref()
+                        .is_some_and(|i| i.SequenceID == sequence_id)
+                })
+            }) {
+                return Err(kv::errors::New(
+                    "cannot change ownership of internal identity sequence",
+                ));
+            }
+            let mut new = old.clone();
+            new.PostgreSQLSequenceOwner = owner;
+            catalog.tables.insert(key, new.clone());
+            Ok(DdlMetadataChange {
+                changed: true,
+                old_tables: vec![(database.to_owned(), old)],
+                new_tables: vec![(database.to_owned(), new)],
+                ..Default::default()
+            })
+        })
+    }
+
     /// Persist a table-mode transition through the canonical DDL metadata path.
     pub fn set_table_mode(
         &self,
@@ -1422,9 +1526,38 @@ impl DdlMetadataService {
                         })? as isize;
                 }
             }
+            let mut owned: Vec<_> = catalog
+                .tables
+                .iter()
+                .filter(|(_, t)| {
+                    t.PostgreSQLSequenceOwner.is_some_and(|(id, column)| {
+                        id == old.ID && removed_column_ids.contains(&column)
+                    })
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for c in &old.Columns {
+                if removed_column_ids.contains(&c.ID) {
+                    if let Some(identity) = &c.PostgreSQLIdentity {
+                        if let Some((key, _)) = catalog
+                            .tables
+                            .iter()
+                            .find(|(_, t)| t.ID == identity.SequenceID)
+                        {
+                            owned.push(key.clone());
+                        }
+                    }
+                }
+            }
+            let mut old_tables = vec![(database.clone(), old)];
+            for key in owned {
+                if let Some(t) = catalog.tables.remove(&key) {
+                    old_tables.push((key.0, t));
+                }
+            }
             catalog.tables.insert(key, new.clone());
             Ok(DdlMetadataChange {
-                old_tables: vec![(database.clone(), old)],
+                old_tables,
                 new_tables: vec![(database, new)],
                 removed_column_ids,
                 removed_index_ids,
