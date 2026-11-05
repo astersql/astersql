@@ -19611,3 +19611,154 @@ fn pg13_021_differential() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn pg13_022_differential() {
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server_with_auth(
+        domain.clone(),
+        Some(0),
+        BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+    );
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql = server.listener_addr().unwrap();
+    let database = format!("pg13_default_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    for role in [format!("{database}_owner"), format!("{database}_reader")] {
+        native
+            .execute(&format!(
+                "CREATE USER '{role}'@'%' IDENTIFIED WITH mysql_native_password BY ''"
+            ))
+            .unwrap();
+    }
+    native
+        .execute(&format!("CREATE TABLE {database}.health (id INT)"))
+        .unwrap();
+    native
+        .execute(&format!("INSERT INTO {database}.health VALUES (13)"))
+        .unwrap();
+    let mut mysql_socket = TcpStream::connect(mysql).unwrap();
+    mysql_socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    mysql_handshake(&mut mysql_socket);
+    let mysql_observations = std::cell::RefCell::new(Vec::new());
+    let probe = |socket: &mut TcpStream| {
+        assert_eq!(
+            mysql_query(socket, &format!("SELECT id FROM {database}.health")),
+            vec![vec![Some(b"13".to_vec())]]
+        );
+        mysql_observations.borrow_mut().push(mysql_query(socket, &format!("SELECT index_name FROM information_schema.statistics WHERE table_schema='{database}' AND table_name='def_doc' ORDER BY index_name,seq_in_index")));
+    };
+    probe(&mut mysql_socket);
+    let evidence = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!(
+            "pg13-default-evidence-{}-{}",
+            std::process::id(),
+            address.port()
+        ));
+    std::fs::create_dir_all(&evidence).unwrap();
+    let build = serde_json::json!({
+        "head": String::from_utf8(Command::new("git").args(["rev-parse","HEAD"]).output().unwrap().stdout).unwrap().trim(),
+        "binary": std::env::current_exe().unwrap(), "cargo_target_dir": std::env::var("CARGO_TARGET_DIR").unwrap(),
+        "profile": "default features", "storage": "CreateAnalyzeSession test storage",
+        "authentication": "BootstrapRootAndNativeAccounts; native empty-password fixture accounts verified, not SET ROLE"
+    });
+    std::fs::write(evidence.join("rust-build.json"), build.to_string()).unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        server.close();
+        let mut cleaned = native
+            .execute(&format!("DROP DATABASE IF EXISTS {database}"))
+            .is_ok();
+        for role in [format!("{database}_owner"), format!("{database}_reader")] {
+            cleaned &= native
+                .execute(&format!("DROP USER IF EXISTS '{role}'@'%'"))
+                .is_ok();
+        }
+        let record = serde_json::json!({"objects_cleaned":cleaned,"postgres_closed":TcpStream::connect(address).is_err(),"mysql_closed":TcpStream::connect(mysql).is_err()});
+        std::fs::write(evidence.join("rust-cleanup.json"), record.to_string()).unwrap();
+        assert!(cleaned, "native fixture cleanup failed");
+    });
+    let child = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg13_022_libpq.py"
+        ))
+        .arg(address.port().to_string())
+        .arg(&database)
+        .env("PG13_EVIDENCE_DIR", &evidence)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    struct ChildGuard(Option<std::process::Child>);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(c) = &mut self.0 {
+                // Allow the independent client to run its reference-side finally block.
+                let _ = Command::new("kill")
+                    .args(["-TERM", &c.id().to_string()])
+                    .status();
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while c.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+    let mut child = ChildGuard(Some(child.expect("Python 3 required")));
+    while child.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+        probe(&mut mysql_socket);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let output = child.0.take().unwrap().wait_with_output().unwrap();
+    probe(&mut mysql_socket);
+    let models = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(&database))
+        .unwrap();
+    let models: Vec<_> = models
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .collect();
+    std::fs::write(
+        evidence.join("shared-models.json"),
+        serde_json::to_vec_pretty(&models).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        evidence.join("mysql-observations.json"),
+        serde_json::to_vec_pretty(&*mysql_observations.borrow()).unwrap(),
+    )
+    .unwrap();
+    drop(mysql_socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    assert!(TcpStream::connect(mysql).is_err());
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    println!(
+        "evidence={} mysql health before/during/after and listeners cleaned",
+        evidence.display()
+    );
+    assert!(
+        output.status.success(),
+        "libpq database differential failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

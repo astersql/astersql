@@ -6488,3 +6488,164 @@ fn pg13_021_contract() {
         "pg13_021_contract: states=3 violations=3 transaction_commit=1 empty_describe=1 durable_roundtrip=1 corrupt_models=3 legacy_reject_recover=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_022_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_022_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_022_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_022_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE public.def_doc (plain integer,n integer DEFAULT NULL,literal text DEFAULT 'NULL',qty integer DEFAULT 7,label text DEFAULT 'O''Reilly',flag boolean DEFAULT true)",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{got:?}");
+    }
+    let sql = "SELECT a.attnum,a.attname,a.atthasdef,d.oid,d.adrelid,d.adnum FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attrelid='public.def_doc'::regclass::oid ORDER BY a.attnum";
+    let got = query(&mut socket, sql);
+    assert_eq!(
+        got[0].0, b'T',
+        "default identity positive contract: {got:?}"
+    );
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![21, 19, 16, 26, 26, 21]
+    );
+    let data: Vec<_> = got.iter().filter(|(t, _)| *t == b'D').collect();
+    assert_eq!(data.len(), 6);
+    assert_eq!(
+        data[0].1,
+        row(&[Some("1"), Some("plain"), Some("f"), None, None, None])
+    );
+    assert_eq!(
+        data[1].1,
+        row(&[Some("2"), Some("n"), Some("f"), None, None, None])
+    );
+    let before = query(
+        &mut socket,
+        "SELECT oid FROM pg_catalog.pg_attrdef WHERE adrelid='public.def_doc'::regclass::oid AND adnum=4",
+    );
+    for sql in [
+        "ALTER TABLE public.def_doc ALTER COLUMN qty SET DEFAULT 9",
+        "ALTER TABLE public.def_doc ALTER COLUMN label DROP DEFAULT",
+        "ALTER TABLE public.def_doc RENAME COLUMN qty TO quantity",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let after = query(
+        &mut socket,
+        "SELECT oid FROM pg_catalog.pg_attrdef WHERE adrelid='public.def_doc'::regclass::oid AND adnum=4",
+    );
+    assert_ne!(
+        before.iter().find(|(t, _)| *t == b'D'),
+        after.iter().find(|(t, _)| *t == b'D')
+    );
+    let empty = query(
+        &mut socket,
+        "SELECT oid,adrelid,adnum FROM pg_catalog.pg_attrdef WHERE adrelid=0",
+    );
+    assert_eq!(
+        columns(&empty[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![26, 26, 21]
+    );
+    assert!(!empty.iter().any(|(t, _)| *t == b'D'));
+    let models = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_022_contract"))
+        .unwrap();
+    let model = models
+        .iter()
+        .find(|t| t.name.lower == "def_doc")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let encoded = serde_json::to_vec(model.as_ref()).unwrap();
+    let decoded: astersql_meta_model::TableInfo = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        decoded
+            .Columns
+            .iter()
+            .filter(|c| c.PostgreSQLHasDefault == Some(true))
+            .count(),
+        3
+    );
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+    for scenario in 0..5 {
+        let mut bad = decoded.clone();
+        let column = &mut bad.Columns[3];
+        match scenario {
+            0 => column.PostgreSQLDefaultID = None,
+            1 => column.PostgreSQLDefaultID = Some(0),
+            2 => column.PostgreSQLDefaultID = Some(i64::MAX),
+            3 => column.PostgreSQLHasDefault = Some(false),
+            _ => bad.Columns[3].PostgreSQLDefaultID = bad.Columns[2].PostgreSQLDefaultID,
+        }
+        let mut schema = astersql_infoschema::infoSchema::new(1);
+        schema.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("pg13_022_contract"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: bad.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("def_doc"),
+                    model_meta: Some(Arc::new(bad)),
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(
+            crate::pg_catalog::column_catalog_rows(
+                "pg_attrdef",
+                &schema,
+                "pg13_022_contract",
+                &crate::conn::CancellationToken::new()
+            )
+            .is_err()
+        );
+    }
+    println!(
+        "pg13_022_contract: base_columns=6 explicit_null_normalized=1 set_drop_rename=3 empty_describe=1 durable_roundtrip=1 corrupt_models=5 cleanup=1"
+    );
+}

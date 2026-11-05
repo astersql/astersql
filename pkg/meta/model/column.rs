@@ -263,6 +263,18 @@ pub struct PostgreSQLIdentity {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ColumnInfo {
+    /// Durable default object identity, assigned atomically with its column.
+    #[serde(
+        rename = "postgresql_default_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLDefaultID: Option<i64>,
+    /// Known normalized existence; None marks legacy metadata without this fact.
+    #[serde(
+        rename = "postgresql_has_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLHasDefault: Option<bool>,
     /// Last NOT NULL declaration generation and name, retained while nullable.
     #[serde(
         default,
@@ -349,6 +361,8 @@ impl ColumnInfo {
             Offset: 0,
             PostgreSQLIdentity: None,
             PostgreSQLNotNull: None,
+            PostgreSQLDefaultID: None,
+            PostgreSQLHasDefault: None,
             OriginDefaultValue: None,
             OriginDefaultValueBit: None,
             DefaultValue: None,

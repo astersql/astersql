@@ -1399,6 +1399,12 @@ impl DdlMetadataService {
                         slots.push((column.ID, false));
                     }
                 }
+                column.PostgreSQLDefaultID = if column.GetDefaultValue().is_some() {
+                    Some(allocate_id(catalog))
+                } else {
+                    None
+                };
+                column.PostgreSQLHasDefault = Some(column.PostgreSQLDefaultID.is_some());
                 new.Columns.push(column);
             }
             catalog.tables.insert(key, new.clone());
@@ -1691,6 +1697,8 @@ impl DdlMetadataService {
             column.Offset = previous.Offset;
             column.SetFlag(column.GetFlag() | previous.GetFlag());
             let new_name = column.Name.clone();
+            column.PostgreSQLDefaultID = previous.PostgreSQLDefaultID;
+            column.PostgreSQLHasDefault = previous.PostgreSQLHasDefault;
             new.Columns[offset] = column;
             for index in &mut new.Indices {
                 for indexed in &mut index.Columns {
@@ -1742,6 +1750,18 @@ impl DdlMetadataService {
             }
             column.ID = new.Columns[offset].ID;
             column.Offset = new.Columns[offset].Offset;
+            // A default replacement creates a new object, including SET to
+            // the same value. Allocation is persisted atomically with the DDL.
+            column.PostgreSQLDefaultID = if column.GetDefaultValue().is_some() {
+                Some(
+                    column
+                        .PostgreSQLDefaultID
+                        .unwrap_or_else(|| allocate_id(catalog)),
+                )
+            } else {
+                None
+            };
+            column.PostgreSQLHasDefault = Some(column.PostgreSQLDefaultID.is_some());
             new.Columns[offset] = column;
             if let Some((shard_bits, range_bits)) = auto_random {
                 new.AutoRandomBits = shard_bits;
@@ -1969,6 +1989,14 @@ pub(crate) fn assign_table_physical_ids(catalog: &mut MetadataCatalog, table: &m
         table.ID = allocate_id(catalog);
     } else if !astersql_meta_metadef::IsReservedID(table.ID) {
         catalog.next_id = catalog.next_id.max(table.ID);
+    }
+    for column in &mut table.Columns {
+        if column.GetDefaultValue().is_some() && column.PostgreSQLIdentity.is_none() {
+            column.PostgreSQLDefaultID = Some(allocate_id(catalog));
+        } else {
+            column.PostgreSQLDefaultID = None;
+        }
+        column.PostgreSQLHasDefault = Some(column.PostgreSQLDefaultID.is_some());
     }
     if let Some(partition) = table.Partition.as_mut() {
         if partition.Definitions.is_empty() && partition.Num > 0 {

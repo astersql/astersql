@@ -918,6 +918,11 @@ fn existing_column_suffix(
         if let Some(default) = override_default {
             suffix.push_str(" DEFAULT ");
             suffix.push_str(&default);
+        } else {
+            // Keep an explicit option so the native MODIFY path does not
+            // mistake DROP DEFAULT for a type-only change and retain it.
+            // PostgreSQL normalizes DEFAULT NULL to no default object.
+            suffix.push_str(" DEFAULT NULL");
         }
         return Ok(suffix);
     }

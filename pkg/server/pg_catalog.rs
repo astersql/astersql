@@ -1299,7 +1299,9 @@ impl CatalogQuery {
                         ("pg_attribute", 6) => 12,
                         ("pg_attribute", 9) => 15,
                         ("pg_attribute", 12) => 13,
+                        ("pg_attrdef", 0) => 2,
                         ("pg_attrdef", 1) => 3,
+                        ("pg_attrdef", 3) => 1,
                         ("pg_sequence", 2) => 3,
                         ("pg_sequence", 3) => 4,
                         ("pg_sequence", 4) => 6,
@@ -3684,6 +3686,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         }
         ("pg_attribute", "atthasdef") => (12, 1),
         ("pg_attribute", "xmin") => (13, 8),
+        ("pg_attrdef", "oid") => (3, oid),
         ("pg_attrdef", "adrelid") => (0, oid),
         ("pg_attrdef", "adnum") => (1, 2),
         ("pg_attrdef", "adbin") => (2, 253),
@@ -4776,6 +4779,7 @@ pub(crate) fn column_catalog_rows(
             .collect());
     }
     let mut rows = Vec::new();
+    let mut default_ids = std::collections::HashSet::new();
     let Some(schema) = snapshot
         .AllSchemas()
         .into_iter()
@@ -4838,6 +4842,17 @@ pub(crate) fn column_catalog_rows(
             }
             let (oid, modifier) = native_column_type(column)?;
             let default = column_default(column, oid)?;
+            if column.PostgreSQLHasDefault.is_some_and(|exists| {
+                exists != default.is_some() || exists != column.PostgreSQLDefaultID.is_some()
+            }) || column.PostgreSQLDefaultID.is_some_and(|id| id <= 0)
+            {
+                return Err(ConnError::UnsupportedCommand(0));
+            }
+            if let Some(id) = column.PostgreSQLDefaultID {
+                if !default_ids.insert(id) {
+                    return Err(ConnError::UnsupportedCommand(0));
+                }
+            }
             if relation == "pg_attrdef" {
                 if let Some(default) = default {
                     // PG-private opaque deparse input, tied to its owning
@@ -4846,6 +4861,11 @@ pub(crate) fn column_catalog_rows(
                         Value::Signed(relid),
                         Value::Signed(position),
                         Value::Text(format!("{relid}:{default}")),
+                        Value::Signed(i64::from(crate::pg_oid::namespace_oid(
+                            column
+                                .PostgreSQLDefaultID
+                                .ok_or(ConnError::UnsupportedCommand(0))?,
+                        )?)),
                     ]);
                 }
             } else {
@@ -4872,7 +4892,12 @@ pub(crate) fn column_catalog_rows(
                     ),
                     Value::Text(String::new()),
                     Value::Null,
-                    Value::Text(default.is_some().to_string()),
+                    Value::Text(
+                        column
+                            .PostgreSQLHasDefault
+                            .unwrap_or(default.is_some())
+                            .to_string(),
+                    ),
                     Value::Null,
                 ]);
             }
