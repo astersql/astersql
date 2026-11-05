@@ -1011,7 +1011,11 @@ fn identifier_parts(
         }
         // Release the gate only for consumers that preserve physical identity.
         // Other DDL/DML operations retain their previous capability boundary.
-        gate.exact_relations = statement.as_any().is::<ast::SelectStmt>()
+        // CREATE INDEX targets pass through Resolver::relation's exact shared
+        // model lookup too; retaining the old gate rejects quoted table names
+        // in definitions returned by pg_get_indexdef.
+        gate.exact_relations = statement.as_any().is::<ast::CreateIndexStmt>()
+            || statement.as_any().is::<ast::SelectStmt>()
             || statement.as_any().is::<ast::SetOprStmt>()
             || statement.as_any().is::<ast::InsertStmt>()
             || statement.as_any().is::<ast::DropTableStmt>()
@@ -1466,6 +1470,15 @@ pub(crate) fn check_index_options(sql: &str) -> ParseResult<()> {
     else {
         return Ok(());
     };
+    if let Some(method) = parts[on + 1..open].iter().position(|p| p.word("using")) {
+        let method = on + 1 + method + 1;
+        if !parts.get(method).is_some_and(|p| p.word("btree")) {
+            return Err(error(
+                "0A000",
+                "PostgreSQL index method has no native equivalent",
+            ));
+        }
+    }
     let mut depth = 0usize;
     for (i, part) in parts.iter().enumerate().skip(open) {
         match part.symbol {
@@ -1614,6 +1627,30 @@ pub(crate) fn adapt(
         context.schema_snapshot(),
         Some(context),
     )?;
+    // PostgreSQL puts USING after the target relation; the native parser puts
+    // it before ON. Omitting explicit btree preserves the native DDL default
+    // (pkg/ddl/index.rs); check_index_options rejects other methods first.
+    let mut sql = sql;
+    let parts = source_tokens(&sql, true)?;
+    let create_index = parts.first().is_some_and(|p| p.word("create"))
+        && (parts.get(1).is_some_and(|p| p.word("index"))
+            || parts.get(1).is_some_and(|p| p.word("unique"))
+                && parts.get(2).is_some_and(|p| p.word("index")));
+    if create_index {
+        if let Some(on) = parts.iter().position(|p| p.word("on")) {
+            if let Some(method) = parts
+                .iter()
+                .enumerate()
+                .skip(on + 1)
+                .take_while(|(_, p)| p.symbol != Some(b'('))
+                .find_map(|(i, p)| p.word("using").then_some(i))
+            {
+                if parts.get(method + 1).is_some_and(|p| p.word("btree")) {
+                    sql.replace_range(parts[method].start..parts[method + 1].end, "");
+                }
+            }
+        }
+    }
     validate_relations(&sql, database)?;
     Ok(sql)
 }

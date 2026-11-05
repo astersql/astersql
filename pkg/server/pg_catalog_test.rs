@@ -2120,7 +2120,7 @@ fn pg_introspection_constraints_live() {
     );
     assert!(
         part.iter()
-            .any(|m| m.0 == b'D' && m.1 == row(&[Some("\"b\""), None, None]))
+            .any(|m| m.0 == b'D' && m.1 == row(&[Some("\"b\""), Some(""), Some("")]))
     );
     let primary_type = query(
         &mut socket,
@@ -5434,6 +5434,7 @@ fn pg13_015_contract() {
             &bad,
             "invalid",
             &crate::conn::CancellationToken::new(),
+            &[],
         )
         .unwrap_err();
         assert_eq!(
@@ -5450,5 +5451,163 @@ fn pg13_015_contract() {
     assert!(TcpStream::connect(addr).is_err());
     println!(
         "pg13_015_contract: persistent_order=1 vector_subscripts=2 options=1 rejected_shapes=4 invalid_metadata=4 second_connection=1 isolation=1 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_016_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_016_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_016_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_016_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_016_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_016_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_016_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_016_admin");
+    let (mut c, _) = connect("pg13_016_policy");
+    for sql in [
+        "CREATE TABLE public.idx_contract (id integer, obsolete integer, a integer, b integer)",
+        "ALTER TABLE public.idx_contract DROP COLUMN obsolete",
+        "CREATE INDEX idx_contract_ba ON public.idx_contract (b,a)",
+    ] {
+        let got = query(&mut a, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let sql = "SELECT pg_catalog.pg_get_indexdef(i.indexrelid),pg_catalog.pg_get_indexdef(i.indexrelid,0,true),pg_catalog.pg_get_indexdef(i.indexrelid,1,true),pg_catalog.pg_get_indexdef(i.indexrelid,2,false),pg_catalog.pg_get_indexdef(i.indexrelid,99,false),pg_catalog.pg_get_indexdef(i.indexrelid,-1,true) FROM pg_catalog.pg_index i WHERE i.indrelid='public.idx_contract'::regclass::oid";
+    let got = query(&mut a, sql);
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert!(got.contains(&(b'D', row(&[Some("CREATE INDEX \"idx_contract_ba\" ON public.\"idx_contract\" USING btree (\"b\", \"a\")"),Some("CREATE INDEX \"idx_contract_ba\" ON public.\"idx_contract\" USING btree (\"b\", \"a\")"),Some("\"b\""),Some("\"a\""),Some(""),Some("")]))), "{got:?}");
+    assert_eq!(query(&mut b, sql), got);
+    let unknown = query(
+        &mut a,
+        "SELECT pg_catalog.pg_get_indexdef(0),pg_catalog.pg_get_indexdef(NULL),pg_catalog.pg_get_indexdef(0,99,true)",
+    );
+    assert!(
+        unknown.contains(&(b'D', row(&[None, None, None]))),
+        "{unknown:?}"
+    );
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![25; 6]
+    );
+    assert_eq!(
+        query(
+            &mut c,
+            "SELECT pg_catalog.pg_get_indexdef(indexrelid) FROM pg_catalog.pg_index"
+        )
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .count(),
+        0
+    );
+    let meta = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("pg13_016_admin"),
+            &astersql_infoschema::CiString::new("idx_contract"),
+        )
+        .unwrap();
+    let original = meta.Meta().model_meta.as_ref().unwrap().as_ref().clone();
+    for scenario in 0..8 {
+        let mut model = original.clone();
+        match scenario {
+            0 => model.Indices[0].Tp = astersql_meta_model::ast::IndexType::Invalid,
+            1 => model.Indices[0].Tp = astersql_meta_model::ast::IndexType::Hash,
+            2 => model.Indices[0].Invisible = true,
+            3 => model.Indices[0].Global = true,
+            4 => model.Indices[0].ConditionExprString = "a > 0".into(),
+            5 => model.Indices[0].Columns[0].Length = 1,
+            6 => model.Columns.last_mut().unwrap().Hidden = true,
+            _ => model.Indices[0].Columns[0].UseChangingType = true,
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("invalid"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("idx_contract"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let err = crate::pg_catalog::index_constraint_rows(
+            "pg_index",
+            &bad,
+            "invalid",
+            &crate::conn::CancellationToken::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            "0A000",
+            "scenario={scenario}"
+        );
+    }
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_016_contract: full=2 key_order=2 out_of_range=2 unknown_null=3 invalid_model=8 second_connection=1 isolation=1 cleanup=1"
     );
 }

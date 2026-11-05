@@ -1422,7 +1422,15 @@ impl DdlMetadataService {
         let database = database.to_ascii_lowercase();
         let table = table.to_ascii_lowercase();
         self.mutate(store, move |catalog| {
-            let key = (database.clone(), table.clone());
+            // Pending native DDL jobs retain a folded table argument. The
+            // prepared index still carries the exact physical table identity
+            // resolved from the shared model, including quoted PG names.
+            let target = catalog
+                .tables
+                .get(&(database.clone(), index.Table.O.clone()))
+                .filter(|model| model.ExactName)
+                .map_or_else(|| table.clone(), catalog_table_name);
+            let key = (database.clone(), target);
             let old = catalog
                 .tables
                 .get(&key)

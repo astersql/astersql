@@ -2137,3 +2137,62 @@ fn restored_table_without_persisted_stats_accepts_committed_delta() {
     let wrong_name = astersql_statistics_handle::StatsTableKey::new("other", "t", 43);
     assert!(domain.record_stats_mutation(&wrong_name, 1, 1).is_err());
 }
+
+#[test]
+fn pg13_016_add_index_preserves_exact_table_identity() {
+    use astersql_meta_model::{ColumnInfo, IndexColumn, IndexInfo, StatePublic, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    for name in ["Idx Mixed", "idx mixed"] {
+        service
+            .create_table(
+                storage.as_ref(),
+                "test",
+                TableInfo {
+                    Name: NewCIStr(name),
+                    ExactName: true,
+                    State: StatePublic,
+                    Columns: vec![ColumnInfo::New(1, NewCIStr("a\"b"))],
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+    }
+    let change = service
+        .add_index(
+            storage.as_ref(),
+            "test",
+            "idx mixed",
+            IndexInfo {
+                Name: NewCIStr("ix\"q"),
+                Table: NewCIStr("Idx Mixed"),
+                Columns: vec![IndexColumn {
+                    Name: NewCIStr("a\"b"),
+                    Length: -1,
+                    ..Default::default()
+                }],
+                Tp: astersql_meta_model::ast::IndexType::Btree,
+                State: StatePublic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(change.new_tables[0].1.Name.O, "Idx Mixed");
+    assert_eq!(change.new_tables[0].1.Indices[0].Name.O, "ix\"q");
+    let loader = super::canonical_domain::KvInfoSchemaLoader::new();
+    let loaded = loader.load_info_schema(storage.as_ref(), "test").unwrap();
+    let other = loaded
+        .schema
+        .ModelTableInfoByExactName(&infoschema::CiString::new("test"), "idx mixed")
+        .unwrap();
+    assert!(
+        other.Indices.is_empty(),
+        "case-distinct table must remain untouched"
+    );
+}

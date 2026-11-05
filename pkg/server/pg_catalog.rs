@@ -1599,6 +1599,10 @@ impl CatalogQuery {
                     .as_ref(),
                 database,
                 cancel,
+                &context
+                    .pg_namespace_facts()
+                    .transpose()?
+                    .unwrap_or_default(),
             )?,
             "pg_attribute" | "pg_attrdef" | "pg_type" => column_catalog_rows(
                 name,
@@ -2296,6 +2300,11 @@ impl CatalogQuery {
                             })?,
                             database,
                             execution.cancel,
+                            &execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default(),
                         )?;
                         fallback.as_slice()
                     };
@@ -2313,7 +2322,10 @@ impl CatalogQuery {
                                         .ok()
                                         .and_then(|n| n.checked_sub(1))
                                         .and_then(|n| columns.split('\0').nth(n))
-                                        .map_or(Value::Null, |name| Value::Text(name.into())),
+                                        .map_or_else(
+                                            || Value::Text(String::new()),
+                                            |name| Value::Text(name.into()),
+                                        ),
                                     _ => Value::Null,
                                 };
                             }
@@ -4787,6 +4799,7 @@ pub(crate) fn catalog_indexes(
                 Length: -1,
                 ..Default::default()
             }],
+            Tp: astersql_meta_model::ast::IndexType::Btree,
             Unique: true,
             Primary: true,
             State: astersql_meta_model::StatePublic,
@@ -4806,6 +4819,7 @@ pub(crate) fn index_constraint_rows(
     snapshot: &dyn astersql_infoschema::InfoSchema,
     database: &str,
     cancel: &CancellationToken,
+    namespaces: &[astersql_session::runtime::PgNamespaceFact],
 ) -> ConnResult<Vec<Vec<Value>>> {
     use astersql_meta_model::StatePublic;
     check_catalog_cancel(cancel)?;
@@ -4880,11 +4894,10 @@ pub(crate) fn index_constraint_rows(
         let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
         let indexes = catalog_indexes(model)?;
         for index in indexes.iter().filter(|i| i.State == StatePublic) {
-            if !matches!(
-                index.Tp,
-                astersql_meta_model::ast::IndexType::Invalid
-                    | astersql_meta_model::ast::IndexType::Btree
-            ) || index.Columns.is_empty()
+            if index.Tp != astersql_meta_model::ast::IndexType::Btree
+                || index.Invisible
+                || index.Global
+                || index.Columns.is_empty()
                 || index.Columns.len() > i16::MAX as usize
                 || index.MVIndex
                 || index.VectorInfo.is_some()
@@ -4917,11 +4930,27 @@ pub(crate) fn index_constraint_rows(
                 return Err(unsupported());
             }
             let oid = i64::from(crate::pg_oid::index_oid(model.ID, index.ID)?);
+            let (schema_name, table_name) = match &model.PostgreSQLNamespace {
+                Some((id, name)) => (
+                    namespaces
+                        .iter()
+                        .find(|fact| fact.id == *id)
+                        .map(|fact| fact.name.as_str())
+                        .ok_or_else(unsupported)?,
+                    name.as_str(),
+                ),
+                None => ("public", model.Name.O.as_str()),
+            };
             let definition = format!(
-                "CREATE {}INDEX {} ON public.{} USING btree ({})",
+                "CREATE {}INDEX {} ON {}.{} USING btree ({})",
                 if index.Unique { "UNIQUE " } else { "" },
                 pg_identifier(&index.Name.O),
-                pg_identifier(&model.Name.O),
+                if schema_name == "public" {
+                    "public".into()
+                } else {
+                    pg_identifier(schema_name)
+                },
+                pg_identifier(table_name),
                 names(&columns)
             );
             let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
