@@ -2231,6 +2231,8 @@ fn pg13_026_view_replacement_is_atomic_and_preserves_attributes() {
             Filter: None,
             SourceSQL: source.into(),
             CheckOption: Default::default(),
+            NoInsteadOfTriggers: Some(true),
+            CheckOptionSpecified: Some(false),
         }),
         ..Default::default()
     };

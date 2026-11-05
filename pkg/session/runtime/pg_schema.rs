@@ -862,6 +862,8 @@ pub struct PgStandardSchema {
     pub tables: i64,
     #[serde(default)]
     pub yes_or_no: i64,
+    #[serde(default)]
+    pub views: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -895,6 +897,7 @@ impl ConcreteSession {
                                 schemata: allocate_namespace_id(txn, &ctx)?,
                                 tables: allocate_namespace_id(txn, &ctx)?,
                                 yes_or_no: allocate_namespace_id(txn, &ctx)?,
+                                views: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
                                 key.clone(),
@@ -911,6 +914,14 @@ impl ConcreteSession {
                         if standard.tables == 0 && standard.yes_or_no == 0 {
                             standard.tables = allocate_namespace_id(txn, &ctx)?;
                             standard.yes_or_no = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                key.clone(),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
+                        if standard.views == 0 {
+                            standard.views = allocate_namespace_id(txn, &ctx)?;
                             txn.Set(
                                 key,
                                 serde_json::to_vec(standard)
@@ -930,9 +941,10 @@ impl ConcreteSession {
                 standard.schemata,
                 standard.tables,
                 standard.yes_or_no,
+                standard.views,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 6
+            if unique.len() != 7
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()
@@ -949,6 +961,42 @@ impl ConcreteSession {
 }
 
 impl ConcreteSession {
+    /// Ownership uses the authenticated actor's enabled, inherited roles. A
+    /// missing owner is unavailable evidence, never a confirmed non-owner NULL.
+    pub fn pg_standard_view_owner(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> SessionResult<bool> {
+        let roles = self
+            .pg_database_facts(None)?
+            .first()
+            .map(|f| (*f.roles).clone())
+            .unwrap_or_default();
+        let owner = table
+            .PostgreSQLOwner
+            .and_then(|id| roles.get(&id))
+            .ok_or_else(|| namespace_error("0A000", "view owner identity is unavailable"))?;
+        if self.pg_schema_identity() == "root" {
+            return Ok(true);
+        }
+        let (Some(login), Some(host)) = (
+            self.login_user.as_deref(),
+            self.authenticated_host.as_deref(),
+        ) else {
+            return Err(namespace_error(
+                "0A000",
+                "authenticated view owner source is unavailable",
+            ));
+        };
+        let selected = self.active_roles.borrow().first().cloned();
+        let (user, host) = selected.as_ref().map_or((login, host), |r| {
+            (r.Username.as_str(), r.Hostname.as_str())
+        });
+        let privileges = runtime_privilege_handle(&self.domain).Get();
+        let active = privileges.getAllRoles(user, host);
+        let inherited = privileges.FindAllRole(&active);
+        Ok(owner == user || inherited.iter().any(|r| &r.Username == owner))
+    }
     /// Shared ACLs and effective roles; namespace USAGE and path do not filter
     /// standard table listings. The caller supplies its execution-snapshot model.
     pub fn pg_standard_table_visible(

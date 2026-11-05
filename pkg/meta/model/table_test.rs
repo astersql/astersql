@@ -540,10 +540,34 @@ fn postgresql_bound_view_survives_rename_but_refuses_rebinding() {
         Filter: None,
         SourceSQL: view.View.as_ref().unwrap().SelectStmt.clone(),
         CheckOption: view.View.as_ref().unwrap().CheckOption,
+        NoInsteadOfTriggers: Some(true),
+        CheckOptionSpecified: Some(false),
     });
     let bytes = serde_json::to_vec(&view).unwrap();
     let restored: TableInfo = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(bytes, serde_json::to_vec(&restored).unwrap());
+    assert_eq!(
+        restored
+            .PostgreSQLView
+            .as_ref()
+            .unwrap()
+            .NoInsteadOfTriggers,
+        Some(true)
+    );
+    let mut historical = serde_json::to_value(&restored).unwrap();
+    historical["postgresql_view"]
+        .as_object_mut()
+        .unwrap()
+        .remove("NoInsteadOfTriggers");
+    let historical: TableInfo = serde_json::from_value(historical).unwrap();
+    assert_eq!(
+        historical
+            .PostgreSQLView
+            .as_ref()
+            .unwrap()
+            .NoInsteadOfTriggers,
+        None
+    );
     let bound = restored.PostgreSQLView.as_ref().unwrap();
     base.Columns[0].Name = ast::NewCIStr("renamed");
     let rendered = bound

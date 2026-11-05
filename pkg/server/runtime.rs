@@ -842,6 +842,7 @@ pub(crate) enum SessionRequest {
         response: mpsc::SyncSender<Vec<astersql_meta_model::TableInfo>>,
     },
     PgStandardTableVisible {
+        owner_only: bool,
         database: String,
         table: Arc<astersql_meta_model::TableInfo>,
         response: mpsc::SyncSender<ConnResult<bool>>,
@@ -1063,14 +1064,18 @@ fn run_session_worker(
                 let _ = response.send(session.pg_local_temporary_models());
             }
             SessionRequest::PgStandardTableVisible {
+                owner_only,
                 database,
                 table,
                 response,
             } => {
                 let _ = response.send(
-                    session
-                        .pg_standard_table_visible(&database, &table)
-                        .map_err(session_protocol_error),
+                    (if owner_only {
+                        session.pg_standard_view_owner(&table)
+                    } else {
+                        session.pg_standard_table_visible(&database, &table)
+                    })
+                    .map_err(session_protocol_error),
                 );
             }
             SessionRequest::PgNamespaceFacts { response } => {
@@ -2062,7 +2067,21 @@ impl TiDBContext for ConcreteTiDBContext {
     ) -> ConnResult<bool> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgStandardTableVisible {
+            owner_only: false,
             database,
+            table,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_standard_view_owner(
+        &self,
+        table: Arc<astersql_meta_model::TableInfo>,
+    ) -> ConnResult<bool> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgStandardTableVisible {
+            owner_only: true,
+            database: String::new(),
             table,
             response: tx,
         })?;

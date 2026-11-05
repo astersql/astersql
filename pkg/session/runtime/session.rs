@@ -3874,6 +3874,8 @@ impl ConcreteSession {
             Filter: filter,
             SourceSQL: stored.SelectStmt.clone(),
             CheckOption: stored.CheckOption,
+            NoInsteadOfTriggers: Some(true),
+            CheckOptionSpecified: Some(create.CheckOptionSpecified),
         });
         Ok(())
     }

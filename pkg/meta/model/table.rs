@@ -850,6 +850,13 @@ pub struct PostgreSQLView {
     pub Filter: Option<PostgreSQLCheckExpression>,
     pub SourceSQL: String,
     pub CheckOption: ast::ViewCheckOption,
+    /// Fresh bounded PG views have no INSTEAD OF triggers. Legacy definitions
+    /// without this publication fact cannot establish any trigger flag.
+    #[serde(default)]
+    pub NoInsteadOfTriggers: Option<bool>,
+    /// None means historical provenance is unavailable; Some(false) records NONE.
+    #[serde(default)]
+    pub CheckOptionSpecified: Option<bool>,
 }
 impl PostgreSQLView {
     /// Render the same bound definition for PG introspection and native execution.

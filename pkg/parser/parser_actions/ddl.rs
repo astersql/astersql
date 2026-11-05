@@ -5295,6 +5295,7 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                     .and_then(|item| item.downcast_ref::<parser_ast::ViewSecurity>())
                     .copied()
                     .unwrap_or_default(),
+                CheckOptionSpecified: rhs.borrow(rhs_len).expect("DDL RHS position").item.is_some(),
                 CheckOption: rhs
                     .borrow(rhs_len - (0))
                     .expect("DDL RHS position")

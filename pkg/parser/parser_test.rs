@@ -869,6 +869,7 @@ pub fn test_view() {
     assert!(view.Select.as_any().is::<parser_ast::SelectStmt>());
     assert_eq!(view.Security, parser_ast::ViewSecurity::Definer);
     assert_eq!(view.CheckOption, parser_ast::ViewCheckOption::Cascaded);
+    assert!(!view.CheckOptionSpecified);
 
     let statement = parser
         .ParseOneStmt(
@@ -897,6 +898,7 @@ pub fn test_view() {
     assert!(view.Select.as_any().is::<parser_ast::SelectStmt>());
     assert_eq!(view.Security, parser_ast::ViewSecurity::Definer);
     assert_eq!(view.CheckOption, parser_ast::ViewCheckOption::Cascaded);
+    assert!(view.CheckOptionSpecified);
 
     let (statements, _) = parser
         .Parse(

@@ -8589,3 +8589,179 @@ fn pg13_031_contract() {
         "pg13_031_contract: scenarios=18 twelve_fields typed_null zero_rows relation_kinds path schemas recovery cleanup"
     );
 }
+
+#[test]
+fn pg13_032_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_032_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_032_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG32 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_032_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    for sql in [
+        "CREATE SCHEMA other_schema",
+        "CREATE TABLE public.is_map_t(id integer)",
+        "CREATE TABLE other_schema.is_map_t(id integer)",
+        "CREATE VIEW public.is_map_v AS SELECT id FROM public.is_map_t",
+        "CREATE SEQUENCE public.is_map_s",
+        "CREATE INDEX is_map_i ON public.is_map_t(id)",
+    ] {
+        ok(&mut socket, sql);
+    }
+    let standard = ok(
+        &mut socket,
+        "SELECT table_name FROM information_schema.views WHERE table_schema='information_schema' AND table_name IN ('schemata','tables','views') ORDER BY table_name",
+    );
+    assert_eq!(
+        standard.iter().filter(|m| m.0 == b'D').count(),
+        3,
+        "{standard:?}"
+    );
+    let sql = "SELECT table_catalog,table_schema,table_name,view_definition,check_option,is_updatable,is_insertable_into,is_trigger_updatable,is_trigger_deletable,is_trigger_insertable_into FROM information_schema.views WHERE table_schema='public' AND table_name='is_map_v'";
+    let result = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 19, 19, 1043, 1043, 1043, 1043, 1043, 1043, 1043]
+    );
+    let definition = ok(
+        &mut socket,
+        "SELECT pg_catalog.pg_get_viewdef('public.is_map_v'::regclass)",
+    );
+    let def = definition.iter().find(|m| m.0 == b'D').unwrap();
+    let data = &def.1;
+    let len = i32::from_be_bytes(data[2..6].try_into().unwrap()) as usize;
+    let definition = std::str::from_utf8(&data[6..6 + len]).unwrap();
+    assert!(
+        result.contains(&(
+            b'D',
+            row(&[
+                Some("pg13_032_contract_probe"),
+                Some("public"),
+                Some("is_map_v"),
+                Some(definition),
+                Some("NONE"),
+                Some("YES"),
+                Some("YES"),
+                Some("NO"),
+                Some("NO"),
+                Some("NO")
+            ])
+        )),
+        "{result:?}"
+    );
+    let zero = ok(&mut socket, &sql.replace("is_map_v", "absent"));
+    assert_eq!(result[0], zero[0]);
+    assert!(!zero.iter().any(|m| m.0 == b'D'));
+    ok(
+        &mut socket,
+        "CREATE VIEW public.literal_v AS SELECT 32 AS id",
+    );
+    let flags = ok(
+        &mut socket,
+        "SELECT is_updatable,is_insertable_into FROM information_schema.views WHERE table_name='literal_v'",
+    );
+    assert!(flags.contains(&(b'D', row(&[Some("NO"), Some("NO")]))));
+    ok(
+        &mut socket,
+        "CREATE VIEW public.checked_v AS SELECT id FROM public.is_map_t WHERE id>0 WITH LOCAL CHECK OPTION",
+    );
+    let checked = ok(
+        &mut socket,
+        "SELECT check_option FROM information_schema.views WHERE table_name='checked_v'",
+    );
+    assert!(checked.contains(&(b'D', row(&[Some("LOCAL")]))));
+    ok(&mut socket, "SET search_path TO pg_catalog");
+    assert_eq!(ok(&mut socket, sql), result);
+    native.execute("CREATE VIEW pg13_032_contract_probe.legacy_v AS SELECT id FROM pg13_032_contract_probe.is_map_t").unwrap();
+    assert!(
+        ok(
+            &mut socket,
+            "SELECT table_name FROM information_schema.views WHERE table_name='legacy_v'"
+        )
+        .contains(&(b'D', row(&[Some("legacy_v")])))
+    );
+    for field in [
+        "view_definition",
+        "check_option",
+        "is_updatable",
+        "is_trigger_updatable",
+    ] {
+        let error = query(
+            &mut socket,
+            &format!("SELECT {field} FROM information_schema.views WHERE table_name='legacy_v'"),
+        );
+        assert!(
+            error
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"0A000")),
+            "{error:?}"
+        );
+    }
+    for command in [
+        "SELECT absent FROM information_schema.views",
+        "BEGIN",
+        "SELECT absent FROM information_schema.views",
+        "ROLLBACK",
+        "SELECT 1",
+    ] {
+        let m = query(&mut socket, command);
+        if command.contains("absent") {
+            assert!(
+                m.iter()
+                    .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703")),
+                "{m:?}"
+            );
+        }
+    }
+    println!(
+        "pg13_032_contract: scenarios=14 definition flags literal check_option zero_describe path legacy_projection_reject recovery cleanup"
+    );
+}

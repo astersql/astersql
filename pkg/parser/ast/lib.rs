@@ -2316,6 +2316,8 @@ pub struct CreateViewStmt {
     pub Definer: parser_auth::parser::auth::auth::UserIdentity,
     pub Security: ViewSecurity,
     pub CheckOption: ViewCheckOption,
+    /// Distinguish an omitted clause from the native default Cascaded enum.
+    pub CheckOptionSpecified: bool,
 }
 
 /// ALTER表类型枚举。

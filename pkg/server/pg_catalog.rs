@@ -32,6 +32,18 @@ const TABLES_COLUMNS: &[&str] = &[
     "is_typed",
     "commit_action",
 ];
+const VIEWS_COLUMNS: &[&str] = &[
+    "table_catalog",
+    "table_schema",
+    "table_name",
+    "view_definition",
+    "check_option",
+    "is_updatable",
+    "is_insertable_into",
+    "is_trigger_updatable",
+    "is_trigger_deletable",
+    "is_trigger_insertable_into",
+];
 fn tables_identifier(slot: usize) -> bool {
     matches!(slot, 0 | 1 | 2 | 4 | 6 | 7 | 8)
 }
@@ -139,7 +151,7 @@ pub(crate) struct CatalogQuery {
     cte_columns: CteColumns,
     parameter_oids: Vec<u32>,
     parameter_values: Vec<Expr>,
-    standard_view_id: Option<[i64; 2]>,
+    standard_view_id: Option<[i64; 3]>,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
@@ -254,7 +266,9 @@ impl CatalogQuery {
         if query.relations().any(|r| {
             matches!(
                 r.name.as_str(),
-                "information_schema.schemata" | "information_schema.tables"
+                "information_schema.schemata"
+                    | "information_schema.tables"
+                    | "information_schema.views"
             )
         }) {
             let standard = context
@@ -265,7 +279,7 @@ impl CatalogQuery {
                 .into_iter()
                 .find_map(|f| f.standard)
                 .ok_or_else(|| ("0A000", "standard schema identity is unavailable".into()))?;
-            query.standard_view_id = Some([standard.schemata, standard.tables]);
+            query.standard_view_id = Some([standard.schemata, standard.tables, standard.views]);
         }
         Ok(Some(query))
     }
@@ -562,6 +576,7 @@ impl CatalogQuery {
                     relation.name.as_str(),
                     "information_schema.schemata"
                         | "information_schema.tables"
+                        | "information_schema.views"
                         | "__pg_scalar"
                         | "pg_user"
                         | "pg_authid"
@@ -779,6 +794,21 @@ impl CatalogQuery {
                 field
             } else {
                 match (relation.name.as_str(), name) {
+                    ("information_schema.views", column) => {
+                        VIEWS_COLUMNS.iter().position(|n| *n == column).map(|slot| {
+                            (
+                                slot,
+                                if slot < 3 {
+                                    crate::pg_result::CatalogColumnType::Name as u8
+                                } else if slot >= 5 {
+                                    crate::pg_result::CatalogColumnType::YesOrNo as u8
+                                } else {
+                                    crate::pg_result::CatalogColumnType::Varchar as u8
+                                },
+                                0,
+                            )
+                        })
+                    }
                     ("information_schema.tables", column) => TABLES_COLUMNS
                         .iter()
                         .position(|n| *n == column)
@@ -871,7 +901,9 @@ impl CatalogQuery {
         if self.relations().any(|r| {
             matches!(
                 r.name.as_str(),
-                "information_schema.schemata" | "information_schema.tables"
+                "information_schema.schemata"
+                    | "information_schema.tables"
+                    | "information_schema.views"
             ) && qualifier.is_none_or(|q| q == r.alias)
         }) {
             return Err(("42703", format!("column {} does not exist", path.join("."))));
@@ -1482,13 +1514,18 @@ impl CatalogQuery {
                     let relation = self.relations().nth(slot / CATALOG_ROW_WIDTH)?;
                     if !matches!(
                         relation.name.as_str(),
-                        "information_schema.schemata" | "information_schema.tables"
+                        "information_schema.schemata"
+                            | "information_schema.tables"
+                            | "information_schema.views"
                     ) {
                         return None;
                     }
                     Some(astersql_session::runtime::ConcreteColumnOrigin {
-                        table_id: self.standard_view_id?
-                            [usize::from(relation.name == "information_schema.tables")],
+                        table_id: self.standard_view_id?[match relation.name.as_str() {
+                            "information_schema.tables" => 1,
+                            "information_schema.views" => 2,
+                            _ => 0,
+                        }],
                         attribute_number: (slot % CATALOG_ROW_WIDTH + 1) as i16,
                     })
                 })
@@ -1744,6 +1781,115 @@ impl CatalogQuery {
     ) -> ConnResult<Vec<Vec<Value>>> {
         let mut rows = match name {
             "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
+            "information_schema.views" => {
+                let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
+                let facts = context
+                    .pg_namespace_facts()
+                    .transpose()?
+                    .ok_or(ConnError::UnsupportedCommand(0))?;
+                let tables = snapshot
+                    .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                    .map_err(|e| ConnError::Session(e.to_string()))?;
+                let mut rows = Vec::new();
+                // These immutable registered providers are real pg_class views
+                // with public SELECT, but have no writable projection or triggers.
+                let standard = facts
+                    .iter()
+                    .find_map(|f| f.standard.as_ref())
+                    .ok_or(ConnError::UnsupportedCommand(0))?;
+                for (id, name) in [
+                    (standard.schemata, "schemata"),
+                    (standard.tables, "tables"),
+                    (standard.views, "views"),
+                ] {
+                    let mut row = vec![
+                        Value::Text(database.into()),
+                        Value::Text("information_schema".into()),
+                        Value::Text(name.into()),
+                        Value::Null,
+                        Value::Text("NONE".into()),
+                    ];
+                    row.extend((0..5).map(|_| Value::Text("NO".into())));
+                    row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                    row[10] = Value::Signed(id);
+                    rows.push(row);
+                }
+
+                for table in &tables {
+                    check_catalog_cancel(cancel)?;
+                    let model = table
+                        .model_meta
+                        .as_ref()
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    if model.State != astersql_meta_model::StatePublic
+                        || model.View.is_none()
+                        || !context.pg_standard_table_visible(database.into(), model.clone())?
+                    {
+                        continue;
+                    }
+                    let schema = match &model.PostgreSQLNamespace {
+                        Some((id, _)) => facts
+                            .iter()
+                            .find(|f| f.id == *id)
+                            .ok_or(ConnError::UnsupportedCommand(0))?
+                            .name
+                            .as_str(),
+                        None => "public",
+                    };
+                    let name = model
+                        .PostgreSQLNamespace
+                        .as_ref()
+                        .map_or(model.Name.O.as_str(), |(_, name)| name.as_str());
+                    // Defer owner/definition checks until the requested row's
+                    // projection, so unrelated names remain usable.
+                    let flag = standard_table_insertable(
+                        snapshot.as_ref(),
+                        database,
+                        model,
+                        &mut Default::default(),
+                    )
+                    .map(|v| Value::Text(if v { "YES" } else { "NO" }.into()))
+                    .unwrap_or(Value::Null);
+                    let bound = model.PostgreSQLView.as_ref();
+                    let check = bound
+                        .filter(|b| {
+                            model.View.as_ref().is_some_and(|v| {
+                                v.SelectStmt == b.SourceSQL && v.CheckOption == b.CheckOption
+                            })
+                        })
+                        .and_then(|b| match (b.CheckOptionSpecified, b.CheckOption) {
+                            (Some(false), _) => Some("NONE"),
+                            (Some(true), astersql_meta_model::ast::model::CheckOptionLocal) => {
+                                Some("LOCAL")
+                            }
+                            (Some(true), astersql_meta_model::ast::model::CheckOptionCascaded) => {
+                                Some("CASCADED")
+                            }
+                            _ => None,
+                        })
+                        .map_or(Value::Null, |s| Value::Text(s.into()));
+                    let trigger = bound
+                        .and_then(|b| b.NoInsteadOfTriggers)
+                        .filter(|v| *v)
+                        .map_or(Value::Null, |_| Value::Text("NO".into()));
+                    let mut row = vec![
+                        Value::Text(database.into()),
+                        Value::Text(schema.into()),
+                        Value::Text(name.into()),
+                        Value::Null,
+                        check,
+                        flag.clone(),
+                        flag,
+                        trigger.clone(),
+                        trigger.clone(),
+                        trigger,
+                    ];
+                    row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                    row[10] = Value::Signed(model.ID);
+                    rows.push(row);
+                }
+                rows
+            }
             "information_schema.tables" => {
                 let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
                 let facts = context
@@ -1773,7 +1919,7 @@ impl CatalogQuery {
                         ]
                     })
                     .collect();
-                for name in ["schemata", "tables"] {
+                for name in ["schemata", "tables", "views"] {
                     rows.push(vec![
                         Value::Text(database.into()),
                         Value::Text("information_schema".into()),
@@ -2178,6 +2324,7 @@ impl CatalogQuery {
                 for (view_id, label, labels) in [
                     (standard.schemata, "schemata", SCHEMATA_COLUMNS),
                     (standard.tables, "tables", TABLES_COLUMNS),
+                    (standard.views, "views", VIEWS_COLUMNS),
                 ] {
                     let relation = crate::pg_oid::table_oid(view_id)?;
                     if name == "pg_class" {
@@ -2199,6 +2346,14 @@ impl CatalogQuery {
                                 if tables_identifier(slot) {
                                     standard.sql_identifier
                                 } else if matches!(slot, 9 | 10) {
+                                    standard.yes_or_no
+                                } else {
+                                    standard.character_data
+                                }
+                            } else if view_id == standard.views {
+                                if slot < 3 {
+                                    standard.sql_identifier
+                                } else if slot >= 5 {
                                     standard.yes_or_no
                                 } else {
                                     standard.character_data
@@ -2233,6 +2388,71 @@ impl CatalogQuery {
                 let slot = self.column(path).expect("validated column").0;
                 let local = slot % CATALOG_ROW_WIDTH;
                 let base = slot - local;
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "information_schema.views")
+                    && row[base] != Value::Null
+                {
+                    if local == 3 {
+                        let Value::Signed(id) = row[base + 10] else {
+                            return Err(ConnError::UnsupportedCommand(0));
+                        };
+                        let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
+                        let tables = snapshot
+                            .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                            .map_err(|e| ConnError::Session(e.to_string()))?;
+                        let model = if let Some(model) = tables
+                            .iter()
+                            .filter_map(|t| t.model_meta.as_ref())
+                            .find(|m| m.ID == id)
+                        {
+                            model
+                        } else {
+                            let standard = execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default()
+                                .into_iter()
+                                .find_map(|f| f.standard)
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            if ![standard.schemata, standard.tables, standard.views].contains(&id) {
+                                return Err(ConnError::UnsupportedCommand(0));
+                            }
+                            // Ownership comes from the same durable registry as
+                            // pg_class. This is not a reconstructable SELECT.
+                            let registered = std::sync::Arc::new(astersql_meta_model::TableInfo {
+                                ID: id,
+                                PostgreSQLOwner: Some(standard.owner),
+                                ..Default::default()
+                            });
+                            if !execution.context.pg_standard_view_owner(registered)? {
+                                return Ok(Value::Null);
+                            }
+                            return Err(database_identity_unavailable(
+                                "registered standard view definition is unavailable",
+                            ));
+                        };
+                        if !execution.context.pg_standard_view_owner(model.clone())? {
+                            return Ok(Value::Null);
+                        }
+                        let oid = crate::pg_oid::table_oid(id)?;
+                        return self.evaluate(
+                            &Expr::Call(
+                                vec!["pg_get_viewdef".into()],
+                                vec![Expr::Integer(i64::from(oid))],
+                            ),
+                            row,
+                            execution,
+                        );
+                    }
+                    if local >= 4 && row[slot] == Value::Null {
+                        return Err(database_identity_unavailable(
+                            "PostgreSQL view analysis or trigger facts are unavailable",
+                        ));
+                    }
+                }
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
@@ -6767,6 +6987,7 @@ fn standard_table_insertable(
     }
     let view = model.PostgreSQLView.as_ref()?;
     let Some(base_id) = view.RelationID else {
+        view.render(model, None, "public", false)?;
         return Some(false);
     };
     let tables = snapshot

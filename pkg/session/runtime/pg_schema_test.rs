@@ -881,12 +881,13 @@ fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
         first.schemata,
         first.tables,
         first.yes_or_no,
+        first.views,
     ];
     assert_eq!(
         ids.into_iter()
             .collect::<std::collections::BTreeSet<_>>()
             .len(),
-        6
+        7
     );
     let other = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     other.pg_initialize_standard_schema().unwrap();
@@ -926,7 +927,7 @@ fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
         "0A000"
     );
     println!(
-        "pg13_030: durable_identity=6 second_session=1 no_allocation=1 corrupt_identity_rejected=1"
+        "pg13_030: durable_identity=7 second_session=1 no_allocation=1 corrupt_identity_rejected=1"
     );
 }
 
@@ -1025,4 +1026,51 @@ fn pg13_031_temporary_catalog_identities_are_private() {
     println!(
         "pg13_031 temporary: private_relations=2 private_namespaces=2 bounded_ids=1 shared_domain_unchanged=1 cleanup=2"
     );
+}
+
+#[test]
+fn pg13_032_standard_view_upgrade_is_explicit() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_initialize_standard_schema().unwrap();
+    let original = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    domain.storage_handle().with_storage(|store| {
+        let ctx = kv::Context::default();
+        kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            let mut legacy = serde_json::to_value(&original).unwrap();
+            legacy.as_object_mut().unwrap().remove("views");
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                serde_json::to_vec(&legacy).unwrap(),
+            )
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        pg.pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    pg.pg_initialize_standard_schema().unwrap();
+    let upgraded = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    assert_eq!(original.namespace, upgraded.namespace);
+    assert_eq!(original.schemata, upgraded.schemata);
+    assert_eq!(original.sql_identifier, upgraded.sql_identifier);
+    assert_eq!(upgraded.tables, original.tables);
+    assert_eq!(upgraded.yes_or_no, original.yes_or_no);
+    assert!(upgraded.views > original.views);
+    println!("pg13_032 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=3");
 }

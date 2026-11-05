@@ -275,9 +275,18 @@ changed types refuse rather than resolving a new object with the old name.
 Authenticated view reads and source binding reuse the existing SELECT privilege
 check. Legacy/native views retain native execution but do not establish a PG
 reconstructable definition. This bounded path does not introduce arbitrary query
-conversion, a dependency graph, or CHECK OPTION write enforcement. Focused tests
-are `pg13_025_contract`, `pg13_025_differential`, and
-`pg13_025_view_binding_uses_shared_executor`.
+conversion, a dependency graph, or CHECK OPTION write enforcement.
+The parser retains whether CHECK OPTION was explicitly declared, and the bound
+view persists that fact; an omitted native default does not become CASCADED.
+Fresh bounded PG view creation also publishes `NoInsteadOfTriggers=Some(true)`;
+trigger DDL remains unsupported. Historical definitions without that fact refuse
+trigger flag projections rather than infer absence. `information_schema.views`
+reuses the bound definition and effective owner roles, while its update/insert
+flags analyze the accepted projection grammar. CHECK OPTION reports stored
+declaration provenance; this increment adds no view-write enforcement. Focused
+binding tests are `pg13_025_contract`, `pg13_025_differential`, and
+`pg13_025_view_binding_uses_shared_executor`; standard view coverage is
+`pg13_032_contract` and `pg13_032_differential`.
 
 
 PG view replacement now uses `DdlMetadataService::replace_postgresql_view` in a
