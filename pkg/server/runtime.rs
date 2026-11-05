@@ -842,6 +842,7 @@ pub(crate) enum SessionRequest {
         response: mpsc::SyncSender<Vec<astersql_meta_model::TableInfo>>,
     },
     PgStandardTableVisible {
+        column: Option<String>,
         owner_only: bool,
         database: String,
         table: Arc<astersql_meta_model::TableInfo>,
@@ -1064,6 +1065,7 @@ fn run_session_worker(
                 let _ = response.send(session.pg_local_temporary_models());
             }
             SessionRequest::PgStandardTableVisible {
+                column,
                 owner_only,
                 database,
                 table,
@@ -1072,6 +1074,8 @@ fn run_session_worker(
                 let _ = response.send(
                     (if owner_only {
                         session.pg_standard_view_owner(&table)
+                    } else if let Some(column) = column {
+                        session.pg_standard_column_visible(&database, &table, &column)
                     } else {
                         session.pg_standard_table_visible(&database, &table)
                     })
@@ -2067,6 +2071,23 @@ impl TiDBContext for ConcreteTiDBContext {
     ) -> ConnResult<bool> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgStandardTableVisible {
+            column: None,
+            owner_only: false,
+            database,
+            table,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_standard_column_visible(
+        &self,
+        database: String,
+        table: Arc<astersql_meta_model::TableInfo>,
+        column: String,
+    ) -> ConnResult<bool> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgStandardTableVisible {
+            column: Some(column),
             owner_only: false,
             database,
             table,
@@ -2080,6 +2101,7 @@ impl TiDBContext for ConcreteTiDBContext {
     ) -> ConnResult<bool> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgStandardTableVisible {
+            column: None,
             owner_only: true,
             database: String::new(),
             table,

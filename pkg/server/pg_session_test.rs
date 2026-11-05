@@ -168,3 +168,19 @@ fn pg11_30_default_path_retains_set_command_tag() {
     let reset = SessionQuery::parse("RESET search_path").unwrap().unwrap();
     assert_eq!(reset.command(), "RESET");
 }
+
+#[test]
+fn pg13_033_column_privilege_parser() {
+    for privilege in ["SELECT", "INSERT", "UPDATE", "REFERENCES"] {
+        for (action, connector) in [("GRANT", "TO"), ("REVOKE", "FROM")] {
+            let sql = format!("{action} {privilege}(id) ON public.column_acl {connector} reader");
+            assert!(SessionQuery::parse(&sql).unwrap().is_some(), "{sql}");
+        }
+    }
+    assert!(SessionQuery::parse("GRANT DELETE(id) ON public.column_acl TO reader").is_err());
+    assert!(
+        SessionQuery::parse("GRANT DELETE ON public.column_acl TO reader")
+            .unwrap()
+            .is_some()
+    );
+}

@@ -472,11 +472,13 @@ impl SessionQuery {
                 | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::RelationOwner { .. } => "ALTER TABLE",
                 astersql_session::runtime::PgSchemaCommand::RevokeAll { .. } => "REVOKE",
-                astersql_session::runtime::PgSchemaCommand::TableSelect { grant: true, .. } => {
-                    "GRANT"
-                }
-                astersql_session::runtime::PgSchemaCommand::TableSelect {
-                    grant: false, ..
+                astersql_session::runtime::PgSchemaCommand::RelationPrivilege {
+                    grant: true,
+                    ..
+                } => "GRANT",
+                astersql_session::runtime::PgSchemaCommand::RelationPrivilege {
+                    grant: false,
+                    ..
                 } => "REVOKE",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
@@ -645,8 +647,22 @@ impl SessionQuery {
             return Err(("0A000", "unsupported PostgreSQL database policy".into()));
         }
         if (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
-            && word(tokens.get(1), "select")
+            && ["select", "insert", "update", "references", "delete"]
+                .iter()
+                .any(|p| word(tokens.get(1), p))
         {
+            use astersql_session::runtime::PgTablePrivilege;
+            let privilege = if word(tokens.get(1), "insert") {
+                PgTablePrivilege::Insert
+            } else if word(tokens.get(1), "update") {
+                PgTablePrivilege::Update
+            } else if word(tokens.get(1), "references") {
+                PgTablePrivilege::References
+            } else if word(tokens.get(1), "delete") {
+                PgTablePrivilege::Delete
+            } else {
+                PgTablePrivilege::Select
+            };
             let grant = word(tokens.first(), "grant");
             let (on, column) = if tokens.get(2) == Some(&Token::Symbol('('))
                 && tokens.get(4) == Some(&Token::Symbol(')'))
@@ -655,6 +671,9 @@ impl SessionQuery {
             } else {
                 (2, None)
             };
+            if column.is_some() && matches!(privilege, PgTablePrivilege::Delete) {
+                return Err(("0A000", "DELETE does not admit a column privilege".into()));
+            }
             if on == 5 && column.is_none() {
                 return Err(("42601", "expected a column identifier".into()));
             }
@@ -668,13 +687,16 @@ impl SessionQuery {
                     identifier(&tokens[on + 5]),
                 )
             {
-                return Ok(Some(Self::SchemaUtility(PgSchemaCommand::TableSelect {
-                    schema,
-                    table,
-                    grantee,
-                    column,
-                    grant,
-                })));
+                return Ok(Some(Self::SchemaUtility(
+                    PgSchemaCommand::RelationPrivilege {
+                        privilege,
+                        schema,
+                        table,
+                        grantee,
+                        column,
+                        grant,
+                    },
+                )));
             }
         }
         if tokens.len() == 5

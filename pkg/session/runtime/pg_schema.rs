@@ -9,6 +9,26 @@ use std::collections::{BTreeMap, BTreeSet};
 // dependencies. Durable allocation itself remains a retried KV transaction.
 pub(super) static PG_NAMESPACE_DDL_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy, Debug)]
+pub enum PgTablePrivilege {
+    Select,
+    Insert,
+    Update,
+    References,
+    Delete,
+}
+impl PgTablePrivilege {
+    pub fn sql(self) -> &'static str {
+        match self {
+            Self::Select => "SELECT",
+            Self::Insert => "INSERT",
+            Self::Update => "UPDATE",
+            Self::References => "REFERENCES",
+            Self::Delete => "DELETE",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum PgSchemaCommand {
     Create(String),
@@ -30,7 +50,8 @@ pub enum PgSchemaCommand {
         table: String,
         owner: String,
     },
-    TableSelect {
+    RelationPrivilege {
+        privilege: PgTablePrivilege,
         schema: String,
         table: String,
         grantee: String,
@@ -197,7 +218,7 @@ impl ConcreteSession {
                     }
                     if let Some(command) = command {
                         match command {
-                            PgSchemaCommand::TableSelect { .. }
+                            PgSchemaCommand::RelationPrivilege { .. }
                             | PgSchemaCommand::RelationOwner { .. } => {
                                 unreachable!("handled before namespace transaction")
                             }
@@ -442,7 +463,8 @@ impl ConcreteSession {
                 .map_err(|e| session_error("persist relation owner", e))?;
             return Ok(());
         }
-        if let PgSchemaCommand::TableSelect {
+        if let PgSchemaCommand::RelationPrivilege {
+            privilege,
             schema,
             table,
             grantee,
@@ -464,8 +486,9 @@ impl ConcreteSession {
                 ConcreteSession::new_with_dialect(self.domain.clone(), ast::SqlDialect::MySQL);
             let ident = |name: &str| format!("`{}`", name.replace('`', "``"));
             native.execute(&format!(
-                "{} SELECT{} ON {}.{} {} '{}'@'%'",
+                "{} {}{} ON {}.{} {} '{}'@'%'",
                 if *grant { "GRANT" } else { "REVOKE" },
+                privilege.sql(),
                 column
                     .as_ref()
                     .map_or(String::new(), |c| format!("({})", ident(c))),
@@ -864,6 +887,10 @@ pub struct PgStandardSchema {
     pub yes_or_no: i64,
     #[serde(default)]
     pub views: i64,
+    #[serde(default)]
+    pub columns: i64,
+    #[serde(default)]
+    pub cardinal_number: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -898,6 +925,8 @@ impl ConcreteSession {
                                 tables: allocate_namespace_id(txn, &ctx)?,
                                 yes_or_no: allocate_namespace_id(txn, &ctx)?,
                                 views: allocate_namespace_id(txn, &ctx)?,
+                                columns: allocate_namespace_id(txn, &ctx)?,
+                                cardinal_number: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
                                 key.clone(),
@@ -928,6 +957,15 @@ impl ConcreteSession {
                                     .map_err(|e| kv::errors::New(e.to_string()))?,
                             )?;
                         }
+                        if standard.columns == 0 && standard.cardinal_number == 0 {
+                            standard.columns = allocate_namespace_id(txn, &ctx)?;
+                            standard.cardinal_number = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
                     }
                     Ok(())
                 })
@@ -942,9 +980,11 @@ impl ConcreteSession {
                 standard.tables,
                 standard.yes_or_no,
                 standard.views,
+                standard.columns,
+                standard.cardinal_number,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 7
+            if unique.len() != 9
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()
@@ -1054,6 +1094,66 @@ impl ConcreteSession {
                         )
                     }),
         )
+    }
+    /// Standard columns admit only ownership or SELECT/INSERT/UPDATE/REFERENCES on this column.
+    pub fn pg_standard_column_visible(
+        &self,
+        database: &str,
+        table: &astersql_meta_model::TableInfo,
+        column: &str,
+    ) -> SessionResult<bool> {
+        let actor = self.pg_schema_identity();
+        let roles = self
+            .pg_database_facts(None)?
+            .first()
+            .map(|f| (*f.roles).clone())
+            .unwrap_or_default();
+        if actor == "root" {
+            return Ok(true);
+        }
+        let (Some(login), Some(login_host)) = (
+            self.login_user.as_deref(),
+            self.authenticated_host.as_deref(),
+        ) else {
+            return Err(namespace_error(
+                "0A000",
+                "authenticated relation ACL source is unavailable",
+            ));
+        };
+        let selected = self.active_roles.borrow().first().cloned();
+        let (user, host) = selected.as_ref().map_or((login, login_host), |r| {
+            (r.Username.as_str(), r.Hostname.as_str())
+        });
+        let privileges = runtime_privilege_handle(&self.domain).Get();
+        // PostgreSQL enables inherited memberships on login; native MySQL
+        // default-role activation is a separate contract and stays unchanged.
+        let active = privileges.getAllRoles(user, host);
+        let inherited = privileges.FindAllRole(&active);
+        let owner = table.PostgreSQLOwner.and_then(|id| roles.get(&id));
+        if owner.is_some_and(|name| name == user || inherited.iter().any(|r| &r.Username == name)) {
+            return Ok(true);
+        }
+        use astersql_privilege_privileges::{InsertPriv, ReferencesPriv, SelectPriv, UpdatePriv};
+        let mask = SelectPriv | InsertPriv | UpdatePriv | ReferencesPriv;
+        // tables_priv.ColumnPriv summarizes grants on any column. It cannot
+        // establish permission on this particular column; consult its exact key.
+        let table_grant =
+            privileges.RequestVerification(&active, user, host, database, &table.Name.O, "", mask);
+        let identities =
+            std::iter::once(astersql_privilege_privileges::RoleIdentity::new(user, host))
+                .chain(privileges.FindAllUserEffectiveRoles(user, host, &active));
+        Ok(table_grant
+            || identities.into_iter().any(|role| {
+                privileges
+                    .MatchColumns(
+                        &role.Username,
+                        &role.Hostname,
+                        database,
+                        &table.Name.O,
+                        column,
+                    )
+                    .is_some_and(|record| record.ColumnPriv & mask != 0)
+            }))
     }
 }
 

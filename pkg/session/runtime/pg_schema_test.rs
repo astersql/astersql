@@ -1074,3 +1074,87 @@ fn pg13_032_standard_view_upgrade_is_explicit() {
     assert!(upgraded.views > original.views);
     println!("pg13_032 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=3");
 }
+
+#[test]
+fn pg13_033_standard_columns_upgrade_is_explicit() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_initialize_standard_schema().unwrap();
+    let original = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    domain.storage_handle().with_storage(|store| {
+        let ctx = kv::Context::default();
+        kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            let mut legacy = serde_json::to_value(&original).unwrap();
+            legacy.as_object_mut().unwrap().remove("columns");
+            legacy.as_object_mut().unwrap().remove("cardinal_number");
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                serde_json::to_vec(&legacy).unwrap(),
+            )
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        pg.pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    pg.pg_initialize_standard_schema().unwrap();
+    let upgraded = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    assert_eq!(original.namespace, upgraded.namespace);
+    assert_eq!(original.schemata, upgraded.schemata);
+    assert_eq!(original.sql_identifier, upgraded.sql_identifier);
+    assert_eq!(upgraded.tables, original.tables);
+    assert_eq!(upgraded.yes_or_no, original.yes_or_no);
+    assert_eq!(upgraded.views, original.views);
+    assert!(
+        upgraded.columns > original.columns && upgraded.cardinal_number > original.cardinal_number
+    );
+    let read = || {
+        domain.storage_handle().with_storage(|store| {
+            let ctx = kv::Context::default();
+            let mut value = Vec::new();
+            kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                value = txn
+                    .Get(
+                        &ctx,
+                        astersql_meta::transaction_meta_string_key(b"NextGlobalID"),
+                        &[],
+                    )?
+                    .Value;
+                Ok(())
+            })
+            .unwrap();
+            value
+        })
+    };
+    let before = read();
+    for _ in 0..3 {
+        let facts = pg.pg_namespace_facts().unwrap();
+        assert_eq!(
+            facts
+                .iter()
+                .find_map(|f| f.standard.as_ref())
+                .unwrap()
+                .columns,
+            upgraded.columns
+        );
+    }
+    assert_eq!(before, read());
+    println!(
+        "pg13_033 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=6 catalog_reads_never_allocate=3"
+    );
+}

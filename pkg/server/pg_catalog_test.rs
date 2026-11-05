@@ -8765,3 +8765,180 @@ fn pg13_032_contract() {
         "pg13_032_contract: scenarios=14 definition flags literal check_option zero_describe path legacy_projection_reject recovery cleanup"
     );
 }
+
+#[test]
+fn pg13_033_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_033_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_033_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG33 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_033_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn cells(body: &[u8]) -> Vec<Option<&str>> {
+        let count = u16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut pos = 2;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let len = i32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if len < 0 {
+                out.push(None);
+            } else {
+                let end = pos + len as usize;
+                out.push(Some(std::str::from_utf8(&body[pos..end]).unwrap()));
+                pos = end;
+            }
+        }
+        out
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.is_col_t(id integer NOT NULL, label varchar(7), plain integer)",
+    );
+    let sql = "SELECT table_catalog,table_schema,table_name,column_name,ordinal_position,is_nullable,data_type,udt_catalog,udt_schema,udt_name,domain_catalog,domain_schema,domain_name,dtd_identifier FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_t' ORDER BY ordinal_position";
+    let result = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 19, 19, 19, 23, 1043, 1043, 19, 19, 19, 19, 19, 19, 19]
+    );
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| cells(&m.1))
+            .collect::<Vec<_>>(),
+        vec![
+            vec![
+                Some("pg13_033_contract_probe"),
+                Some("public"),
+                Some("is_col_t"),
+                Some("id"),
+                Some("1"),
+                Some("NO"),
+                Some("integer"),
+                Some("pg13_033_contract_probe"),
+                Some("pg_catalog"),
+                Some("int4"),
+                None,
+                None,
+                None,
+                Some("1")
+            ],
+            vec![
+                Some("pg13_033_contract_probe"),
+                Some("public"),
+                Some("is_col_t"),
+                Some("label"),
+                Some("2"),
+                Some("YES"),
+                Some("character varying"),
+                Some("pg13_033_contract_probe"),
+                Some("pg_catalog"),
+                Some("varchar"),
+                None,
+                None,
+                None,
+                Some("2")
+            ],
+            vec![
+                Some("pg13_033_contract_probe"),
+                Some("public"),
+                Some("is_col_t"),
+                Some("plain"),
+                Some("3"),
+                Some("YES"),
+                Some("integer"),
+                Some("pg13_033_contract_probe"),
+                Some("pg_catalog"),
+                Some("int4"),
+                None,
+                None,
+                None,
+                Some("3")
+            ],
+        ]
+    );
+    for ddl in [
+        "ALTER TABLE public.is_col_t DROP COLUMN label",
+        "ALTER TABLE public.is_col_t ADD COLUMN added integer[]",
+        "ALTER TABLE public.is_col_t RENAME COLUMN added TO renamed",
+    ] {
+        ok(&mut socket, ddl);
+    }
+    let out = ok(&mut socket, sql);
+    let rows = out
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| cells(&m.1))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r[3], r[4], r[6], r[9]))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("id"), Some("1"), Some("integer"), Some("int4")),
+            (Some("plain"), Some("3"), Some("integer"), Some("int4")),
+            (Some("renamed"), Some("4"), Some("ARRAY"), Some("_int4"))
+        ]
+    );
+    let empty = ok(&mut socket, &sql.replace("is_col_t'", "missing'"));
+    assert_eq!(columns(&empty[0].1), columns(&result[0].1));
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    let bad = query(&mut socket, "SELECT absent FROM information_schema.columns");
+    assert!(
+        bad.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703"))
+    );
+    ok(&mut socket, "SELECT 1");
+    println!(
+        "pg13_033_contract: scenarios=7 identity nullability types arrays stable_slots zero_describe error recovery cleanup"
+    );
+}

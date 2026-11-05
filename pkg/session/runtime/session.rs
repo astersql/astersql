@@ -3812,6 +3812,9 @@ impl ConcreteSession {
             {
                 return Err(unsupported());
             }
+            // A view has no column NOT NULL declaration. Expression inference
+            // may prove a base value non-null, but that is not a catalog constraint.
+            tp.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
             column.FieldType = tp.clone();
             projection.push((expression, tp));
         }

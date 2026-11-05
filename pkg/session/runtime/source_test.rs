@@ -262,3 +262,24 @@ fn pg13_025_unsupported_view_predicates_do_not_publish() {
     }
     session.execute("DROP TABLE view_predicate_base").unwrap();
 }
+
+#[test]
+fn pg13_033_view_columns_do_not_inherit_not_null_constraints() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg33_nullable_base(id integer NOT NULL)")
+        .unwrap();
+    pg.execute("CREATE VIEW pg33_nullable_view AS SELECT id FROM pg33_nullable_base")
+        .unwrap();
+    let (_, base) = domain.stats_table("test", "pg33_nullable_base").unwrap();
+    let (_, view) = domain.stats_table("test", "pg33_nullable_view").unwrap();
+    assert!(astersql_parser_mysql::r#type::HasNotNullFlag(
+        base.Columns[0].GetFlag()
+    ));
+    assert!(!astersql_parser_mysql::r#type::HasNotNullFlag(
+        view.Columns[0].GetFlag()
+    ));
+    pg.execute("DROP VIEW pg33_nullable_view").unwrap();
+    pg.execute("DROP TABLE pg33_nullable_base").unwrap();
+    println!("pg13_033 view nullability: base_not_null=1 view_nullable=1 cleanup=2");
+}

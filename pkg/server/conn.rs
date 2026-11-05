@@ -936,6 +936,14 @@ pub trait TiDBContext: Send + Sync {
     ) -> ConnResult<bool> {
         Err(ConnError::UnsupportedCommand(0))
     }
+    fn pg_standard_column_visible(
+        &self,
+        _database: String,
+        _table: std::sync::Arc<astersql_meta_model::TableInfo>,
+        _column: String,
+    ) -> ConnResult<bool> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     /// Whether an enabled role owns the execution-snapshot view.
     fn pg_standard_view_owner(
         &self,

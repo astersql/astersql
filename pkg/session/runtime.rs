@@ -116,7 +116,7 @@ pub use pg_sequence::PgSequenceCommand;
 #[cfg(test)]
 mod pg_schema_test;
 mod pg_temporal;
-pub use pg_schema::{PgNamespaceFact, PgSchemaCommand, PgStandardSchema};
+pub use pg_schema::{PgNamespaceFact, PgSchemaCommand, PgStandardSchema, PgTablePrivilege};
 #[cfg(test)]
 mod pg_temporal_test;
 mod pg_uuid;
