@@ -629,6 +629,7 @@ impl ConcreteSession {
             // LIKE does not introduce the source table's explicit declarations.
             // Keep copied indexes from impersonating those constraint objects.
             copied.PostgreSQLPrimaryConstraint = None;
+            copied.PostgreSQLImmediateConstraintValidation.clear();
             for index in &mut copied.Indices {
                 index.PostgreSQLConstraintName = None;
             }
@@ -888,6 +889,35 @@ impl ConcreteSession {
             // indexes and empty storage become visible in one publication.
             for index in &mut table.Indices {
                 index.PostgreSQLBuildComplete = true;
+            }
+            for index in &table.Indices {
+                if index.Primary || index.PostgreSQLConstraintName.is_some() {
+                    table
+                        .PostgreSQLImmediateConstraintValidation
+                        .insert(format!("i:{}", index.ID), true);
+                }
+            }
+            if table.PKIsHandle {
+                table
+                    .PostgreSQLImmediateConstraintValidation
+                    .insert("i:-1".into(), true);
+            }
+            for check in &table.Constraints {
+                table
+                    .PostgreSQLImmediateConstraintValidation
+                    .insert(format!("c:{}", check.ID), check.Enforced);
+            }
+            for fk in &table.ForeignKeys {
+                table
+                    .PostgreSQLImmediateConstraintValidation
+                    .insert(format!("f:{}", fk.ID), true);
+            }
+            for column in &table.Columns {
+                if let Some((generation, _)) = &column.PostgreSQLNotNull {
+                    table
+                        .PostgreSQLImmediateConstraintValidation
+                        .insert(format!("n:{}:{generation}", column.ID), true);
+                }
             }
             table.PostgreSQLNumericText = true;
             table.PostgreSQLFloatText = true;

@@ -968,4 +968,6 @@ mod token {
     pub const pgConstraintExclude: i32 = 58285;
     pub const pgReturning: i32 = 58286;
     pub const pgOverriding: i32 = 58287;
+    pub const pgValidate: i32 = 58288;
+    pub const pgValid: i32 = 58289;
 }

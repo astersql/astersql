@@ -6310,3 +6310,181 @@ fn pg13_020_contract() {
         "pg13_020_contract: check=2 not_null=1 unknown_null=3 empty_describe=1 durable_roundtrip=1 corrupt_models=6 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_021_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_021_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_021_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_021_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let got = query(
+        &mut socket,
+        "CREATE TABLE public.state_doc (v integer NOT NULL, CONSTRAINT state_u UNIQUE(v), CONSTRAINT state_c CHECK (v > 0))",
+    );
+    assert_eq!(got[0].0, b'C', "{got:?}");
+    let sql = "SELECT conname,condeferrable,condeferred,convalidated,conenforced FROM pg_catalog.pg_constraint WHERE conrelid='public.state_doc'::regclass::oid ORDER BY conname";
+    let got = query(&mut socket, sql);
+    assert_eq!(got[0].0, b'T', "positive constraint state: {got:?}");
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![19, 16, 16, 16, 16]
+    );
+    let data: Vec<_> = got
+        .iter()
+        .filter(|(t, _)| *t == b'D')
+        .map(|(_, b)| b.clone())
+        .collect();
+    assert_eq!(
+        data,
+        vec![
+            row(&[Some("state_c"), Some("f"), Some("f"), Some("t"), Some("t")]),
+            row(&[
+                Some("state_doc_v_not_null"),
+                Some("f"),
+                Some("f"),
+                Some("t"),
+                Some("t")
+            ]),
+            row(&[Some("state_u"), Some("f"), Some("f"), Some("t"), Some("t")])
+        ]
+    );
+    for sql in [
+        "INSERT INTO public.state_doc VALUES (0)",
+        "INSERT INTO public.state_doc VALUES (NULL)",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'E', "{got:?}");
+    }
+    for sql in ["BEGIN", "INSERT INTO public.state_doc VALUES (1)", "COMMIT"] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{got:?}");
+    }
+    let got = query(&mut socket, "INSERT INTO public.state_doc VALUES (1)");
+    assert_eq!(got[0].0, b'E', "{got:?}");
+    let got = query(
+        &mut socket,
+        &sql.replace("conrelid='public.state_doc'::regclass::oid", "oid=0"),
+    );
+    assert_eq!(columns(&got[0].1).len(), 5);
+    assert!(!got.iter().any(|(t, _)| *t == b'D'));
+    let models = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_021_contract"))
+        .unwrap();
+    let model = models
+        .iter()
+        .find(|t| t.name.lower == "state_doc")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let encoded = serde_json::to_vec(model.as_ref()).unwrap();
+    let decoded: astersql_meta_model::TableInfo = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.PostgreSQLImmediateConstraintValidation.len(), 3);
+    for scenario in 0..3 {
+        let mut model = decoded.clone();
+        match scenario {
+            0 => model.PostgreSQLImmediateConstraintValidation.clear(),
+            1 => {
+                for value in model.PostgreSQLImmediateConstraintValidation.values_mut() {
+                    *value = false;
+                }
+            }
+            _ => model.Partition = Some(Default::default()),
+        }
+        let mut schema = astersql_infoschema::infoSchema::new(1);
+        schema.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("pg13_021_contract"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("state_doc"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let rows = crate::pg_catalog::index_constraint_rows(
+            "pg_constraint",
+            &schema,
+            "pg13_021_contract",
+            &crate::conn::CancellationToken::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter()
+                .all(|r| r[23] == crate::conn::Value::Null && r[24] == crate::conn::Value::Null)
+        );
+    }
+    native
+        .execute("CREATE TABLE pg13_021_contract.legacy_state (id INT PRIMARY KEY)")
+        .unwrap();
+    for field in [
+        "convalidated",
+        "conenforced",
+        "condeferrable",
+        "condeferred",
+        "connoinherit",
+        "conislocal",
+        "coninhcount",
+        "conparentid",
+        "contypid",
+        "conperiod",
+    ] {
+        let bad = query(
+            &mut socket,
+            &format!(
+                "SELECT {field} FROM pg_catalog.pg_constraint WHERE conrelid='public.legacy_state'::regclass::oid"
+            ),
+        );
+        assert_eq!(bad[0].0, b'E', "{field}: {bad:?}");
+        assert!(bad[0].1.windows(6).any(|b| b == b"0A000\0"));
+    }
+    assert_eq!(query(&mut socket, "SELECT 1")[0].0, b'T');
+    println!(
+        "pg13_021_contract: states=3 violations=3 transaction_commit=1 empty_describe=1 durable_roundtrip=1 corrupt_models=3 legacy_reject_recover=1 cleanup=1"
+    );
+}

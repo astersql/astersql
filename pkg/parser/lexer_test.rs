@@ -405,3 +405,30 @@ fn postgresql_system_override_keyword_preserves_identifiers() {
         .is_err()
     );
 }
+
+#[test]
+fn postgresql_constraint_validation_keyword_preserves_identifiers() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT validate FROM t",
+        "SELECT valid FROM t",
+        "SELECT NOT valid FROM t",
+        "SELECT \"validate\" FROM t",
+    ] {
+        pg.ParseOneStmt(sql, "", "").unwrap();
+        assert_parse_ok(sql);
+    }
+    let sql = "ALTER TABLE t VALIDATE CONSTRAINT ck";
+    let error = pg.ParseSQL(sql, &[]).err().unwrap();
+    assert!(
+        error
+            .downcast_ref::<crate::PostgreSQLCapabilityError>()
+            .is_some()
+    );
+    let error = parser::New().ParseSQL(sql, &[]).err().unwrap();
+    assert!(
+        error
+            .downcast_ref::<crate::PostgreSQLCapabilityError>()
+            .is_none()
+    );
+}

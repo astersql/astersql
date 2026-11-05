@@ -24,6 +24,8 @@ enum DdlRule {
     PgIdentity,
     PgIdentityOptions,
     PgUnsupportedConstraint,
+    PgUnsupportedNotValid,
+    PgUnsupportedValidate,
     PgUnsupportedConstraintElement,
     PgNamedUnique,
     PgNamedPrimary,
@@ -633,6 +635,8 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        "pgunsupportedconstraint_check_expression_notsym--a6cedb10a696815f" => Some(DdlRule::PgUnsupportedNotValid),
+        "altertablespec_pgvalidate_constraint_identifier--d78a67f4ef98b330" => Some(DdlRule::PgUnsupportedValidate),
         "altertablespec_alter_columnkeywordopt_columnname--7063fb2dfd9051a6" => Some(DdlRule::PgColumnType),
         "columnoption_generated_by_default_as_identifier--e26b3df928020dea"
         | "columnoption_generatedalways_as_identifier_pgide--6c8dd84369343e4d" => {
@@ -2046,6 +2050,21 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 }),
                 ..Default::default()
             }));
+        }
+        DdlRule::PgUnsupportedNotValid | DdlRule::PgUnsupportedValidate => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+            {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            parser_state.unsupported_pg_constraint = true;
+            // Only a completely parsed statement is rejected as a capability;
+            // the placeholder can never be returned as an executable AST.
+            if rule == DdlRule::PgUnsupportedNotValid {
+                out.item = Some(Box::new(parser_ast::Constraint::default()));
+            } else {
+                out.item = Some(Box::new(parser_ast::AlterTableSpec::default()));
+            }
         }
         DdlRule::PgUnsupportedConstraint | DdlRule::PgUnsupportedConstraintElement => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {

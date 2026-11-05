@@ -83,6 +83,11 @@ pub struct TableInfo {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub PostgreSQLChecks: HashMap<i64, PostgreSQLCheckExpression>,
+    /// Validation result for synchronous, nondeferrable PG declarations, keyed
+    /// by kind and persistent ID. Absence means unknown, never false or true.
+    /// Captured before publishing the initially empty table, not from StatePublic.
+    #[serde(rename = "postgresql_immediate_constraint_validation", skip_serializing_if = "HashMap::is_empty")]
+    pub PostgreSQLImmediateConstraintValidation: HashMap<String, bool>,
     /// Persistent PG role identity. Legacy native relations require explicit adoption.
     #[serde(rename = "postgresql_owner", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLOwner: Option<i64>,

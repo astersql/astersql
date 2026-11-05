@@ -7,8 +7,8 @@ use crate::conn::{
 
 // Fixed provider slots preserve the existing catalog column layout. Joined
 // relations get separate slots, including empty providers after LEFT JOIN.
-// Includes pg_proc.proacl at slot 24; every provider and JOIN uses this stride.
-const CATALOG_ROW_WIDTH: usize = 25;
+// Includes constraint state and auxiliary identities; every JOIN uses this stride.
+const CATALOG_ROW_WIDTH: usize = 34;
 // Preserve the existing public CTE projection bound independently of provider slots.
 const MAX_CATALOG_CTE_COLUMNS: usize = 24;
 const MAX_CATALOG_ROWS: usize = 16_384;
@@ -1241,6 +1241,28 @@ impl CatalogQuery {
                         ("pg_constraint", 9) => 14,
                         ("pg_constraint", 10) => 15,
                         ("pg_constraint", 22) => 16,
+                        ("pg_constraint", 11) => 5,
+                        ("pg_constraint", 12) => 6,
+                        ("pg_constraint", 23) => 8,
+                        ("pg_constraint", 24) => 7,
+                        ("pg_constraint", 25) => 17,
+                        ("pg_constraint", 26) => 18,
+                        ("pg_constraint", 27) => 12,
+                        ("pg_constraint", 28) => 10,
+                        ("pg_constraint", 29) => 20,
+                        ("pg_constraint", 30) => 26,
+                        ("pg_constraint", 31) => 23,
+                        ("pg_constraint", 32) => 24,
+                        ("pg_constraint", 33) => 25,
+                        ("pg_constraint", 13) => 19,
+                        ("pg_constraint", 15) => 27,
+                        ("pg_operator", 0) => 8,
+                        ("pg_operator", 1) => 9,
+                        ("pg_operator", 2) => 10,
+                        ("pg_operator", 3) => 3,
+                        ("pg_operator", 4) => 1,
+                        ("pg_operator", 6) => 2,
+                        ("pg_operator", 7) => 5,
                         ("pg_index", 0) => 1,
                         ("pg_index", 1) => 2,
                         ("pg_index", 2) => 3,
@@ -1614,9 +1636,26 @@ impl CatalogQuery {
             // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_operator" | "pg_aggregate" | "pg_foreign_table"
-            | "pg_foreign_server" | "pg_collation" | "pg_opfamily" | "pg_amop" | "pg_amproc"
-            | "pg_policy" | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            "pg_inherits" | "pg_aggregate" | "pg_foreign_table" | "pg_foreign_server"
+            | "pg_collation" | "pg_opfamily" | "pg_amop" | "pg_amproc" | "pg_policy"
+            | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            "pg_operator" => [(94, 21), (96, 23), (410, 20)]
+                .into_iter()
+                .map(|(oid, input)| {
+                    // The supported FK keys are signed integers. The shared runtime
+                    // uses exact integer equality; these PG builtin identities describe
+                    // that same comparison, without inventing an operator or function.
+                    let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+                    row[0] = Value::Signed(input);
+                    row[1] = Value::Signed(input);
+                    row[2] = Value::Signed(16);
+                    row[3] = Value::Signed(11);
+                    row[4] = Value::Signed(oid);
+                    row[6] = Value::Text("=".into());
+                    row[7] = Value::Text("b".into());
+                    row
+                })
+                .collect(),
             "pg_opclass" => integer_opclass_rows(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
@@ -1771,6 +1810,31 @@ impl CatalogQuery {
                 {
                     return Err(database_identity_unavailable(
                         "PostgreSQL index auxiliary identity or synchronous build evidence is unavailable",
+                    ));
+                }
+
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_operator")
+                    && row[base + 4] != Value::Null
+                    && row[slot] == Value::Null
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL operator auxiliary identity is unavailable",
+                    ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_constraint")
+                    && row[base] != Value::Null
+                    && (matches!(local, 11..=13 | 23..=29)
+                        || (matches!(local, 31..=33) && row[base + 2] == Value::Text("f".into())))
+                    && row[slot] == Value::Null
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL constraint validation, immediate execution or operator identity is unavailable",
                     ));
                 }
 
@@ -3465,7 +3529,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_proc", "proacl") => (24, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_depend", "objsubid") => (6, 3),
         ("pg_operator", "xmin") => (5, 8),
-        ("pg_operator", "oprname") => (6, 253),
+        ("pg_operator", "oprname") => (6, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_operator", "oprkind") => (7, internal_char),
         ("pg_operator", "oprcode") => (8, oid),
         ("pg_operator", "oprrest") => (9, oid),
@@ -3585,6 +3649,19 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_constraint", "confupdtype") => (9, internal_char),
         ("pg_constraint", "confdeltype") => (10, internal_char),
         ("pg_constraint", "confmatchtype") => (22, internal_char),
+        ("pg_constraint", "convalidated") => (23, 1),
+        ("pg_constraint", "conenforced") => (24, 1),
+        ("pg_constraint", "conislocal") => (25, 1),
+        ("pg_constraint", "coninhcount") => (26, 2),
+        ("pg_constraint", "conparentid") => (27, oid),
+        ("pg_constraint", "contypid") => (28, oid),
+        ("pg_constraint", "conperiod") => (29, 1),
+        ("pg_constraint", "confdelsetcols") => {
+            (30, crate::pg_result::CatalogColumnType::Int2Array as u8)
+        }
+        ("pg_constraint", "conpfeqop") => (31, crate::pg_result::CatalogColumnType::OidArray as u8),
+        ("pg_constraint", "conppeqop") => (32, crate::pg_result::CatalogColumnType::OidArray as u8),
+        ("pg_constraint", "conffeqop") => (33, crate::pg_result::CatalogColumnType::OidArray as u8),
         ("pg_constraint", "condeferrable") => (11, 1),
         ("pg_constraint", "condeferred") => (12, 1),
         ("pg_constraint", "connoinherit") => (13, 1),
@@ -4916,6 +4993,40 @@ fn integer_opclass_rows() -> Vec<Vec<Value>> {
         .collect()
 }
 
+// A certificate is written only by synchronous PG CREATE TABLE after rejecting
+// deferred/NOT VALID/partition forms, before publishing its empty storage. Native
+// legacy models and subsequently introduced identities have no certificate.
+fn constraint_state_row(
+    row: &mut [Value],
+    model: &astersql_meta_model::TableInfo,
+    key: &str,
+    enforced: bool,
+) {
+    if model.Partition.is_some() {
+        return;
+    }
+    let Some(validated) = model.PostgreSQLImmediateConstraintValidation.get(key) else {
+        return;
+    };
+    if *validated != enforced {
+        return;
+    }
+    for (slot, value) in [
+        (11, false),
+        (12, false),
+        (13, key.starts_with("i:") || key.starts_with("f:")),
+        (23, *validated),
+        (24, enforced),
+        (25, true),
+        (29, false),
+    ] {
+        row[slot] = Value::Text(value.to_string());
+    }
+    for slot in [26, 27, 28] {
+        row[slot] = Value::Signed(0);
+    }
+}
+
 pub(crate) fn index_constraint_rows(
     relation: &str,
     snapshot: &dyn astersql_infoschema::InfoSchema,
@@ -5162,9 +5273,7 @@ pub(crate) fn index_constraint_rows(
                 row[9] = Value::Text(" ".into());
                 row[10] = Value::Text(" ".into());
                 row[22] = Value::Text(" ".into());
-                for slot in [11, 12, 13] {
-                    row[slot] = Value::Text("false".into());
-                }
+                constraint_state_row(&mut row, model, &format!("i:{}", index.ID), true);
                 row[21] = Value::Text(format!(
                     "{} ({})",
                     if index.Primary {
@@ -5235,9 +5344,12 @@ pub(crate) fn index_constraint_rows(
             for slot in [9, 10, 22] {
                 row[slot] = Value::Text(" ".into());
             }
-            for slot in [11, 12, 13] {
-                row[slot] = Value::Text("false".into());
-            }
+            constraint_state_row(
+                &mut row,
+                model,
+                &format!("c:{}", constraint.ID),
+                constraint.Enforced,
+            );
             row[21] = Value::Text(format!(
                 "CHECK {}{}",
                 expression,
@@ -5293,9 +5405,12 @@ pub(crate) fn index_constraint_rows(
             for slot in [9, 10, 22] {
                 row[slot] = Value::Text(" ".into());
             }
-            for slot in [11, 12, 13] {
-                row[slot] = Value::Text("false".into());
-            }
+            constraint_state_row(
+                &mut row,
+                model,
+                &format!("n:{}:{generation}", column.ID),
+                true,
+            );
             row[21] = Value::Text(format!("NOT NULL {}", names(&columns)));
             rows.push(row);
             if rows.len() > MAX_CATALOG_ROWS {
@@ -5385,8 +5500,34 @@ pub(crate) fn index_constraint_rows(
             // Shared FK checks exempt any tuple containing NULL; PostgreSQL
             // FULL/PARTIAL are rejected before DDL, so this is SIMPLE semantics.
             row[22] = Value::Text("s".into());
-            for slot in [11, 12, 13] {
-                row[slot] = Value::Text("false".into());
+            constraint_state_row(&mut row, model, &format!("f:{}", fk.ID), true);
+            let operators: Option<Vec<_>> = fk
+                .RefCols
+                .iter()
+                .zip(&fk.Cols)
+                .map(|(p, c)| {
+                    let p = parent.Columns.iter().find(|v| v.Name.L == p.L)?;
+                    let c = model.Columns.iter().find(|v| v.Name.L == c.L)?;
+                    let pt = native_column_type(p).ok()?.0;
+                    let ct = native_column_type(c).ok()?.0;
+                    if pt != ct
+                        || astersql_parser_mysql::r#type::HasUnsignedFlag(p.GetFlag())
+                        || astersql_parser_mysql::r#type::HasUnsignedFlag(c.GetFlag())
+                    {
+                        return None;
+                    }
+                    match pt {
+                        21 => Some("94"),
+                        23 => Some("96"),
+                        20 => Some("410"),
+                        _ => None,
+                    }
+                })
+                .collect();
+            if let Some(operators) = operators {
+                for slot in [31, 32, 33] {
+                    row[slot] = Value::Text(format!("{{{}}}", operators.join(",")));
+                }
             }
             row[21] = Value::Text(format!(
                 "FOREIGN KEY ({}) REFERENCES public.{} ({}) ON UPDATE {} ON DELETE {}",

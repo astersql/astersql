@@ -472,7 +472,7 @@ impl Parser {
             });
             if self.unsupported_pg_constraint || partial {
                 return Err(errors::SharedError::new(PostgreSQLCapabilityError(
-                    "PostgreSQL partial indexes and deferred/exclusion constraints are not supported",
+                    "PostgreSQL partial indexes, deferred/exclusion constraints and constraint validation modes are not supported",
                 )));
             }
         }

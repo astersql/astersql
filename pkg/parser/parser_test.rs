@@ -7037,6 +7037,8 @@ fn pg10_10_unsupported_setup_requires_complete_syntax() {
         "CREATE UNIQUE INDEX conflict_partial_active ON public.conflict_partial(k) WHERE active",
         "CREATE TABLE public.conflict_deferred(id integer,CONSTRAINT conflict_deferred_u UNIQUE(id) DEFERRABLE INITIALLY DEFERRED)",
         "CREATE TABLE public.conflict_exclusion(id integer,CONSTRAINT conflict_exclusion_e EXCLUDE USING btree(id WITH =))",
+        "ALTER TABLE public.con_validate ADD CONSTRAINT cv CHECK (v>0) NOT VALID",
+        "ALTER TABLE public.con_validate VALIDATE CONSTRAINT cv",
     ] {
         let error = pg.ParseSQL(sql, &[]).err().expect(sql);
         assert!(
@@ -7060,6 +7062,10 @@ fn pg10_10_unsupported_setup_requires_complete_syntax() {
         );
     }
     for sql in [
+        "ALTER TABLE bad ADD CONSTRAINT cv CHECK (id>0) NOT banana",
+        "ALTER TABLE bad banana CONSTRAINT cv",
+        "ALTER TABLE bad ADD CONSTRAINT cv CHECK (id>0) NOT \"VALID\"",
+        "ALTER TABLE bad \"VALIDATE\" CONSTRAINT cv",
         "CREATE TABLE bad(id integer,CONSTRAINT bad_u UNIQUE(id) DEFERRABLE INITIALLY)",
         "CREATE TABLE bad(id integer,CONSTRAINT bad_e EXCLUDE USING btree(id WITH))",
         "CREATE TABLE bad(id integer,CONSTRAINT bad_e EXCLUDE USING btree(id WITH =,))",
