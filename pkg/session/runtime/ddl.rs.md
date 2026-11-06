@@ -140,3 +140,7 @@ PG CREATE TABLE binds supported CHECK syntax to persistent column IDs before pub
 ## 表授权（目录任务19）
 
 PG普通表创建把owner和默认表ACL存入同一TableInfo；原生CREATE LIKE清除PG ACL。已支持TRUNCATE路径读取共享表TRUNCATE权限后执行，未另建DDL worker或backfill。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+新PG表初始化PostgreSQLColumnAcls为空map，native CREATE LIKE清除该PG来源。列默认NULL与历史未知来源不混用。

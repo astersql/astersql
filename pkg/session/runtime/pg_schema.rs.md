@@ -29,3 +29,7 @@ Namespace的同一PgNamespaces记录新增可空grants，保存稳定grantor/gra
 TablePrivileges分派至表ACL共享消费者；旧RelationPrivilege无列形式也走相同ACL事实，带列形式保留原适配器。角色身份读取供bootstrap管理路径惰性复用，不要求无关legacy角色已有完整PG属性。
 
 表/列/约束标准视图的既有可见性消费者对有来源PG表ACL复用同一model-snapshot权限判断，保留owner独立可见及原精确列授权来源。权限集合与PG18 information_schema.sql一致：tables排除MAINTAIN，columns仅arwx，约束可见排除SELECT。避免PG表GRANT不再写native后导致既有标准目录漏行。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+TablePrivileges.columns将列ACL接入原SchemaUtility worker；标准column/table/constraint可见性优先使用新共享列事实，并保留旧native列桥接的历史行为。新PG列不从mysql.columns_priv推断ACL。历史RelationPrivilege局部API也转入同一TablePrivileges列事务，避免保留第二条写入事实路径。

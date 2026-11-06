@@ -170,3 +170,7 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 ## 表授权（目录任务19）
 
 装配pg_table与独立pg_table_test，导出表ACL事实/文本/权限求值函数供server及正式函数消费者复用。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+公开pg_column_acl_fact、pg_column_acl_text、pg_has_column_privilege，服务目录与普通执行器复用同一权限来源。

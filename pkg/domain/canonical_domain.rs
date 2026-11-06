@@ -1375,30 +1375,35 @@ impl DdlMetadataService {
                 .map(|(key, table)| (key.clone(), table.clone()))
                 .ok_or_else(|| kv::errors::New("relation no longer exists"))?;
             let mut updated = old.clone();
-            if let (Some(old_owner), Some(acl)) =
-                (old.PostgreSQLOwner, updated.PostgreSQLAcl.as_mut())
-            {
-                for grant in &mut acl.grants {
-                    if grant.grantor == old_owner {
-                        grant.grantor = owner;
-                    }
-                    if grant.grantee == old_owner {
-                        grant.grantee = owner;
-                    }
-                }
-                let mut merged: Vec<astersql_meta_model::PostgreSQLAclGrant> = Vec::new();
-                for grant in acl.grants.drain(..) {
-                    if let Some(item) = merged
+            if let Some(old_owner) = old.PostgreSQLOwner {
+                for acl in updated.PostgreSQLAcl.iter_mut().chain(
+                    updated
+                        .PostgreSQLColumnAcls
                         .iter_mut()
-                        .find(|e| e.grantor == grant.grantor && e.grantee == grant.grantee)
-                    {
-                        item.privileges |= grant.privileges;
-                        item.grant_options |= grant.grant_options;
-                    } else {
-                        merged.push(grant);
+                        .flat_map(|map| map.values_mut()),
+                ) {
+                    for grant in &mut acl.grants {
+                        if grant.grantor == old_owner {
+                            grant.grantor = owner;
+                        }
+                        if grant.grantee == old_owner {
+                            grant.grantee = owner;
+                        }
                     }
+                    let mut merged: Vec<astersql_meta_model::PostgreSQLAclGrant> = Vec::new();
+                    for grant in acl.grants.drain(..) {
+                        if let Some(item) = merged
+                            .iter_mut()
+                            .find(|e| e.grantor == grant.grantor && e.grantee == grant.grantee)
+                        {
+                            item.privileges |= grant.privileges;
+                            item.grant_options |= grant.grant_options;
+                        } else {
+                            merged.push(grant);
+                        }
+                    }
+                    acl.grants = merged;
                 }
-                acl.grants = merged;
             }
             updated.PostgreSQLOwner = Some(owner);
             catalog.tables.insert(key, updated.clone());
@@ -1633,6 +1638,9 @@ impl DdlMetadataService {
                         *dropped = true;
                     }
                 }
+            }
+            if let Some(acls) = &mut new.PostgreSQLColumnAcls {
+                acls.retain(|id, _| !removed_column_ids.contains(id));
             }
             new.Columns
                 .retain(|column| !removed_column_ids.contains(&column.ID));

@@ -72,6 +72,7 @@ pub(crate) enum CastType {
     Char,
     Bigint,
     Integer,
+    Smallint,
     Varchar,
     Oid,
     Regclass,
@@ -734,6 +735,7 @@ impl Parser {
                         _ => CastType::OperatorName,
                     }
                 }
+                "smallint" | "int2" => CastType::Smallint,
                 "int" | "integer" | "int4" => {
                     if self.symbol('[') {
                         self.require_symbol(']')?;
@@ -1184,7 +1186,7 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
 // Queries with native relations retain their existing executor ownership.
 fn identity_scalar(tokens: &[Token]) -> bool {
     !tokens.iter().any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
-        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role" | "pg_get_userbyid" | "has_database_privilege" | "has_schema_privilege" | "has_table_privilege")))
+        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role" | "pg_get_userbyid" | "has_database_privilege" | "has_schema_privilege" | "has_table_privilege" | "has_column_privilege" | "has_any_column_privilege")))
 }
 
 // Standalone OID constants use the checked catalog codec.

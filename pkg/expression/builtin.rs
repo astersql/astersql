@@ -2880,17 +2880,28 @@ pub mod formal_registry {
         }
         if matches!(
             name,
-            "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
+            "has_database_privilege"
+                | "has_schema_privilege"
+                | "has_table_privilege"
+                | "has_column_privilege"
+                | "has_any_column_privilege"
         ) {
-            if !matches!(inputs.len(), 2 | 3) {
+            if !(if name == "has_column_privilege" {
+                matches!(inputs.len(), 3 | 4)
+            } else {
+                matches!(inputs.len(), 2 | 3)
+            }) {
                 return Err("42883");
             }
             for (index, tp) in inputs.iter().enumerate() {
                 let oid = tp.PostgreSQLTypeOid();
                 let unknown = tp.GetType() == mysql::TypeNull || oid == Some(705);
-                let identity = index + 1 != inputs.len();
+                let column_number = name == "has_column_privilege" && index + 2 == inputs.len();
+                let identity = index + 1 != inputs.len() && !column_number;
                 if !unknown
-                    && !(matches!(oid, Some(19 | 25 | 1042 | 1043)) || identity && oid == Some(26))
+                    && !(matches!(oid, Some(19 | 25 | 1042 | 1043))
+                        || identity && oid == Some(26)
+                        || column_number && oid == Some(21))
                 {
                     return Err("42883");
                 }
@@ -4898,7 +4909,10 @@ pub mod formal_registry {
                     for argument in &self.base.args {
                         let (text, null) = argument.EvalString(ctx, row.clone())?;
                         values.push((!null).then_some(text));
-                        oids.push(argument.GetType(ctx).PostgreSQLTypeOid() == Some(26));
+                        oids.push(matches!(
+                            argument.GetType(ctx).PostgreSQLTypeOid(),
+                            Some(21 | 26)
+                        ));
                     }
                     // Strictness precedes fact lookup, including a missing fact provider.
                     if values.iter().any(Option::is_none) {
@@ -7190,7 +7204,11 @@ pub mod formal_registry {
                     "builtinConcatSig",
                 )
             }
-            "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
+            "has_database_privilege"
+            | "has_schema_privilege"
+            | "has_table_privilege"
+            | "has_column_privilege"
+            | "has_any_column_privilege"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
             {
                 let inputs = args
@@ -9098,6 +9116,8 @@ pub mod formal_registry {
     core_factory!(pg_database_privilege_factory, "has_database_privilege");
     core_factory!(pg_schema_privilege_factory, "has_schema_privilege");
     core_factory!(pg_table_privilege_factory, "has_table_privilege");
+    core_factory!(pg_column_privilege_factory, "has_column_privilege");
+    core_factory!(pg_any_column_privilege_factory, "has_any_column_privilege");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -9212,6 +9232,8 @@ pub mod formal_registry {
         ("has_database_privilege", pg_database_privilege_factory),
         ("has_schema_privilege", pg_schema_privilege_factory),
         ("has_table_privilege", pg_table_privilege_factory),
+        ("has_column_privilege", pg_column_privilege_factory),
+        ("has_any_column_privilege", pg_any_column_privilege_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -9612,6 +9634,8 @@ pub mod formal_registry {
         ("has_database_privilege", 2, 3),
         ("has_schema_privilege", 2, 3),
         ("has_table_privilege", 2, 3),
+        ("has_column_privilege", 3, 4),
+        ("has_any_column_privilege", 2, 3),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -9926,6 +9950,8 @@ pub mod formal_registry {
                     | "has_database_privilege"
                     | "has_schema_privilege"
                     | "has_table_privilege"
+                    | "has_column_privilege"
+                    | "has_any_column_privilege"
                     | "numeric_abs"
                     | "float4abs"
                     | "float8abs"

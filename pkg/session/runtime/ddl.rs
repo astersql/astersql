@@ -694,6 +694,7 @@ impl ConcreteSession {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
             table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
+            table.PostgreSQLColumnAcls = Some(Default::default());
             table.PostgreSQLAcl = Some(super::pg_table::default_table_acl(
                 table.PostgreSQLOwner.unwrap(),
             ));
@@ -701,6 +702,7 @@ impl ConcreteSession {
             // CREATE LIKE must not copy a PG owner's authority to a native relation.
             table.PostgreSQLOwner = None;
             table.PostgreSQLAcl = None;
+            table.PostgreSQLColumnAcls = None;
         }
         astersql_ddl::storage_class::CheckStorageClassAdmission(
             &table.EngineAttribute,

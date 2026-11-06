@@ -113,3 +113,7 @@ has_database_privilege加入unFoldableFunctions；常量实参也必须在执行
 ## 表授权（目录任务19）
 
 正式核心函数注册增加has_table_privilege，普通FROM查询通过同一工厂求值。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+新增两列权限查询函数进入现有core builtin实现注册，避免只有目录特例。

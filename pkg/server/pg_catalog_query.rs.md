@@ -114,3 +114,7 @@ pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通
 ## 表授权（目录任务19）
 
 无FROM的has_table_privilege归CatalogQuery，存在普通关系FROM时保留共享关系执行器；Q与扩展Parse使用同一入口选择。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+has_column_privilege/has_any_column_privilege无FROM标量查询接既有CatalogQuery；Smallint/int2 cast支持列属性号重载并推导参数OID21。

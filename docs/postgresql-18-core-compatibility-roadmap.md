@@ -6485,3 +6485,9 @@ libpq主题须按“libpq端到端流程”核对加载库、默认/强制3.2、
 ### 2026-11-06 目录任务18：命名空间ACL和权限查询
 
 PgNamespaces现有KV记录新增真实grantor/grantee稳定OID及USAGE/CREATE grant option；新建schema持久登记owner默认ACL，历史缺源仍0A000。nspacl与has_schema_privilege及schema读/建表权限消费同一共享授权，复用数据库ACL的继承、授予者选择、RESTRICT/CASCADE和文本codec。省略/name/text/OID用户、text/OID对象、NULL/不存在OID、缺名称/非法权限和PUBLIC均由真实非owner连接验证。默认NULL与显式空数组1034分开；aclitem无binary send时42883，与PG18.4/18.6实采一致。cat14_18覆盖新Bind看到授权更新、真实读取拒绝/恢复、普通FROM正式函数、角色继承与I/T/E恢复；共享独立测试覆盖损坏ACL失败原子性和持久身份生命周期。未声称完整GRANTED BY、多对象多受让者语法、生产TLS/SCRAM或所有客户端UI已覆盖。
+
+### 2026-11-06 目录任务20：列授权当前实现
+
+列授权由TableInfo.PostgreSQLColumnAcls按稳定column ID持久保存，attacl与has_column_privilege/has_any_column_privilege及实际SELECT共享真实ACL。新PG对象已知默认NULL，旧缺源0A000；显式空ACL与NULL分别表示。四种列权限、PUBLIC、grantor/grantee、表或列grant option委派、RESTRICT/CASCADE、用户/对象/属性重载与text/binary回归见本计划接口与证据的任务20。
+
+兼容性差异：本任务ROLE-PRIV明确要求表级REVOKE保留既有列授权，本端按该验收保留；PG18.4/18.6实采表明原生REVOKE SELECT ON TABLE会同时撤销同角色的列SELECT，不宣称此分支与PG一致。PG撤空列ACL回到NULL；独立真实metadata夹具另验证显式{}与默认NULL区别。

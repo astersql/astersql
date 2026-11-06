@@ -110,6 +110,9 @@ pub struct TableInfo {
     /// Absent on historical native records; reading must never invent provenance.
     #[serde(rename = "postgresql_acl", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLAcl: Option<PostgreSQLRelationAcl>,
+    /// Column-ID keyed explicit ACLs; absent map requires explicit migration.
+    #[serde(rename = "postgresql_column_acls", skip_serializing_if = "Option::is_none")]
+    pub PostgreSQLColumnAcls: Option<HashMap<i64, PostgreSQLRelationAcl>>,
     /// PG namespace identity and logical relation name; Name remains the storage key.
     #[serde(
         rename = "postgresql_namespace",

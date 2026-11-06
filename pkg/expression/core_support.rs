@@ -82,6 +82,8 @@ pub static unFoldableFunctions: LazyLock<HashMap<&'static str, ()>> = LazyLock::
         ("has_database_privilege", ()),
         ("has_schema_privilege", ()),
         ("has_table_privilege", ()),
+        ("has_column_privilege", ()),
+        ("has_any_column_privilege", ()),
         (ast::FoundRows, ()),
         (ast::Rand, ()),
         (ast::UUID, ()),

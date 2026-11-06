@@ -100,3 +100,7 @@ PostgreSQLChecks persists CHECK syntax captured from the DDL AST, with column le
 ## 表授权（目录任务19）
 
 TableInfo.PostgreSQLAcl可空，缺失表示历史来源未知。PostgreSQLRelationAcl分别保存default_acl与逐项稳定grantor/grantee、8位权限及grant option；PostgreSQLAclGrant同时由数据库/命名空间复用，序列化键和原有数据库ACL数据保持兼容。新PG普通表/视图在创建时登记owner默认ACL，原生CREATE LIKE不复制PG ACL。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+PostgreSQLColumnAcls以持久column ID关联列ACL，Some(empty map)表示新PG关系已知列默认NULL，None为旧来源未知并要求显式迁移。逐列显式空ACL仍区别于默认NULL。创建表/视图初始化该事实；列rename保留ID关联，drop清除对应项，owner转移重写真实grantor/grantee。

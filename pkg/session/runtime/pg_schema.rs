@@ -64,6 +64,7 @@ pub enum PgSchemaCommand {
         owner: String,
     },
     TablePrivileges {
+        columns: Vec<String>,
         schema: Option<String>,
         table: String,
         grantee: String,
@@ -618,44 +619,17 @@ impl ConcreteSession {
             grant,
         } = command
         {
-            if column.is_none() {
-                self.pg_table_privilege_command(&PgSchemaCommand::TablePrivileges {
-                    schema: Some(schema.clone()),
-                    table: table.clone(),
-                    grantee: grantee.clone(),
-                    public: grantee == "PUBLIC",
-                    privileges: privilege.sql().into(),
-                    grant: *grant,
-                    grant_option: false,
-                    cascade: false,
-                })?;
-                return Ok(());
-            }
-            if self.pg_schema_identity() != "root" {
-                return Err(namespace_error(
-                    "42501",
-                    "permission denied to grant table access",
-                ));
-            }
-            self.pg_database_role_id(grantee)?;
-            let physical = self.pg_bind_relation(Some(schema), table, false)?;
-            // Privilege table writes retain their native dialect; the PG actor
-            // and logical namespace were authorized before this internal bridge.
-            let native =
-                ConcreteSession::new_with_dialect(self.domain.clone(), ast::SqlDialect::MySQL);
-            let ident = |name: &str| format!("`{}`", name.replace('`', "``"));
-            native.execute(&format!(
-                "{} {}{} ON {}.{} {} '{}'@'%'",
-                if *grant { "GRANT" } else { "REVOKE" },
-                privilege.sql(),
-                column
-                    .as_ref()
-                    .map_or(String::new(), |c| format!("({})", ident(c))),
-                ident(&self.current_database()),
-                ident(&physical),
-                if *grant { "TO" } else { "FROM" },
-                grantee.replace('\\', "\\\\").replace('\'', "''")
-            ))?;
+            self.pg_table_privilege_command(&PgSchemaCommand::TablePrivileges {
+                columns: column.clone().into_iter().collect(),
+                schema: Some(schema.clone()),
+                table: table.clone(),
+                grantee: grantee.clone(),
+                public: grantee == "PUBLIC",
+                privileges: privilege.sql().into(),
+                grant: *grant,
+                grant_option: false,
+                cascade: false,
+            })?;
             return Ok(());
         }
         let _guard = PG_NAMESPACE_DDL_LOCK
@@ -1577,6 +1551,22 @@ impl ConcreteSession {
                 table_mask,
             )
         };
+        if table.PostgreSQLColumnAcls.is_some() {
+            if table_grant {
+                return Ok(true);
+            }
+            let roles = self.pg_role_facts()?;
+            let member = roles
+                .iter()
+                .find(|r| r.name == actor)
+                .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+                .oid;
+            let Some(column) = table.Columns.iter().find(|c| c.Name.O == column) else {
+                return Ok(false);
+            };
+            return super::pg_table::pg_column_acl_fact(table, column.ID, &roles)?
+                .has_privilege_mask(&roles, member, if write_only { 37 } else { 39 }, false, 39);
+        }
         let identities =
             std::iter::once(astersql_privilege_privileges::RoleIdentity::new(user, host))
                 .chain(privileges.FindAllUserEffectiveRoles(user, host, &active));

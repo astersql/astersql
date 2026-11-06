@@ -119,3 +119,7 @@ PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"P
 ## 表授权（目录任务19）
 
 TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受让者语法支持ALL/逗号权限、WITH GRANT OPTION、REVOKE GRANT OPTION FOR及RESTRICT/CASCADE，PUBLIC规格与引号角色区分。原列授权适配器保留，完整列ACL归后续任务。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+原有有界TablePrivileges语法新增单一权限列列表（支持多列）、WITH GRANT OPTION、REVOKE GRANT OPTION FOR及RESTRICT/CASCADE；正式列授权不再落入仅root旧native桥接。不同权限使用不同列列表仍要求拆为单独语句，不把列表并集扩大权限。

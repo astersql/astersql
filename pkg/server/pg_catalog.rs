@@ -552,6 +552,7 @@ impl CatalogQuery {
                             CastType::Oid => 26,
                             CastType::Boolean => 16,
                             CastType::Integer => 23,
+                            CastType::Smallint => 21,
                             CastType::Varchar => 25,
                             CastType::Name => 19,
                             _ => 0,
@@ -1300,7 +1301,11 @@ impl CatalogQuery {
                 {
                     return Err(("0A000", "catalog internal char casts require text".into()));
                 }
-                if matches!(target, CastType::Bigint | CastType::Integer) && code == 1 {
+                if matches!(
+                    target,
+                    CastType::Bigint | CastType::Integer | CastType::Smallint
+                ) && code == 1
+                {
                     return Err((
                         "0A000",
                         "boolean to bigint catalog casts are unsupported".into(),
@@ -1335,6 +1340,7 @@ impl CatalogQuery {
                         CastType::Char => crate::pg_result::CatalogColumnType::Char as u8,
                         CastType::Bigint => 8,
                         CastType::Integer => 3,
+                        CastType::Smallint => 2,
                         CastType::Varchar => 253,
                         CastType::Name => crate::pg_result::CatalogColumnType::Name as u8,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
@@ -1368,15 +1374,20 @@ impl CatalogQuery {
                         "pg_has_role"
                         | "has_database_privilege"
                         | "has_schema_privilege"
-                        | "has_table_privilege",
+                        | "has_table_privilege"
+                        | "has_any_column_privilege"
+                        | "has_column_privilege",
                         values,
-                    ) if matches!(values.len(), 2 | 3)
-                        && values.iter().all(|v| {
-                            matches!(v, Expr::Null)
-                                || self
-                                    .expr_type(v)
-                                    .is_ok_and(|(t, _)| textual_type(t) || numeric_type(t))
-                        }) =>
+                    ) if (if name == "has_column_privilege" {
+                        matches!(values.len(), 3 | 4)
+                    } else {
+                        matches!(values.len(), 2 | 3)
+                    }) && values.iter().all(|v| {
+                        matches!(v, Expr::Null)
+                            || self
+                                .expr_type(v)
+                                .is_ok_and(|(t, _)| textual_type(t) || numeric_type(t))
+                    }) =>
                     {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
@@ -1722,6 +1733,7 @@ impl CatalogQuery {
                         ("pg_attribute", 4) => 6,
                         ("pg_attribute", 7) => 17,
                         ("pg_attribute", 10) => 16,
+                        ("pg_attribute", 14) => 22,
                         ("pg_shdescription", 6) => 1,
                         ("pg_shdescription", 7) => 2,
                         ("pg_shdescription", 2) => 3,
@@ -3814,6 +3826,46 @@ impl CatalogQuery {
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_attribute")
+                    && slot % CATALOG_ROW_WIDTH == 14
+                    && row[slot - 14] != Value::Null
+                {
+                    let facts = execution.table_privileges()?;
+                    let model = facts
+                        .models
+                        .iter()
+                        .find(|(_, _, m)| {
+                            crate::pg_oid::table_oid(m.ID)
+                                .is_ok_and(|oid| row[slot - 14] == Value::Signed(i64::from(oid)))
+                        })
+                        .ok_or_else(|| {
+                            database_identity_unavailable("column ACL model unavailable")
+                        })?;
+                    let number = match row[slot - 13] {
+                        Value::Signed(n) => n,
+                        _ => {
+                            return Err(database_identity_unavailable("column number unavailable"));
+                        }
+                    };
+                    let slots = model.2.postgresql_attribute_slots().map_err(|_| {
+                        database_identity_unavailable("column identity unavailable")
+                    })?;
+                    let Some((id, false)) =
+                        usize::try_from(number - 1).ok().and_then(|n| slots.get(n))
+                    else {
+                        return Ok(Value::Null);
+                    };
+                    return astersql_session::runtime::pg_column_acl_text(
+                        &model.2,
+                        *id,
+                        &execution.role_facts()?,
+                    )
+                    .map(|v| v.map_or(Value::Null, Value::Text))
+                    .map_err(crate::runtime::session_protocol_error);
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "pg_class")
                 {
                     let local = slot % CATALOG_ROW_WIDTH;
@@ -4000,6 +4052,16 @@ impl CatalogQuery {
                 (Value::Signed(_), CastType::OperatorName) => {
                     return Err(ConnError::UnsupportedCommand(0));
                 }
+                (Value::Signed(n), CastType::Smallint) => {
+                    Value::Signed(i64::from(i16::try_from(n).map_err(|_| {
+                        ConnError::Session("PG smallint conversion out of range".into())
+                    })?))
+                }
+                (Value::Text(s), CastType::Smallint) => {
+                    Value::Signed(i64::from(s.parse::<i16>().map_err(|_| {
+                        ConnError::Session("invalid PG smallint value".into())
+                    })?))
+                }
                 (Value::Signed(n), CastType::Integer) => {
                     Value::Signed(i64::from(i32::try_from(n).map_err(|_| {
                         ConnError::Session("PG integer conversion out of range".into())
@@ -4173,7 +4235,9 @@ impl CatalogQuery {
                         Value::Text(if v { "t" } else { "f" }.into())
                     })
                 }
-                "has_table_privilege" => {
+                name @ ("has_table_privilege"
+                | "has_column_privilege"
+                | "has_any_column_privilege") => {
                     let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
                     if values.iter().any(|v| *v == Value::Null) {
                         return Ok(Value::Null);
@@ -4194,15 +4258,28 @@ impl CatalogQuery {
                         })
                         .collect::<ConnResult<Vec<_>>>()?;
                     let facts = execution.table_privileges()?;
-                    let result = astersql_session::runtime::pg_has_table_privilege(
-                        &facts.models,
-                        &self.relation_path,
-                        &facts.namespaces,
-                        &execution.role_facts()?,
-                        &execution.session_identity()?.1,
-                        &values,
-                        &oids,
-                    )
+                    let result = if name == "has_table_privilege" {
+                        astersql_session::runtime::pg_has_table_privilege(
+                            &facts.models,
+                            &self.relation_path,
+                            &facts.namespaces,
+                            &execution.role_facts()?,
+                            &execution.session_identity()?.1,
+                            &values,
+                            &oids,
+                        )
+                    } else {
+                        astersql_session::runtime::pg_has_column_privilege(
+                            &facts.models,
+                            &self.relation_path,
+                            &facts.namespaces,
+                            &execution.role_facts()?,
+                            &execution.session_identity()?.1,
+                            &values,
+                            &oids,
+                            name == "has_any_column_privilege",
+                        )
+                    }
                     .map_err(crate::runtime::session_protocol_error)?;
                     result.map_or(Value::Null, |v| {
                         Value::Text(if v { "t" } else { "f" }.into())
@@ -6088,6 +6165,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         }
         ("pg_attribute", "atthasdef") => (12, 1),
         ("pg_attribute", "xmin") => (13, 8),
+        ("pg_attribute", "attacl") => (14, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_attrdef", "oid") => (3, oid),
         ("pg_attrdef", "adrelid") => (0, oid),
         ("pg_attrdef", "adnum") => (1, 2),

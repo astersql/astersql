@@ -342,6 +342,9 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
             save_args(job, &args)?;
         }
         if next == SchemaState::None {
+            if let Some(acls) = &mut t.PostgreSQLColumnAcls {
+                acls.remove(&dropped_id);
+            }
             if let Some(slots) = &mut t.PostgreSQLAttributeSlots {
                 if let Some((_, dropped)) = slots.iter_mut().find(|(id, _)| *id == dropped_id) {
                     *dropped = true;

@@ -413,3 +413,7 @@ has_schema_privilege与has_database_privilege复用正式签名/工厂和既有s
 has_table_privilege复用正式typed工厂与statement-owned回调；NULL先处理，每次求值捕获实际表模型/有效search_path/角色。SELECT对有来源PG ACL按同一事实授权，PUBLIC、继承及SET ROLE与查询函数一致；有来源临时表也不绕过已撤销的普通SELECT。
 
 表名重载显式schema解析检查调用者的真实namespace USAGE，缺schema为3F000、无USAGE为42501；OID重载仍只查询目标表授权，与PG18 convert_table_name/LookupExplicitNamespace及双参考端采样一致。该namespace门禁不隐藏公开relacl目录行。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+has_column_privilege/has_any_column_privilege复用statement-owned PgDatabasePrivilegeEvaluator与正式typed工厂；普通单表SELECT在表权限不足时逐引用列检查，同一持久事实决定函数结果和数据可读。

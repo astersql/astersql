@@ -99,3 +99,7 @@ Rust 侧未发现与 `persistent_drop_column.rs` 同名的独立测试；相关�
 - 改动 masking policy 清理时要显式处理元数据事务与 SQL 操作并非同一回调事务的失败窗口，并验证重试不会错误删除无关策略。
 - 最适合新增的直接回归文件是同目录独立的 `persistent_drop_column_test.rs`，并在 `lib.rs` 以 `#[cfg(test)] mod persistent_drop_column_test;` 接入；跨模块行为继续扩展 `delete_range_test.rs`、`rollingback_test.rs` 或现有 SQL 集成测试。按照仓库规则，Rust 测试不要放进本生产文件。
 - 性能风险集中在外键检查遍历所有数据库/表，以及 masking policy 逐条 DELETE；新增扫描或 SQL 循环前应评估大 schema/大量策略场景。兼容风险集中在历史 `raw_args` 编码、错误码和 schema 状态顺序。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+现有DROP COLUMN任务进入SchemaState::None时同时清除dropped_id的PG列ACL；沿原schema version/diff发布，不新增DDL worker或backfill。

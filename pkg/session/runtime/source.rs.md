@@ -187,3 +187,7 @@ PostgreSQL CTE 中函数、会话变量、行锁及 SELECT INTO 的求值资格�
 `execute_pg_move_insert` 同时允许单个 DELETE RETURNING 的两次引用，以显式内连接消费同一物化行集；不重复执行 DELETE，也不共享会被首消费者耗尽的游标。仅增加同名 CTE、无派生来源/函数/时态采样的有界连接，沿用原语句检查点与错误回滚。零消费者及无 RETURNING 的写入定义仍整体拒绝，不能跳过生产者后成功执行主语句。
 
 `pg10_23_single_complete_producer` 在真实共享执行边界观测一次 DELETE 开始、一次完成与完整返回行数量，分别覆盖零行/两行和提交/回滚。`pg10_23_behavior` 使用真实 TCP 双连接验证重复消费、NULL、完整源/目的回读、Query/Extended、固定描述/主命令标签、portal 重复执行与新 Bind、源/目的失败恢复，以及未开放形态在副作用前拒绝。仅覆盖有界整数行集；不声明完整写入 CTE、RealTiKV、参考端差分或性能改进。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+完整关系执行器在实际SELECT入口调用pg_require_select_columns，与单表路径共享列授权，防止把函数调用/复杂查询切到full-query后绕过列读取边界。

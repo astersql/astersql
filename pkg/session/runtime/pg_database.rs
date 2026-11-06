@@ -1574,6 +1574,13 @@ impl ConcreteSession {
                             if tables.iter().any(|t| {
                                 t.model_meta.as_ref().is_some_and(|m| {
                                     m.PostgreSQLOwner == Some(*oid)
+                                        || m.PostgreSQLColumnAcls.as_ref().is_some_and(|acls| {
+                                            acls.values().any(|acl| {
+                                                acl.grants
+                                                    .iter()
+                                                    .any(|g| g.grantor == *oid || g.grantee == *oid)
+                                            })
+                                        })
                                         || m.PostgreSQLAcl.as_ref().is_some_and(|acl| {
                                             acl.grants
                                                 .iter()
@@ -1704,6 +1711,35 @@ pub(super) fn update_object_acl(
     cascade: bool,
     all: bool,
 ) -> Result<(Option<(&'static str, String)>, bool), kv::errors::SharedError> {
+    update_object_acl_with_authority(
+        entries,
+        owner,
+        actor,
+        actor_id,
+        roles,
+        bits,
+        grantee,
+        grant,
+        option,
+        cascade,
+        all,
+        &[],
+    )
+}
+pub(super) fn update_object_acl_with_authority(
+    entries: &mut Vec<PgDatabaseGrant>,
+    owner: i64,
+    actor: &str,
+    actor_id: i64,
+    roles: &[PgRoleFact],
+    bits: u8,
+    grantee: i64,
+    grant: bool,
+    option: bool,
+    cascade: bool,
+    all: bool,
+    authority: &[PgDatabaseGrant],
+) -> Result<(Option<(&'static str, String)>, bool), kv::errors::SharedError> {
     let role_facts = roles;
     let privileges = if all { "ALL" } else { "" };
     let mut warning = None;
@@ -1720,6 +1756,7 @@ pub(super) fn update_object_acl(
         {
             let options = entries
                 .iter()
+                .chain(authority.iter())
                 .filter(|e| e.grantee == candidate)
                 .fold(0, |b, e| b | e.grant_options)
                 & bits;
@@ -1734,7 +1771,11 @@ pub(super) fn update_object_acl(
         }
         if best.1 == 0 {
             let mut any = false;
-            for e in entries.iter().filter(|e| e.privileges != 0) {
+            for e in entries
+                .iter()
+                .chain(authority.iter())
+                .filter(|e| e.privileges != 0)
+            {
                 if e.grantee == 0
                     || pg_role_reachable(role_facts, actor_id, e.grantee, "USAGE")
                         .map_err(|_| kv::errors::New("database ACL membership unknown"))?
@@ -1800,7 +1841,11 @@ pub(super) fn update_object_acl(
             let mut authorized = BTreeSet::from([owner]);
             loop {
                 let old = authorized.len();
-                for e in entries.iter().filter(|e| e.grant_options & bit != 0) {
+                for e in entries
+                    .iter()
+                    .chain(authority.iter())
+                    .filter(|e| e.grant_options & bit != 0)
+                {
                     if authorized.contains(&e.grantor) {
                         authorized.insert(e.grantee);
                     }

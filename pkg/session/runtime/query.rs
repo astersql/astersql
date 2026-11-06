@@ -2099,6 +2099,8 @@ impl ConcreteSession {
                     | "has_database_privilege"
                     | "has_schema_privilege"
                     | "has_table_privilege"
+                    | "has_column_privilege"
+                    | "has_any_column_privilege"
                     | "version"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -2130,7 +2132,11 @@ impl ConcreteSession {
             for (argument, mut input) in Args.iter().zip(inputs) {
                 if matches!(
                     FnName.L.as_str(),
-                    "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
+                    "has_database_privilege"
+                        | "has_schema_privilege"
+                        | "has_table_privilege"
+                        | "has_column_privilege"
+                        | "has_any_column_privilege"
                 ) && input.GetType() == astersql_parser_mysql::r#type::TypeNull
                 {
                     // Unknown literals take the selected text/name input type; an actual NULL Datum remains NULL.
@@ -2148,11 +2154,20 @@ impl ConcreteSession {
             }
             let database_privilege = if matches!(
                 FnName.L.as_str(),
-                "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
+                "has_database_privilege"
+                    | "has_schema_privilege"
+                    | "has_table_privilege"
+                    | "has_column_privilege"
+                    | "has_any_column_privilege"
             ) && !strict_database_null
             {
                 let schema_acl = FnName.L == "has_schema_privilege";
-                let table_acl = FnName.L == "has_table_privilege";
+                let table_acl = matches!(
+                    FnName.L.as_str(),
+                    "has_table_privilege" | "has_column_privilege" | "has_any_column_privilege"
+                );
+                let column_acl = FnName.L == "has_column_privilege";
+                let any_column_acl = FnName.L == "has_any_column_privilege";
                 let tables = if table_acl {
                     self.pg_table_models()?
                 } else {
@@ -2187,7 +2202,18 @@ impl ConcreteSession {
                 let roles = self.pg_role_facts()?;
                 let actor = self.pg_schema_identity();
                 Some(Arc::new(move |values: &[Option<String>], oids: &[bool]| {
-                    (if table_acl {
+                    (if column_acl || any_column_acl {
+                        pg_table::pg_has_column_privilege(
+                            &tables,
+                            &path,
+                            &namespaces,
+                            &roles,
+                            &actor,
+                            values,
+                            oids,
+                            any_column_acl,
+                        )
+                    } else if table_acl {
                         pg_table::pg_has_table_privilege(
                             &tables,
                             &path,
@@ -2296,6 +2322,8 @@ impl ConcreteSession {
                         | "has_database_privilege"
                         | "has_schema_privilege"
                         | "has_table_privilege"
+                        | "has_column_privilege"
+                        | "has_any_column_privilege"
                 ) {
                     if value == 0 {
                         "f".to_owned()
@@ -3661,6 +3689,8 @@ impl ConcreteSession {
                                 | "has_database_privilege"
                                 | "has_schema_privilege"
                                 | "has_table_privilege"
+                                | "has_column_privilege"
+                                | "has_any_column_privilege"
                                 | "version"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -4977,6 +5007,8 @@ impl ConcreteSession {
                             | "has_database_privilege"
                             | "has_schema_privilege"
                             | "has_table_privilege"
+                            | "has_column_privilege"
+                            | "has_any_column_privilege"
                             | "version"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -5895,6 +5927,8 @@ impl ConcreteSession {
                         | "has_database_privilege"
                         | "has_schema_privilege"
                         | "has_table_privilege"
+                        | "has_column_privilege"
+                        | "has_any_column_privilege"
                 ) && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
             {
                 Some(FnName.L.clone())
@@ -6671,6 +6705,8 @@ impl ConcreteSession {
                         | "has_database_privilege"
                         | "has_schema_privilege"
                         | "has_table_privilege"
+                        | "has_column_privilege"
+                        | "has_any_column_privilege"
                         | "version"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -6697,6 +6733,8 @@ impl ConcreteSession {
                             | "has_database_privilege"
                             | "has_schema_privilege"
                             | "has_table_privilege"
+                            | "has_column_privilege"
+                            | "has_any_column_privilege"
                     ) {
                         result.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
                     }
@@ -8399,6 +8437,14 @@ impl ConcreteSession {
                     self.pg_table_access(table_database, relation_name(&table_source.Source), 2)?
                 {
                     if allowed {
+                        continue;
+                    }
+                    let model = self
+                        .domain
+                        .table_by_name(table_database, relation_name(&table_source.Source))
+                        .map_err(|e| session_error("resolve column access", e))?;
+                    let names = super::pg_table::pg_select_columns(statement, table_source, &model);
+                    if self.pg_column_model_access(&model, &names, 2)? {
                         continue;
                     }
                     return Err(super::pg_schema::namespace_error(

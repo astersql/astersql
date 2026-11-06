@@ -154,3 +154,7 @@ relacl绑定为aclitem[]/1034、来源1259/32；按已筛选关系OID惰性取�
 表名重载显式schema解析检查调用者的真实namespace USAGE，缺schema为3F000、无USAGE为42501；OID重载仍只查询目标表授权，与PG18 convert_table_name/LookupExplicitNamespace及双参考端采样一致。该namespace门禁不隐藏公开relacl目录行。
 
 Execution惰性缓存本次schema快照对应的表模型和namespace事实，relacl及权限函数复用同一个缓存；避免逐ACL单元重复深拷贝整个模型集合或重复扫描KV。缓存不跨Execute/portal，新查询仍可看到已提交GRANT/REVOKE。角色事实继续用现有单次执行缓存；跨来源并发同代际一致性仍归后续快照专项。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+attacl在实际选中pg_attribute行惰性读取本执行快照的TableInfo列ACL与角色事实；aclitem[] OID1034、来源1249/22、typlen=-1、typmod=-1。默认NULL、显式空数组、缺源0A000保持区别。新增两列权限函数共用正式typed签名和共享求值，int2属性号通过受检Smallint cast，保持NULL及SQLSTATE。

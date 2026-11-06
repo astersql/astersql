@@ -144,3 +144,7 @@ PG新建数据库在身份/owner同一KV事务中向既有PgDatabaseConnect记�
 ## 表授权（目录任务19）
 
 update_postgresql_acl沿现有metadata-only事务编辑TableInfo并发布schema version；失败不发布部分ACL。set_postgresql_owner在同一变更重写并合并grantor/grantee，关系及索引身份不变。无需reorg/backfill，drop/rename复用原关系生命周期。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+owner转移沿既有metadata事务同时重写合并表/列ACL身份；canonical DROP COLUMN删除被移除column ID的ACL。稳定表OID和列ID不因owner改变。

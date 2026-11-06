@@ -2039,6 +2039,7 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        self.pg_require_select_columns(select)?;
         self.validate_only_full_group_by(select)?;
         self.execute_insert_select_query_with_outer_unchecked(select, outer)
     }

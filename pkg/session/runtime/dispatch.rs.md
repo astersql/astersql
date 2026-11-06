@@ -192,3 +192,7 @@ PG 写入CTE只在 INSERT 分支、既有写入检查和 MDL登记后交给 exec
 ## 表授权（目录任务19）
 
 PG视图创建登记默认表ACL；INSERT/UPDATE/DELETE在数据操作之前读取本表真实ACL，RETURNING、WHERE及UPDATE引用表达式另检查SELECT。旧原生记录保持原native路径；完整列授权和所有SQL语法不在本批次扩建。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+新PG视图初始化持久列ACL来源。INSERT显式目标和UPDATE赋值目标经pg_require_column_write_access校验精确列权限；DELETE等无列权限语义继续表授权。RETURNING、WHERE、UPDATE引用表达式的SELECT逐引用列经同一共享guard检查；常量赋值不凭空要求读取权限。

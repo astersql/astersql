@@ -28,3 +28,7 @@ update_object_acl从既有数据库授权写入逻辑提取，供数据库与nam
 ## 表授权（目录任务19）
 
 PgDatabaseGrant重导出共享模型类型并保留旧序列化结构。has_privilege_mask/validate_acl_mask复用同一成员继承和角色声明逻辑，各对象调用方约束合法权限位；数据库仍为7。共享update_object_acl遍历全部8位，owner固有grant authority独立于普通ACL。DROP ROLE阻止关系ACL悬空引用并返回2BP01。
+
+## 2026-11-06 列授权事实与查询（任务20）
+
+update_object_acl_with_authority接收同对象上层表授权作为列grantor选择和撤权闭包的authority，只在本列entries中写入，避免复制或混入表ACL。原update_object_acl保持原调用语义。DROP ROLE同时检查持久列ACL中grantor/grantee依赖。

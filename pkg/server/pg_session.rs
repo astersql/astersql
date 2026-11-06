@@ -909,7 +909,6 @@ impl SessionQuery {
                 if !word(tokens.get(on + 1), "schema")
                     && !word(tokens.get(on + 1), "database")
                     && !word(tokens.get(on + 1), "sequence")
-                    && !tokens[1..on].contains(&Token::Symbol('('))
                 {
                     let grant = word(tokens.first(), "grant");
                     let only_option = !grant
@@ -918,23 +917,51 @@ impl SessionQuery {
                         && word(tokens.get(3), "for");
                     let start = if only_option { 4 } else { 1 };
                     let mut modes = Vec::new();
-                    for (i, t) in tokens[start..on].iter().enumerate() {
-                        if i % 2 == 1 {
-                            if word(Some(t), "privileges")
-                                && modes == ["ALL"]
-                                && start + i + 1 == on
-                            {
-                                continue;
+                    let mut columns = Vec::new();
+                    let mut at_mode = start;
+                    while at_mode < on {
+                        let mode = tokens
+                            .get(at_mode)
+                            .and_then(identifier)
+                            .ok_or_else(|| ("42601", "expected privilege".into()))?
+                            .to_ascii_uppercase();
+                        modes.push(mode);
+                        at_mode += 1;
+                        if tokens.get(at_mode) == Some(&Token::Symbol('(')) {
+                            at_mode += 1;
+                            loop {
+                                columns.push(
+                                    tokens
+                                        .get(at_mode)
+                                        .and_then(identifier)
+                                        .ok_or_else(|| ("42601", "expected column".into()))?,
+                                );
+                                at_mode += 1;
+                                if tokens.get(at_mode) != Some(&Token::Symbol(',')) {
+                                    break;
+                                }
+                                at_mode += 1;
                             }
-                            if *t != Token::Symbol(',') {
+                            if tokens.get(at_mode) != Some(&Token::Symbol(')')) {
+                                return Err(("42601", "expected closing parenthesis".into()));
+                            }
+                            at_mode += 1;
+                            // Distinct privilege column lists require separate commands; never apply their union.
+                            if at_mode < on {
+                                return Err((
+                                    "0A000",
+                                    "send column privilege lists separately".into(),
+                                ));
+                            }
+                        }
+                        if word(tokens.get(at_mode), "privileges") && modes == ["ALL"] {
+                            at_mode += 1;
+                        }
+                        if at_mode < on {
+                            if tokens.get(at_mode) != Some(&Token::Symbol(',')) {
                                 return Err(("42601", "expected privilege separator".into()));
                             }
-                        } else {
-                            modes.push(
-                                identifier(t)
-                                    .ok_or_else(|| ("42601", "expected privilege".into()))?
-                                    .to_ascii_uppercase(),
-                            );
+                            at_mode += 1;
                         }
                     }
                     let privileges = modes.join(",");
@@ -985,6 +1012,7 @@ impl SessionQuery {
                     }
                     return Ok(Some(Self::SchemaUtility(
                         PgSchemaCommand::TablePrivileges {
+                            columns,
                             schema,
                             table,
                             grantee,
