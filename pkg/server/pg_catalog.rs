@@ -1407,12 +1407,16 @@ impl CatalogQuery {
                     {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
-                    ("pg_table_is_visible" | "pg_type_is_visible", [oid])
-                        if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) =>
-                    {
+                    (
+                        "pg_table_is_visible" | "pg_type_is_visible" | "pg_function_is_visible",
+                        [oid],
+                    ) if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) => {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
-                    ("pg_table_is_visible" | "pg_type_is_visible", _) => Err((
+                    (
+                        "pg_table_is_visible" | "pg_type_is_visible" | "pg_function_is_visible",
+                        _,
+                    ) => Err((
                         "42883",
                         format!("function {name} with these arguments does not exist"),
                     )),
@@ -4573,17 +4577,18 @@ impl CatalogQuery {
                         _ => unreachable!("validated comment function OID"),
                     }
                 }
-                name @ ("pg_table_is_visible" | "pg_type_is_visible") => {
+                name
+                @ ("pg_table_is_visible" | "pg_type_is_visible" | "pg_function_is_visible") => {
                     match evaluate(&args[0])? {
                         Value::Null => Value::Null,
                         Value::Signed(oid) => {
-                            // Both catalogs identify objects by OID/name/namespace in slots 0/1/2.
+                            // Visibility catalogs identify OID/name/namespace in slots 0/1/2.
                             // Reuse the bounded provider and snapshot of an explicit query;
-                            // name visibility is independent of object SELECT/type USAGE.
-                            let catalog = if name == "pg_type_is_visible" {
-                                "pg_type"
-                            } else {
-                                "pg_class"
+                            // Name visibility is independent of object execution/usage ACLs.
+                            let catalog = match name {
+                                "pg_type_is_visible" => "pg_type",
+                                "pg_function_is_visible" => "pg_proc",
+                                _ => "pg_class",
                             };
                             if !execution.providers.borrow().contains_key(catalog) {
                                 let mut rows = self.provider_rows(
@@ -4622,6 +4627,12 @@ impl CatalogQuery {
                             }
                             let mut visible = false;
                             'search: for schema in path {
+                                // PostgreSQL never searches a temporary namespace for functions.
+                                if name == "pg_function_is_visible"
+                                    && (schema == "pg_temp" || schema.starts_with("pg_temp_"))
+                                {
+                                    continue;
+                                }
                                 let namespace = if schema == "pg_catalog" {
                                     Some(11)
                                 } else {
@@ -4636,7 +4647,12 @@ impl CatalogQuery {
                                 };
                                 for row in rows.iter() {
                                     execution.comparison()?;
-                                    if row[1] == target[1] && row[2] == Value::Signed(namespace) {
+                                    // pg_proc slot 8 is the declared input OID vector.
+                                    // Different overloads must not mask one another.
+                                    if row[1] == target[1]
+                                        && row[2] == Value::Signed(namespace)
+                                        && (name != "pg_function_is_visible" || row[8] == target[8])
+                                    {
                                         visible = row[0] == target[0];
                                         break 'search;
                                     }

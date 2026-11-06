@@ -174,3 +174,5 @@ proacl 按实际投影读取共享 pg_function_facts，并以 aclitem[]/1034、�
 pg_table_is_visible(oid)使用同次Execution的有界pg_class provider缓存及有效显式路径。缺pg_catalog时先隐式搜索它，已显式列出时保留次序；按真实namespace USAGE与同名首个关系决定可见性，独立于表SELECT，不因path过滤显式目录行。NULL及未知OID返回NULL/bool16，错误签名42883；保留行/工作预算和取消检查。
 
 任务25补充：pg_type_is_visible(oid)共用上述可见性求值，切换为同次Execution的真实pg_type provider。内建和持久information_schema域沿原OID/name/namespace身份，按有效路径同名首项遮蔽；NULL/未知OID返回NULL，结果bool16。可见性独立于类型USAGE；尚无用户类型来源，CREATE TYPE/DOMAIN保持输出前0A000门禁，不造夹具。
+
+任务26局部实现：pg_function_is_visible(oid)沿同次Execution的真实pg_proc provider和有效路径，按proname及proargtypes输入OID向量匹配首项，跳过保留pg_temp/pg_temp_* namespace。结果bool16，NULL/未知OID返回NULL，与目标函数EXECUTE授权独立；仍受原有取消、行数和工作预算约束。当前仅三条真实内省原语有登记；用户函数DDL/跨schema重载的本端验收未开放，不能用门禁结果代替遮蔽验收。
