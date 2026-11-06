@@ -15902,16 +15902,40 @@ fn cat14_15() {
     ok(&mut reader, "ROLLBACK");
     assert_eq!(data(&ok(&mut reader, sql)).len(), 1);
     let before = data(&ok(&mut reader, sql));
-    ok(
+    // Historical namespace ACLs remain unknown after type-owner migration.
+    // A newly created schema supplies real ACL facts for this independent grant.
+    denied(
         &mut admin,
         "GRANT USAGE ON SCHEMA information_schema TO cat14_15_reader",
+        "0A000",
+        b'I',
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(&mut admin, "CREATE SCHEMA cat14_15_acl");
+    let usage_sql = "SELECT has_schema_privilege('cat14_15_acl','USAGE')";
+    assert_eq!(
+        values(&data(&ok(&mut reader, usage_sql))[0]),
+        vec![Some(b"f".to_vec())]
+    );
+    ok(
+        &mut admin,
+        "GRANT USAGE ON SCHEMA cat14_15_acl TO cat14_15_reader",
+    );
+    assert_eq!(
+        values(&data(&ok(&mut reader, usage_sql))[0]),
+        vec![Some(b"t".to_vec())]
     );
     assert_eq!(data(&ok(&mut reader, sql)), before);
     ok(
         &mut admin,
-        "REVOKE USAGE ON SCHEMA information_schema FROM cat14_15_reader",
+        "REVOKE USAGE ON SCHEMA cat14_15_acl FROM cat14_15_reader",
+    );
+    assert_eq!(
+        values(&data(&ok(&mut reader, usage_sql))[0]),
+        vec![Some(b"f".to_vec())]
     );
     assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(&mut admin, "DROP SCHEMA cat14_15_acl");
     ok(&mut admin, "BEGIN");
     denied(
         &mut admin,
