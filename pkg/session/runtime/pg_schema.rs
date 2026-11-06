@@ -122,6 +122,12 @@ impl ConcreteSession {
             .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
             .ok_or_else(|| SessionError::new("PostgreSQL database is unavailable"))?;
         let actor = self.pg_schema_identity();
+        if matches!(
+            command,
+            Some(PgSchemaCommand::Create(_) | PgSchemaCommand::CreateOwned { .. })
+        ) {
+            self.pg_require_database_privilege(4)?;
+        }
         let command_owner_id = match command {
             Some(PgSchemaCommand::Create(_)) => Some(self.pg_database_role_id(&actor)?),
             Some(
@@ -225,11 +231,6 @@ impl ConcreteSession {
                                 unreachable!("handled before namespace transaction")
                             }
                             PgSchemaCommand::Create(name) => {
-                                if actor != "root" {
-                                    return Err(kv::errors::New(
-                                        "permission denied to create schema",
-                                    ));
-                                }
                                 if namespaces.contains_key(name) {
                                     return Err(kv::errors::New("schema already exists"));
                                 }
@@ -248,7 +249,7 @@ impl ConcreteSession {
                                 );
                             }
                             PgSchemaCommand::CreateOwned { schema, owner } => {
-                                if actor != "root" {
+                                if actor != "root" && owner != &actor {
                                     return Err(kv::errors::New(
                                         "permission denied to create schema",
                                     ));
@@ -522,13 +523,7 @@ impl ConcreteSession {
                 return Err(SessionError::new("schema grantee role does not exist"));
             }
         }
-        if matches!(
-            command,
-            PgSchemaCommand::Create(_)
-                | PgSchemaCommand::CreateOwned { .. }
-                | PgSchemaCommand::Owner { .. }
-        ) && self.pg_schema_identity() != "root"
-        {
+        if matches!(command, PgSchemaCommand::Owner { .. }) && self.pg_schema_identity() != "root" {
             return Err(namespace_error("42501", "permission denied for schema"));
         }
         self.pg_namespaces(Some(command))?;
@@ -758,6 +753,14 @@ impl ConcreteSession {
         name: &str,
         create: bool,
     ) -> SessionResult<String> {
+        if !create
+            && schema.is_none()
+            && self
+                .local_temporary_table(&self.current_database(), name)
+                .is_some()
+        {
+            return Ok(name.to_owned());
+        }
         let facts = self.pg_namespace_facts()?;
         let path = if let Some(schema) = schema {
             let fact = facts.iter().find(|f| f.name == schema).ok_or_else(|| {
@@ -1248,6 +1251,7 @@ impl ConcreteSession {
     /// Local table identities share the allocator, but never publish a relation
     /// into Domain. Only this connection retains the namespace and table models.
     pub(super) fn pg_allocate_temporary_identity(&self) -> SessionResult<(i64, i64)> {
+        self.pg_require_database_privilege(2)?;
         let database = self.current_database();
         let existing = self
             .state

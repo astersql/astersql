@@ -91,3 +91,12 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 `SessionQuery::RoleUtility(PgRoleCommand::Membership)`接受单角色/单接收者的`GRANT role TO member [WITH ADMIN TRUE/FALSE, INHERIT TRUE/FALSE, SET TRUE/FALSE]`（含ADMIN OPTION）与`REVOKE role FROM member`。使用既有PG词法器保存引号身份，重复或非法选项在写入前拒绝。对象权限GRANT由原处理器负责。
 
 执行复用共享会话、native账户/角色图、mysql.role_edges及现有角色持久元数据。新边的INHERIT默认取接收者保存的声明，SET默认为true、ADMIN默认为false；更新仅替换显式选项。成员行与属性同事务提交后发布现有角色缓存；拒绝环、未知角色、非管理员和事务内角色管理。该局部接口不开放多授予者/GRANTED BY/任意委派角色管理。SET ROLE查询每跳SET选项；旧native边未声明SET时为0A000，保留原身份/OID，不把边存在性提升为SET授权。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+数据库GRANT/REVOKE适配在既有DatabaseUtility中识别CONNECT/TEMPORARY/CREATE、逗号列表、WITH GRANT OPTION及REVOKE GRANT OPTION FOR和RESTRICT/CASCADE；沿共享Access命令写入。PgSession暂存本次命令的01007/01006通知，执行前清空、响应时一次消费。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"PUBLIC"分开；后者使用稳定角色OID，不能扩大为全体授权。

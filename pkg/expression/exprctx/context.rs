@@ -58,6 +58,13 @@ impl PlanColumnIDAllocator for SimplePlanColumnIDAllocator {
     }
 }
 
+/// Statement-owned database privilege facts supplied by the shared session layer.
+pub type PgDatabasePrivilegeEvaluator = Arc<
+    dyn Fn(&[Option<String>], &[bool]) -> Result<Option<bool>, contextutil::errors::SharedError>
+        + Send
+        + Sync,
+>;
+
 /// 对应 Go EvalContext：聚合一次表达式求值所需的稳定会话快照与可选属性。
 pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     /// Immutable SQL semantics captured by this evaluation context.
@@ -95,6 +102,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn PgBackendPid(&self) -> Option<i32> {
         None
     }
+    fn PgDatabasePrivilegeEvaluator(&self) -> Option<PgDatabasePrivilegeEvaluator> {
+        None
+    }
+
     fn GetMaxAllowedPacket(&self) -> u64;
     fn GetTiDBRedactLog(&self) -> String;
     fn GetDefaultWeekFormatMode(&self) -> String;
@@ -429,6 +440,10 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     fn PgBackendPid(&self) -> Option<i32> {
         self.inner.PgBackendPid()
     }
+    fn PgDatabasePrivilegeEvaluator(&self) -> Option<PgDatabasePrivilegeEvaluator> {
+        self.inner.PgDatabasePrivilegeEvaluator()
+    }
+
     fn GetMaxAllowedPacket(&self) -> u64 {
         self.inner.GetMaxAllowedPacket()
     }

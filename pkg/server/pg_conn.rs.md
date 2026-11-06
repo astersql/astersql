@@ -153,3 +153,10 @@ Reuse the existing PostgreSQL error encoder to send detail, hint and position to
 ## 独立索引生命周期（2026-11-05）
 
 Q与多语句入口将PgSession传入pg_sql::adapt_with_session，独立索引DDL按实际search_path解析真实OID，再转为既有表内索引DDL。适配检查schema USAGE、改名目标schema创建权限、实际认证角色与持久owner、名称冲突；不建立另一套索引存储。约束拥有索引和条件DDL仍明确拒绝。未扩展角色继承或SET ROLE语义。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+数据库授权命令执行成功后，从当前PgSession取一次本次ACL命令通知并在CommandComplete前发送；失败不伪装成功。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

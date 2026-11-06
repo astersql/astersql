@@ -393,3 +393,12 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 ## 写入公共表搬移接线
 
 `relational_query_node_result_fields_with_ctes` 对 DELETE 生产者调用 delete_returning_fields，仅绑定 RETURNING 元数据，不执行删除；实际行集仍由共享 DELETE 执行入口产生。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+普通关系查询的has_database_privilege通过正式签名/工厂构建；回调捕获本次共享数据库事实、角色成员及有效身份，逐行参数沿现有表达式求值。结果类型固定bool，权限错误保留PgFunctionError源。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+本地PG临时表SELECT仅在当前连接拥有该局部模型且有效角色拥有/继承其真实owner时沿owner权限读取；撤销数据库TEMPORARY不删除现有表权限。永久表仍经原生共享Manager逐表验证，数据库授权不授予表SELECT。

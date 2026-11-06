@@ -530,6 +530,7 @@ impl CatalogQuery {
                             CastType::Boolean => 16,
                             CastType::Integer => 23,
                             CastType::Varchar => 25,
+                            CastType::Name => 19,
                             _ => 0,
                         };
                     }
@@ -1068,6 +1069,9 @@ impl CatalogQuery {
                     ("pg_database", "datistemplate") => Some((3, 1, boolean)),
                     ("pg_database", "datallowconn") => Some((4, 1, boolean)),
                     ("pg_database", "datdba") => Some((5, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_database", "datacl") => {
+                        Some((6, crate::pg_result::CatalogColumnType::AclArray as u8, 0))
+                    }
                     ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_namespace", "nspname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -1309,6 +1313,7 @@ impl CatalogQuery {
                         CastType::Bigint => 8,
                         CastType::Integer => 3,
                         CastType::Varchar => 253,
+                        CastType::Name => crate::pg_result::CatalogColumnType::Name as u8,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
                         CastType::Regclass => crate::pg_oid::REGCLASS_TYPE,
                         // No native exclusion operators have a PG name mapping.
@@ -1336,7 +1341,7 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
-                    ("pg_has_role", values)
+                    ("pg_has_role" | "has_database_privilege", values)
                         if matches!(values.len(), 2 | 3)
                             && values.iter().all(|v| {
                                 matches!(v, Expr::Null)
@@ -1398,9 +1403,7 @@ impl CatalogQuery {
                     ("unnest", [input]) => numeric_array_element(self.expr_type(input)?.0)
                         .map(|code| (code, 0))
                         .ok_or_else(|| ("0A000", "unnest requires a numeric catalog array".into())),
-                    ("current_database" | "current_catalog", [])
-                        if self.select.from.name == "pg_database" =>
-                    {
+                    ("current_database" | "current_catalog", []) => {
                         Ok((crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     ("current_schema", []) if self.select.from.name == "pg_namespace" => {
@@ -1698,6 +1701,7 @@ impl CatalogQuery {
                         ("pg_database", 0) => 1,
                         ("pg_database", 1) => 2,
                         ("pg_database", 5) => 3,
+                        ("pg_database", 6) => 18,
                         ("pg_database", 3) => 6,
                         ("pg_database", 4) => 7,
                         ("pg_namespace", 0) => 1,
@@ -3644,6 +3648,27 @@ impl CatalogQuery {
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "pg_database")
+                    && local == 6
+                    && row[base] != Value::Null
+                {
+                    let facts = execution.database_facts()?;
+                    let fact = facts
+                        .iter()
+                        .find(|f| {
+                            namespace_oid(f.id).ok().map(Value::Signed).as_ref() == Some(&row[base])
+                        })
+                        .ok_or_else(|| {
+                            database_identity_unavailable("database ACL is unavailable")
+                        })?;
+                    let text = fact.acl_text().map_err(|_| {
+                        database_identity_unavailable("database ACL requires explicit migration")
+                    })?;
+                    return Ok(text.map_or(Value::Null, Value::Text));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_database")
                     && matches!(slot % CATALOG_ROW_WIDTH, 3..=5)
                     // NULL-extension of an unmatched outer join is a SQL NULL,
                     // not a legacy database with missing ownership metadata.
@@ -3916,6 +3941,16 @@ impl CatalogQuery {
                 (Value::Text(_), CastType::InternalChar) => {
                     return Err(ConnError::UnsupportedCommand(0));
                 }
+                (Value::Text(mut s), CastType::Name) => {
+                    if s.len() > 63 {
+                        let mut end = 63;
+                        while !s.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        s.truncate(end);
+                    }
+                    Value::Text(s)
+                }
                 (Value::Text(s), CastType::Varchar) => Value::Text(s),
                 (Value::Text(s), CastType::Bigint) => {
                     Value::Signed(s.parse().map_err(|_| {
@@ -3925,6 +3960,52 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "has_database_privilege" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.iter().any(|v| *v == Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    let oids = values
+                        .iter()
+                        .map(|v| matches!(v, Value::Signed(_)))
+                        .collect::<Vec<_>>();
+                    let values = values
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Null => Ok(None),
+                            Value::Text(s) => Ok(Some(s)),
+                            Value::Signed(n) => Ok(Some(n.to_string())),
+                            _ => Err(database_identity_unavailable(
+                                "invalid database privilege argument",
+                            )),
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?;
+                    let facts = execution.database_facts()?;
+                    let snapshot = snapshot.ok_or_else(|| {
+                        database_identity_unavailable("database snapshot unavailable")
+                    })?;
+                    let databases = snapshot
+                        .AllSchemas()
+                        .into_iter()
+                        .filter_map(|s| {
+                            facts
+                                .iter()
+                                .find(|f| f.id == s.id)
+                                .map(|f| (s.name.original.clone(), f.clone()))
+                        })
+                        .collect::<Vec<_>>();
+                    let result = astersql_session::runtime::pg_has_database_privilege(
+                        &databases,
+                        &execution.role_facts()?,
+                        &execution.session_identity()?.1,
+                        &values,
+                        &oids,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    result.map_or(Value::Null, |v| {
+                        Value::Text(if v { "t" } else { "f" }.into())
+                    })
+                }
                 "pg_has_role" => {
                     let mut values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
                     if values.iter().any(|v| *v == Value::Null) {
@@ -4874,7 +4955,8 @@ fn textual_type(code: u8) -> bool {
     {
         return true;
     }
-    code == crate::pg_result::CatalogColumnType::Name as u8
+    code == astersql_parser_mysql::r#type::TypePgName
+        || code == crate::pg_result::CatalogColumnType::Name as u8
         || code == 253
         || code == crate::pg_result::CatalogColumnType::InternalChar as u8
         || code == crate::pg_result::CatalogColumnType::Char as u8

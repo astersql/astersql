@@ -325,6 +325,10 @@ impl DdlMetadataService {
             )?;
             if let Some(owner) = owner {
                 transaction.Set(
+                    tidb_hash_key(b"PgDatabaseConnect", id.to_string().as_bytes()),
+                    br#"{"public":true,"roles":[],"acl":[],"default_acl":true}"#.to_vec(),
+                )?;
+                transaction.Set(
                     tidb_hash_key(b"PgDatabaseOwners", id.to_string().as_bytes()),
                     owner.to_string().into_bytes(),
                 )?;

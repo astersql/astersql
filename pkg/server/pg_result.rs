@@ -901,6 +901,19 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             _ => Err(invalid("regtype requires its OID carrier")),
         };
     }
+    if oid == 1034 {
+        // PG18 aclitem has no typsend; even an explicit empty aclitem[] is rejected.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            astersql_session::runtime::PgFunctionError {
+                state: "42883",
+                message: "no binary output function available for type aclitem".into(),
+                detail: None,
+                hint: None,
+                position: None,
+            },
+        ));
+    }
     let text = value_text(value, oid)?.unwrap();
     let text = std::str::from_utf8(&text).map_err(|_| invalid("invalid binary value"))?;
     let bad = |_| invalid("invalid binary integer value");
@@ -1521,6 +1534,12 @@ pub(crate) fn write_result(
 /// Preserve calendar diagnostics carried by the I/O encoder without changing
 /// unrelated unsupported-codec errors.
 pub(crate) fn encoding_sqlstate(error: &io::Error) -> &'static str {
+    if let Some(function) = error
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<astersql_session::runtime::PgFunctionError>())
+    {
+        return function.state;
+    }
     error
         .get_ref()
         .and_then(|source| source.downcast_ref::<astersql_types::pg_temporal::PgTemporalError>())

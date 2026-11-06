@@ -424,3 +424,164 @@ fn cat14_09_native_revoke_preserves_request_atomicity_and_defaults() {
     native.execute("DROP ROLE 'cat14_09_role'@'%'").unwrap();
     domain.close();
 }
+
+#[test]
+fn cat14_17_database_acl_defaults_legacy_and_identity_lifecycle() {
+    use super::pg_database::{PgDatabaseCommand, PgRoleCommand};
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.pg_register_bootstrap_role().unwrap();
+    native
+        .execute("CREATE DATABASE cat14_17_model_legacy")
+        .unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE DATABASE cat14_17_model_pg").unwrap();
+    pg.pg_role_command(&PgRoleCommand::Create {
+        name: "cat14_17_model_role".into(),
+        can_login: true,
+    })
+    .unwrap();
+    let facts = pg.pg_database_facts(None).unwrap();
+    let database_id = |name: &str| {
+        domain
+            .info_schema()
+            .SchemaByName(&astersql_infoschema::CiString::new(name))
+            .unwrap()
+            .id
+    };
+    let owned = facts
+        .iter()
+        .find(|f| f.id == database_id("cat14_17_model_pg"))
+        .unwrap();
+    assert!(owned.acl_default);
+    assert_eq!(owned.acl_text().unwrap(), None);
+    let legacy = facts
+        .iter()
+        .find(|f| f.id == database_id("cat14_17_model_legacy"))
+        .unwrap();
+    assert!(legacy.acl.is_none());
+    assert_eq!(
+        legacy
+            .acl_text()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    pg.pg_database_facts(Some(&PgDatabaseCommand::Owner {
+        database: "cat14_17_model_legacy".into(),
+        role: "root".into(),
+    }))
+    .unwrap();
+    assert!(
+        pg.pg_database_facts(None)
+            .unwrap()
+            .iter()
+            .find(|f| f.id == legacy.id)
+            .unwrap()
+            .acl
+            .is_none(),
+        "owner adoption must not fabricate historical ACL"
+    );
+    pg.pg_database_facts(Some(&PgDatabaseCommand::Privileges {
+        database: "cat14_17_model_pg".into(),
+        role: "cat14_17_model_role".into(),
+        public: false,
+        privileges: "CREATE".into(),
+        grant: true,
+        grant_option: true,
+        cascade: false,
+    }))
+    .unwrap();
+    let key = astersql_meta::transaction_meta_hash_key(
+        b"PgDatabaseConnect",
+        database_id("cat14_17_model_pg").to_string().as_bytes(),
+    );
+    let original = domain
+        .storage_handle()
+        .with_storage(|store| {
+            let mut txn = store.Begin(&[])?;
+            let original = txn.Get(&kv::Context::default(), key.clone(), &[])?.Value;
+            let mut corrupt: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            corrupt["acl"][0]["grantor"] = serde_json::json!(0);
+            txn.Set(key.clone(), serde_json::to_vec(&corrupt).unwrap())?;
+            txn.Commit(&kv::Context::default())?;
+            Ok::<_, kv::errors::SharedError>(original)
+        })
+        .unwrap();
+    let failed = pg
+        .pg_database_facts(Some(&PgDatabaseCommand::Privileges {
+            database: "cat14_17_model_pg".into(),
+            role: "cat14_17_model_role".into(),
+            public: false,
+            privileges: "CREATE".into(),
+            grant: false,
+            grant_option: false,
+            cascade: false,
+        }))
+        .unwrap_err();
+    assert_eq!(failed.pg_function_error().unwrap().state, "0A000");
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            let mut txn = store.Begin(&[])?;
+            let unchanged: serde_json::Value =
+                serde_json::from_slice(&txn.Get(&kv::Context::default(), key.clone(), &[])?.Value)
+                    .unwrap();
+            assert!(
+                unchanged["acl"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["privileges"] == serde_json::json!(4)
+                        && e["grant_options"] == serde_json::json!(4)),
+                "failed revoke must not commit its writes"
+            );
+            txn.Set(key.clone(), original.clone())?;
+            txn.Commit(&kv::Context::default())?;
+            Ok::<_, kv::errors::SharedError>(())
+        })
+        .unwrap();
+    assert!(
+        pg.pg_database_drop_role("cat14_17_model_role", false)
+            .is_err(),
+        "a grant must retain its stable role identity"
+    );
+    domain.force_full_reload_for_test().unwrap();
+    let facts = pg.pg_database_facts(None).unwrap();
+    let owned = facts
+        .iter()
+        .find(|f| f.id == database_id("cat14_17_model_pg"))
+        .unwrap();
+    assert!(!owned.acl_default);
+    assert!(
+        owned
+            .acl_text()
+            .unwrap()
+            .unwrap()
+            .contains("cat14_17_model_role=C*/root")
+    );
+    pg.pg_database_facts(Some(&PgDatabaseCommand::Privileges {
+        database: "cat14_17_model_pg".into(),
+        role: "cat14_17_model_role".into(),
+        public: false,
+        privileges: "CREATE".into(),
+        grant: false,
+        grant_option: false,
+        cascade: false,
+    }))
+    .unwrap();
+    assert!(
+        pg.pg_database_drop_role("cat14_17_model_role", false)
+            .is_ok()
+    );
+    native.execute("DROP DATABASE cat14_17_model_pg").unwrap();
+    native
+        .execute("DROP DATABASE cat14_17_model_legacy")
+        .unwrap();
+    pg.pg_role_command(&PgRoleCommand::Drop {
+        name: "cat14_17_model_role".into(),
+    })
+    .unwrap();
+    domain.close();
+}

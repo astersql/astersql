@@ -128,6 +128,7 @@ pub struct EvalCtxState {
     current_db: String,
     pg_current_schema: Option<String>,
     pg_backend_pid: Option<i32>,
+    pg_database_privilege: Option<exprctx::PgDatabasePrivilegeEvaluator>,
     current_time: Arc<TimeOnce>,
     max_allowed_packet: u64,
     enable_redact_log: String,
@@ -154,6 +155,7 @@ impl Clone for EvalCtxState {
             current_db: self.current_db.clone(),
             pg_current_schema: self.pg_current_schema.clone(),
             pg_backend_pid: self.pg_backend_pid,
+            pg_database_privilege: self.pg_database_privilege.clone(),
             current_time: Arc::clone(&self.current_time),
             max_allowed_packet: self.max_allowed_packet,
             enable_redact_log: self.enable_redact_log.clone(),
@@ -230,6 +232,12 @@ pub fn WithPgCurrentSchema(schema: Option<String>) -> EvalCtxOption {
 }
 
 /// Capture the connection owner's BackendKeyData identity without folding it.
+pub fn WithPgDatabasePrivilegeEvaluator(
+    evaluator: Option<exprctx::PgDatabasePrivilegeEvaluator>,
+) -> EvalCtxOption {
+    Box::new(move |state| state.pg_database_privilege = evaluator)
+}
+
 pub fn WithPgBackendPid(pid: Option<i32>) -> EvalCtxOption {
     Box::new(move |state| state.pg_backend_pid = pid)
 }
@@ -336,6 +344,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
         current_db: String::new(),
         pg_current_schema: None,
         pg_backend_pid: None,
+        pg_database_privilege: None,
         current_time: Arc::new(TimeOnce::empty()),
         max_allowed_packet: vardef::DefMaxAllowedPacket,
         enable_redact_log: vardef::DefTiDBRedactLog.to_owned(),
@@ -650,6 +659,9 @@ impl exprctx::EvalContext for EvalContext {
     fn PgBackendPid(&self) -> Option<i32> {
         self.state.pg_backend_pid
     }
+    fn PgDatabasePrivilegeEvaluator(&self) -> Option<exprctx::PgDatabasePrivilegeEvaluator> {
+        self.state.pg_database_privilege.clone()
+    }
 
     fn GetMaxAllowedPacket(&self) -> u64 {
         EvalContext::GetMaxAllowedPacket(self)
@@ -725,6 +737,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithCurrentDB(context.CurrentDB()),
         WithPgCurrentSchema(context.PgCurrentSchema()),
         WithPgBackendPid(context.PgBackendPid()),
+        WithPgDatabasePrivilegeEvaluator(context.PgDatabasePrivilegeEvaluator()),
         WithCurrentTime(current_time_fn),
         WithMaxAllowedPacket(context.GetMaxAllowedPacket()),
         WithDefaultWeekFormatMode(context.GetDefaultWeekFormatMode()),

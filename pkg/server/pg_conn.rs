@@ -523,13 +523,18 @@ impl PgService {
                             match self.with_query(pid, |context| {
                                 extended.session.execute(query, context.as_ref())
                             })? {
-                                Ok(result) => crate::pg_result::write_result(
-                                    socket,
-                                    &result,
-                                    query.command(),
-                                    crate::pg_result::interval_style(&result, context.as_ref())
-                                        .map_err(io::Error::other)?,
-                                )?,
+                                Ok(result) => {
+                                    for (tag, body) in extended.session.take_database_notices() {
+                                        write_message(socket, tag, &body)?;
+                                    }
+                                    crate::pg_result::write_result(
+                                        socket,
+                                        &result,
+                                        query.command(),
+                                        crate::pg_result::interval_style(&result, context.as_ref())
+                                            .map_err(io::Error::other)?,
+                                    )?;
+                                }
                                 Err(error) => {
                                     // These sequence failures arise during execution,
                                     // after the simple-query result descriptor.

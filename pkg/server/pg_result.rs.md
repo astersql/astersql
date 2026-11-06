@@ -280,3 +280,10 @@ PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受�
 独立索引改名适配为单一RenameIndex动作时输出ALTER INDEX；DropIndexStmt输出DROP INDEX。pg13_014_differential使用独立libpq核对成功标签、SQLSTATE及恢复状态。
 
 CatalogColumnType::PgNodeTree 将目录表达式/谓词的描述映射为 pg_node_tree/194、长度-1；普通无表达式值为NULL，不冒充 text/25。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+PG18 aclitem没有typsend。NULL aclitem[]在binary模式仍为NULL；非NULL（包括显式空数组）以带源PgFunctionError拒绝42883，不把ACL字符串当二进制数组。encoding_sqlstate保留该源SQLSTATE。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

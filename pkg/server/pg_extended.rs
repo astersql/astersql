@@ -2370,6 +2370,7 @@ impl Extended {
                     }
                     context.finish_protocol_response(std::time::Duration::ZERO);
                     let mut messages = encoded?;
+                    utility_notices.extend(self.session.take_database_notices());
                     utility_notices.append(&mut messages);
                     messages = utility_notices;
 

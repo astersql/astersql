@@ -61,6 +61,7 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
         "builtinVersionSig"
             | "builtinPgVersionSig"
             | "builtinPgBackendPidSig"
+            | "builtinPgDatabasePrivilegeSig"
             | "builtinPgCurrentDatabaseSig"
             | "builtinPgCurrentSchemaSig"
             | "builtinPgTimestampTruncSig"

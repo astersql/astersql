@@ -97,3 +97,10 @@ Rust 的 `ExprBox`、`String`、`Datum`、`Column` 等由所有权和析构管�
 - 新增表达式节点种类时审查 `SetExprColumnInOperand`、`ExtractColumnsMapFromExpressions`、`MaybeOverOptimized4PlanCache` 和四个 `as_*` 方法是否需要识别它；任何结构变更都应清除相关哈希缓存。
 - 若把占位池替换成真实复用池，必须定义归还前清理规则、容量上限和并发语义，并用独立测试验证无旧数据泄漏；不能仅为性能把 Go 指针复用机械翻译到 Rust 所有权模型。
 - 对外扩展错误模板时，应决定是否只需要文本兼容，还是需要可匹配的错误码/类型；当前 `ExpressionErrorKind` 仅提供字符串构造。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+has_database_privilege加入unFoldableFunctions；常量实参也必须在执行时读取授权事实。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

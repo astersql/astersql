@@ -2875,3 +2875,9 @@
 - [ ] [`tools/tazel/ast.rs.md`](../tools/tazel/ast.rs.md)
 - [ ] [`tools/tazel/main.rs.md`](../tools/tazel/main.rs.md)
 - [ ] [`tools/tazel/util.rs.md`](../tools/tazel/util.rs.md)
+
+## 2026-11-06 数据库权限事实说明补齐
+
+- [ ] [`pkg/session/runtime/pg_database.rs.md`](../pkg/session/runtime/pg_database.rs.md)
+- [ ] [`pkg/session/runtime/pg_schema.rs.md`](../pkg/session/runtime/pg_schema.rs.md)
+- [ ] [`pkg/server/pg_sql.rs.md`](../pkg/server/pg_sql.rs.md)

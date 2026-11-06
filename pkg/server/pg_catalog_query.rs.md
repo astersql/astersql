@@ -98,3 +98,10 @@ pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通
 ## 角色 OID 反查标量入口（2026-11-06）
 
 `identity_scalar` 将无 FROM/JOIN 的 `pg_get_userbyid` 普通名、pg_catalog限定名和OID参数调用交给既有目录绑定/求值链。真实目录关系仍沿原分类，普通native FROM查询不由该新增分支接管。实际角色事实与name/19编码由`pg_catalog.rs`及现有协议层负责；真实服务回归为`pg_catalog_test::cat14_11`。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+独立has_database_privilege调用进入受限目录求值路径；含原生关系的查询保留普通执行器。增加name转换，用于明确用户name重载，不将其当任意类型转换入口。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

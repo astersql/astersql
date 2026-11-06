@@ -132,3 +132,10 @@ Go `pkg/domain/domain_test.go` 覆盖 Domain reload、关闭和外部 workload �
 中间RANGE重组还需保持原结束边界：replace_partitions记录替换区间终点，候选规范化后调用check_reorganized_end_boundary，按对应列类型比较全部LessThan分量。最后一个原分区被替换时允许改变结束边界，与Go checkAndNormalizeReorgPartitionDefinitions一致。所有检查都在catalog发布前，失败保留旧物理定义及请求。
 
 complete_postgresql_index 按数据库与持久表/索引 ID 定位，在 StatePublic 且无 backfill-merge 状态时记录 PostgreSQLBuildComplete；通过原有 mutate/KV/schema-version 发布，不修改索引身份或数据。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+PG新建数据库在身份/owner同一KV事务中向既有PgDatabaseConnect记录写入明确的默认ACL标志；原生/历史库不自动迁移，DROP仍沿原有键清理。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

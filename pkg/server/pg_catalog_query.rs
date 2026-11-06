@@ -66,6 +66,7 @@ pub(crate) enum CompareOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CastType {
+    Name,
     Boolean,
     InternalChar,
     Char,
@@ -707,6 +708,7 @@ impl Parser {
                 "boolean" | "bool" => CastType::Boolean,
                 "bigint" => CastType::Bigint,
                 "varchar" | "text" => CastType::Varchar,
+                "name" => CastType::Name,
                 "oid" => CastType::Oid,
                 "regclass" => CastType::Regclass,
                 // Keep the supported name conversion atomic: a standalone
@@ -1182,7 +1184,7 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
 // Queries with native relations retain their existing executor ownership.
 fn identity_scalar(tokens: &[Token]) -> bool {
     !tokens.iter().any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
-        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role" | "pg_get_userbyid")))
+        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role" | "pg_get_userbyid" | "has_database_privilege")))
 }
 
 // Standalone OID constants use the checked catalog codec.

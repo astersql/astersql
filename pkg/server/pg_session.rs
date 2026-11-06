@@ -41,6 +41,7 @@ pub(crate) struct PgSession {
     // Q/Parse error response and reset before the next frontend command.
     pub(crate) relation_error_position: Option<usize>,
     pub(crate) error_detail: Option<&'static str>,
+    database_notices: Vec<(u8, Vec<u8>)>,
     pub(crate) function_error_hint: Option<&'static str>,
 }
 impl Default for PgSession {
@@ -54,6 +55,7 @@ impl Default for PgSession {
             relation_error_position: None,
             function_error_hint: None,
             error_detail: None,
+            database_notices: Vec::new(),
         }
     }
 }
@@ -287,11 +289,16 @@ impl PgSession {
     ) -> crate::conn::ConnResult<Option<String>> {
         Ok(self.effective_explicit_path(context)?.into_iter().next())
     }
+    pub(crate) fn take_database_notices(&mut self) -> Vec<(u8, Vec<u8>)> {
+        std::mem::take(&mut self.database_notices)
+    }
+
     pub(crate) fn execute(
         &mut self,
         query: &SessionQuery,
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
+        self.database_notices.clear();
         let value = match query {
             SessionQuery::SetRole(role) => {
                 context.pg_set_role(role.clone())?;
@@ -403,7 +410,14 @@ impl PgSession {
                         },
                     ));
                 }
-                context.pg_database_facts(Some(command.clone()))?;
+                for fact in context.pg_database_facts(Some(command.clone()))? {
+                    if let Some((state, message)) = fact.warning {
+                        self.database_notices.push((
+                            b'N',
+                            format!("SWARNING\0VWARNING\0C{state}\0M{message}\0\0").into_bytes(),
+                        ));
+                    }
+                }
                 None
             }
             SessionQuery::SchemaUtility(command) => {
@@ -484,10 +498,16 @@ impl SessionQuery {
             Self::DatabaseUtility(command) => match command {
                 astersql_session::runtime::PgDatabaseCommand::Owner { .. }
                 | astersql_session::runtime::PgDatabaseCommand::Policy { .. } => "ALTER DATABASE",
-                astersql_session::runtime::PgDatabaseCommand::Connect { grant: true, .. } => {
+                astersql_session::runtime::PgDatabaseCommand::Privileges {
+                    grant: true, ..
+                }
+                | astersql_session::runtime::PgDatabaseCommand::Connect { grant: true, .. } => {
                     "GRANT"
                 }
-                astersql_session::runtime::PgDatabaseCommand::Connect { grant: false, .. } => {
+                astersql_session::runtime::PgDatabaseCommand::Privileges {
+                    grant: false, ..
+                }
+                | astersql_session::runtime::PgDatabaseCommand::Connect { grant: false, .. } => {
                     "REVOKE"
                 }
             },
@@ -784,6 +804,97 @@ impl SessionQuery {
                     database,
                     role,
                 })));
+            }
+        }
+        // Database ACLs reuse the shared database command and persistent Access record.
+        if word(tokens.first(), "grant") || word(tokens.first(), "revoke") {
+            if let Some(on) = tokens.iter().position(|t| word(Some(t), "on")) {
+                if word(tokens.get(on + 1), "database") {
+                    let grant = word(tokens.first(), "grant");
+                    let only_option = !grant
+                        && word(tokens.get(1), "grant")
+                        && word(tokens.get(2), "option")
+                        && word(tokens.get(3), "for");
+                    let start = if only_option { 4 } else { 1 };
+                    let mut privileges = Vec::new();
+                    for (index, token) in tokens[start..on].iter().enumerate() {
+                        if index % 2 == 1 {
+                            if word(Some(token), "privileges")
+                                && privileges == ["ALL"]
+                                && start + index + 1 == on
+                            {
+                                continue;
+                            }
+                            if *token != Token::Symbol(',') {
+                                return Err((
+                                    "42601",
+                                    "expected database privilege separator".into(),
+                                ));
+                            }
+                        } else if let Some(name) = identifier(token) {
+                            privileges.push(name.to_ascii_uppercase());
+                        } else {
+                            return Err(("42601", "expected database privilege".into()));
+                        }
+                    }
+                    let privileges = privileges.join(",");
+                    if privileges != "ALL" {
+                        astersql_session::runtime::pg_database_privileges(&privileges)
+                            .map_err(|_| ("42601", "invalid database privilege".into()))?;
+                    }
+                    let database = tokens
+                        .get(on + 2)
+                        .and_then(identifier)
+                        .ok_or_else(|| ("42601", "expected database name".into()))?;
+                    if !word(tokens.get(on + 3), if grant { "to" } else { "from" }) {
+                        return Err(("42601", "expected database grantee".into()));
+                    }
+                    let mut role = tokens
+                        .get(on + 4)
+                        .and_then(identifier)
+                        .ok_or_else(|| ("42601", "expected database grantee".into()))?;
+                    let public = word(tokens.get(on + 4), "public");
+                    if public {
+                        role = "PUBLIC".into();
+                    }
+                    let suffix = &tokens[on + 5..];
+                    let option = only_option
+                        || grant
+                            && suffix.len() == 3
+                            && word(suffix.first(), "with")
+                            && word(suffix.get(1), "grant")
+                            && word(suffix.get(2), "option");
+                    let cascade = !grant && suffix.len() == 1 && word(suffix.first(), "cascade");
+                    if !suffix.is_empty()
+                        && !(grant && option
+                            || !grant
+                                && suffix.len() == 1
+                                && (cascade || word(suffix.first(), "restrict")))
+                    {
+                        return Err(("0A000", "unsupported database grant syntax".into()));
+                    }
+                    if privileges == "CONNECT"
+                        && !option
+                        && !cascade
+                        && suffix.is_empty()
+                        && (public || role != "PUBLIC")
+                    {
+                        return Ok(Some(Self::DatabaseUtility(PgDatabaseCommand::Connect {
+                            database,
+                            role,
+                            grant,
+                        })));
+                    }
+                    return Ok(Some(Self::DatabaseUtility(PgDatabaseCommand::Privileges {
+                        database,
+                        role,
+                        public,
+                        privileges,
+                        grant,
+                        grant_option: option,
+                        cascade,
+                    })));
+                }
             }
         }
         if tokens.len() == 7

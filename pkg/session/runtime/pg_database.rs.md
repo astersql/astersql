@@ -1,0 +1,19 @@
+# `pkg/session/runtime/pg_database.rs`
+
+共享PostgreSQL角色身份、成员边及数据库owner/连接策略的持久事实提供者。角色OID复用PgDatabaseRoleIds，原生账户和成员图仍是身份/成员存在性的来源；旧属性缺源不从当前调用者或MySQL超级权限推断。
+
+## 数据库ACL
+
+`Access`沿既有`PgDatabaseConnect`键扩展可空ACL条目和default_acl标志。旧记录没有ACL为未知；PG新建库在建库事务中明确登记默认ACL，由持久owner展开PUBLIC的TEMPORARY/CONNECT和owner全部普通权限。默认ACL投影NULL，后续显式授权保存真实grantor/grantee、三种权限及各自grant option，显式空数组不等于默认NULL。
+
+`PgDatabaseCommand::Connect/Privileges`在现有事务中验证角色、选择真实owner/继承grantor、写入或撤销条目；grant option撤销按RESTRICT拒绝悬空委派或按CASCADE清理依赖。owner变更更新ACL两端并合并重复条目，角色删除拒绝遗留ACL引用。旧CONNECT策略仍可由原管理员维护，但不升级成虚构的完整ACL。
+
+`PgDatabaseFact::has_privilege`与`pg_has_database_privilege`对接角色USAGE继承闭包、PUBLIC、显式PG超级用户及owner固有grant authority。普通owner权限仍可撤销。权限字符串先完整校验再应用逗号任一语义；NULL严格传播、数据库不存在OID返回NULL、名称不存在/错误权限保留PG SQLSTATE。`acl_text`分别处理角色名和数组转义。
+
+`pg_require_database_privilege`供实际CREATE SCHEMA/TEMP分配复用；CONNECT消费者沿can_connect读取同一ACL。所有缓存限于当前执行，不创建第二套会话授权状态。bootstrap root维护历史库仍沿既有边界；历史ACL未知的目录/函数读取保持0A000。
+
+验证入口：server真实Domain、ConcreteSessionDriver与PgService回归`pg_catalog_test::cat14_17`，共享回归`runtime::pg_database_test`。并发ACL/成员快照一致性仍沿后续专项目标，未新增全局原子快照保证。
+
+旧数据库单纯策略读取不要求完整PG角色快照；角色事实惰性加载到确需继承/ACL判定的路径。损坏ACL/未知身份在写操作前及事务提交前验证，授权失败不产生部分写入，回归通过真实KV故障注入保留这一边界。
+
+PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"PUBLIC"分开；后者使用稳定角色OID，不能扩大为全体授权。

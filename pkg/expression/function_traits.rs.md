@@ -90,3 +90,10 @@ Rust [`function_traits_test.rs`](function_traits_test.rs) 保留同一测试意�
 测试必须继续放在独立文件中。直接分类行为应扩展 [`function_traits_test.rs`](function_traits_test.rs)，至少覆盖命中与未命中、会话开关分支及精确注册表决策；新增 inference builtin 还应同步相关独立 builtin 测试。行为来自 Go 移植时，应同步核对 [`function_traits.go`](function_traits.go) 和 [`function_traits_test.go`](function_traits_test.go)，保留 Go 的安全约束，不用缩减快照来绕过失败。
 
 兼容性风险集中在错误分类：漏标可导致错误复用计划、规划期提前求值、删除副作用表达式或允许不安全生成列；误标会降低缓存/折叠收益或拒绝原本合法的 SQL。性能风险通常不是单次哈希查询，而是新增策略是否迫使更多表达式退出缓存、折叠或去重。名称必须使用解析器/注册表实际采用的规范拼写。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+has_database_privilege登记不可缓存、不能用于生成列及会话相关函数策略，保持授权变化和有效角色变化可观察。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

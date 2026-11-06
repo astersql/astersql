@@ -84,3 +84,10 @@ Rust 相比当前 Go 文件新增/显式化了 `ParseSQL` 默认覆盖点、`Get
 ## 2026-10-24 规划求值身份与缓存隔离
 
 EvalContext::SQLDialect 默认 MySQL，旧调用保留原语义；BuildContext 从其 EvalContext 读取同一身份。截断求值包装显式转发身份，空拒绝、常量传播与构建包装通过原 GetEvalCtx 保真。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+PgDatabasePrivilegeEvaluator是语句拥有的数据库权限回调，输入为SQL可空文本载体及OID身份标志，输出可空bool或带源错误。缺提供者保持显式不可用；context包装器完整转发。表达式层不持有具体Session或连接。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

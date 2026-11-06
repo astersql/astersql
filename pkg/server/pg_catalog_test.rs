@@ -15455,3 +15455,773 @@ fn cat14_14() {
         "cat14_14: persistent_owner=2 table_index_view_sequence=4 reader_connections=2 stable_relation_oid=4 role_join=1 binary_text=12 legacy_rejection=1 transaction_recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn cat14_17() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_17_db").unwrap();
+    native.execute("CREATE DATABASE cat14_17_legacy").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_17_legacy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_17_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_17_created")
+            .unwrap();
+        for name in [
+            "cat14_17_reader",
+            "cat14_17_owner",
+            "cat14_17_other",
+            "cat14_17_member",
+            "PUBLIC",
+        ] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_database(user, "cat14_17_db");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = 1262u32;
+            let attr = [18i16][index];
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    let mut admin = connect("root");
+    for role in ["owner", "reader", "other", "member"] {
+        ok(&mut admin, &format!("CREATE ROLE cat14_17_{role} LOGIN"));
+    }
+    ok(&mut admin, "CREATE ROLE \"PUBLIC\" NOLOGIN");
+    ok(&mut admin, "CREATE DATABASE cat14_17_created");
+    ok(
+        &mut admin,
+        "ALTER DATABASE cat14_17_created OWNER TO cat14_17_owner",
+    );
+    native
+        .execute("CREATE TABLE cat14_17_created.cat14_17_probe (id integer)")
+        .unwrap();
+    native
+        .execute("INSERT INTO cat14_17_created.cat14_17_probe VALUES (17)")
+        .unwrap();
+    native
+        .execute("GRANT SELECT ON cat14_17_created.cat14_17_probe TO 'cat14_17_reader'@'%'")
+        .unwrap();
+    let mut reader = connect("cat14_17_reader");
+    let result = ok(
+        &mut reader,
+        "SELECT has_database_privilege('cat14_17_created','CONNECT'),has_database_privilege('cat14_17_created','TEMPORARY'),has_database_privilege('cat14_17_created','CREATE')",
+    );
+    assert_eq!(
+        values(&data(&result)[0]),
+        vec![
+            Some(b"t".to_vec()),
+            Some(b"t".to_vec()),
+            Some(b"f".to_vec())
+        ]
+    );
+
+    fn row(s: &mut TcpStream, sql: &str) -> Vec<Option<Vec<u8>>> {
+        let r = ok(s, sql);
+        assert_eq!(data(&r).len(), 1, "{sql}: {r:?}");
+        values(&data(&r)[0])
+    }
+    fn bools(s: &mut TcpStream, sql: &str, expected: &[Option<bool>]) {
+        let r = ok(s, sql);
+        assert_eq!(
+            columns(&r.iter().find(|m| m.0 == b'T').unwrap().1)
+                .iter()
+                .map(|c| c.1)
+                .collect::<Vec<_>>(),
+            vec![16; expected.len()]
+        );
+        assert!(
+            columns(&r.iter().find(|m| m.0 == b'T').unwrap().1)
+                .iter()
+                .all(|c| c.0 == "has_database_privilege")
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        let description = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        let mut at = 2;
+        for _ in expected {
+            at += description[at..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&description[at..at + 4], &0u32.to_be_bytes());
+            assert_eq!(&description[at + 4..at + 6], &0i16.to_be_bytes());
+            assert_eq!(&description[at + 10..at + 12], &1i16.to_be_bytes());
+            assert_eq!(&description[at + 12..at + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&description[at + 16..at + 18], &0i16.to_be_bytes());
+            at += 18;
+        }
+        assert_eq!(
+            values(&data(&r)[0]),
+            expected
+                .iter()
+                .map(|v| v.map(|v| if v { b"t".to_vec() } else { b"f".to_vec() }))
+                .collect::<Vec<_>>(),
+            "{sql}"
+        );
+    }
+    let acl_sql = "SELECT datacl FROM pg_database WHERE datname='cat14_17_created'";
+    let initial = ok(&mut reader, acl_sql);
+    description(&initial, &[(1034, -1)], 0);
+    assert_eq!(values(&data(&initial)[0]), vec![None]);
+    denied(
+        &mut reader,
+        "SELECT datacl FROM pg_database WHERE datname='cat14_17_legacy'",
+        "0A000",
+        b'I',
+    );
+    let database_oid = String::from_utf8(
+        row(
+            &mut reader,
+            "SELECT oid FROM pg_database WHERE datname='cat14_17_created'",
+        )[0]
+        .clone()
+        .unwrap(),
+    )
+    .unwrap();
+    let reader_oid = native.pg_database_role_id("cat14_17_reader").unwrap();
+    for user in [
+        "'cat14_17_reader'".to_owned(),
+        "'cat14_17_reader'::name".to_owned(),
+        format!("{reader_oid}::oid"),
+    ] {
+        for object in [
+            "'cat14_17_created'".to_owned(),
+            format!("{database_oid}::oid"),
+        ] {
+            bools(
+                &mut reader,
+                &format!(
+                    "SELECT has_database_privilege({user},{object},'CREATE'),has_database_privilege({user},{object},'TEMP'),has_database_privilege({user},{object},'CREATE,CONNECT'),has_database_privilege({user},{object},'CONNECT WITH GRANT OPTION')"
+                ),
+                &[Some(false), Some(true), Some(true), Some(false)],
+            );
+        }
+    }
+    bools(
+        &mut reader,
+        "SELECT has_database_privilege(NULL::oid,'CONNECT'),has_database_privilege(0::oid,'CONNECT'),has_database_privilege('cat14_17_created',NULL),has_database_privilege(NULL::oid,'cat14_17_created','CONNECT')",
+        &[None, None, None, None],
+    );
+    denied(
+        &mut reader,
+        "SELECT has_database_privilege('cat14_17_absent','CONNECT')",
+        "3D000",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT has_database_privilege('absent_role','cat14_17_created','CONNECT')",
+        "42704",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT has_database_privilege('cat14_17_created','CONNECT,BOGUS')",
+        "22023",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT has_database_privilege(0::oid,'BOGUS')",
+        "22023",
+        b'I',
+    );
+    let mut owner = connect_database("cat14_17_owner", "cat14_17_created");
+    let mut other = connect_database("cat14_17_other", "cat14_17_created");
+    let mut worker = connect_database("cat14_17_reader", "cat14_17_created");
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege('cat14_17_created','CONNECT') FROM cat14_17_probe",
+        &[Some(true)],
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(NULL,'CONNECT') FROM cat14_17_probe",
+        &[None],
+    );
+    denied(
+        &mut worker,
+        "CREATE SCHEMA cat14_17_forbidden",
+        "42501",
+        b'I',
+    );
+
+    fn acl_binary(s: &mut TcpStream, default: bool) {
+        send(
+            s,
+            b'P',
+            &[
+                b"acl_binary\0SELECT datacl FROM pg_database WHERE datname='cat14_17_created'\0"
+                    .as_slice(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'S', b"");
+        let parsed = until_ready(s);
+        assert!(!parsed.iter().any(|m| m.0 == b'E'), "{parsed:?}");
+        send(
+            s,
+            b'B',
+            &[
+                b"acl_binary_portal\0acl_binary\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"Pacl_binary_portal\0");
+        send(
+            s,
+            b'E',
+            &[b"acl_binary_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', b"");
+        let result = until_ready(s);
+        if default {
+            assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+            description(&result, &[(1034, -1)], 1);
+            assert_eq!(values(&data(&result)[0]), vec![None]);
+        } else {
+            assert!(
+                result
+                    .iter()
+                    .any(|(tag, body)| *tag == b'E' && body.windows(7).any(|w| w == b"C42883\0")),
+                "{result:?}"
+            );
+            assert!(data(&result).is_empty());
+        }
+        assert_eq!(result.last(), Some(&(b'Z', vec![b'I'])));
+        for name in [
+            b"Pacl_binary_portal\0".as_slice(),
+            b"Sacl_binary\0".as_slice(),
+        ] {
+            send(s, b'C', name);
+            send(s, b'S', b"");
+            until_ready(s);
+        }
+    }
+    acl_binary(&mut worker, true);
+    ok(
+        &mut owner,
+        "REVOKE CONNECT,TEMPORARY ON DATABASE cat14_17_created FROM PUBLIC",
+    );
+
+    ok(
+        &mut owner,
+        "GRANT CREATE ON DATABASE cat14_17_created TO \"PUBLIC\"",
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege('PUBLIC','cat14_17_created','CREATE'),has_database_privilege('public','cat14_17_created','CREATE')",
+        &[Some(true), Some(false)],
+    );
+    let quoted_acl = String::from_utf8(row(&mut worker, acl_sql)[0].clone().unwrap()).unwrap();
+    assert!(
+        quoted_acl.contains("PUBLIC=C/cat14_17_owner"),
+        "{quoted_acl}"
+    );
+    ok(
+        &mut owner,
+        "REVOKE CREATE ON DATABASE cat14_17_created FROM \"PUBLIC\"",
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(current_database(),'CONNECT'),has_database_privilege(current_database(),'TEMPORARY')",
+        &[Some(false), Some(false)],
+    );
+    denied(
+        &mut worker,
+        "CREATE TEMP TABLE cat14_17_tmp (id integer)",
+        "42501",
+        b'I',
+    );
+    // Revoking CONNECT affects new connections; an existing connection still reads the public catalog.
+    let mut rejected = TcpStream::connect(address).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0cat14_17_reader\0database\0cat14_17_created\0\0",
+    ]
+    .concat();
+    rejected
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    rejected.write_all(&startup).unwrap();
+    let (mut tag, mut body) = read(&mut rejected);
+    while tag != b'E' {
+        (tag, body) = read(&mut rejected);
+    }
+    assert_eq!(tag, b'E');
+    assert!(body.windows(7).any(|w| w == b"C42501\0"));
+    denied(
+        &mut worker,
+        "GRANT CREATE ON DATABASE cat14_17_created TO cat14_17_other",
+        "42501",
+        b'I',
+    );
+    ok(
+        &mut owner,
+        "GRANT CONNECT,TEMPORARY,CREATE ON DATABASE cat14_17_created TO cat14_17_reader WITH GRANT OPTION",
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(current_database(),'CONNECT'),has_database_privilege(current_database(),'TEMPORARY'),has_database_privilege(current_database(),'CREATE'),has_database_privilege(current_database(),'CREATE WITH GRANT OPTION')",
+        &[Some(true); 4],
+    );
+    let acl = String::from_utf8(row(&mut worker, acl_sql)[0].clone().unwrap()).unwrap();
+    assert!(
+        acl.contains("cat14_17_reader=C*T*c*/cat14_17_owner"),
+        "{acl}"
+    );
+    denied(&mut other, "SELECT id FROM cat14_17_probe", "42501", b'I');
+    native
+        .execute("REVOKE SELECT ON cat14_17_created.cat14_17_probe FROM 'cat14_17_reader'@'%'")
+        .unwrap();
+    denied(&mut worker, "SELECT id FROM cat14_17_probe", "42501", b'I');
+    native
+        .execute("GRANT SELECT ON cat14_17_created.cat14_17_probe TO 'cat14_17_reader'@'%'")
+        .unwrap();
+    ok(&mut worker, "CREATE SCHEMA cat14_17_allowed");
+    ok(&mut worker, "CREATE TEMP TABLE cat14_17_tmp (id integer)");
+    ok(&mut worker, "INSERT INTO cat14_17_tmp VALUES (17)");
+    assert_eq!(
+        row(&mut worker, "SELECT id FROM cat14_17_tmp"),
+        vec![Some(b"17".to_vec())]
+    );
+    ok(
+        &mut worker,
+        "GRANT CREATE ON DATABASE cat14_17_created TO cat14_17_other",
+    );
+    let acl = String::from_utf8(row(&mut other, acl_sql)[0].clone().unwrap()).unwrap();
+    assert!(acl.contains("cat14_17_other=C/cat14_17_reader"), "{acl}");
+    denied(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR CREATE ON DATABASE cat14_17_created FROM cat14_17_reader",
+        "2BP01",
+        b'I',
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(current_database(),'CREATE WITH GRANT OPTION')",
+        &[Some(true)],
+    );
+    ok(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR CREATE ON DATABASE cat14_17_created FROM cat14_17_reader CASCADE",
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(current_database(),'CREATE WITH GRANT OPTION'),has_database_privilege(current_database(),'CREATE')",
+        &[Some(false), Some(true)],
+    );
+    bools(
+        &mut other,
+        "SELECT has_database_privilege(current_database(),'CREATE')",
+        &[Some(false)],
+    );
+    let warning = ok(
+        &mut worker,
+        "GRANT CREATE ON DATABASE cat14_17_created TO cat14_17_other",
+    );
+    assert!(
+        warning
+            .iter()
+            .any(|(tag, body)| *tag == b'N' && body.windows(7).any(|w| w == b"C01007\0")),
+        "{warning:?}"
+    );
+    bools(
+        &mut other,
+        "SELECT has_database_privilege(current_database(),'CREATE')",
+        &[Some(false)],
+    );
+
+    // CREATE/TEMPORARY revocation reaches their execution consumers immediately.
+    ok(
+        &mut owner,
+        "REVOKE CREATE,TEMPORARY ON DATABASE cat14_17_created FROM cat14_17_reader",
+    );
+    denied(
+        &mut worker,
+        "CREATE SCHEMA cat14_17_after_revoke",
+        "42501",
+        b'I',
+    );
+    denied(
+        &mut worker,
+        "CREATE TEMP TABLE cat14_17_tmp_after (id integer)",
+        "42501",
+        b'I',
+    );
+    assert_eq!(
+        row(&mut worker, "SELECT id FROM cat14_17_tmp"),
+        vec![Some(b"17".to_vec())]
+    );
+    ok(
+        &mut owner,
+        "GRANT CONNECT ON DATABASE cat14_17_created TO cat14_17_other",
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_17_other TO cat14_17_member WITH INHERIT TRUE, SET TRUE",
+    );
+    let mut member = connect_database("cat14_17_member", "cat14_17_created");
+    bools(
+        &mut member,
+        "SELECT has_database_privilege(current_database(),'CONNECT')",
+        &[Some(true)],
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_17_other TO cat14_17_member WITH INHERIT FALSE, SET TRUE",
+    );
+    bools(
+        &mut member,
+        "SELECT has_database_privilege(current_database(),'CONNECT')",
+        &[Some(false)],
+    );
+    ok(&mut member, "SET ROLE cat14_17_other");
+    bools(
+        &mut member,
+        "SELECT has_database_privilege(current_database(),'CONNECT')",
+        &[Some(true)],
+    );
+    ok(&mut member, "RESET ROLE");
+    // Reuse a prepared query across a grant change; both OID formats and SQL NULL are covered.
+    send(
+        &mut worker,
+        b'P',
+        &[
+            b"db_priv\0SELECT has_database_privilege($1,$2)\0".as_slice(),
+            &2i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+            &25u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut worker, b'D', b"Sdb_priv\0");
+    send(&mut worker, b'S', b"");
+    let parsed = until_ready(&mut worker);
+    assert!(!parsed.iter().any(|m| m.0 == b'E'), "{parsed:?}");
+    for granted in [true, false] {
+        ok(
+            &mut owner,
+            if granted {
+                "GRANT CREATE ON DATABASE cat14_17_created TO cat14_17_reader"
+            } else {
+                "REVOKE CREATE ON DATABASE cat14_17_created FROM cat14_17_reader"
+            },
+        );
+        domain.force_full_reload_for_test().unwrap();
+        for binary in [0i16, 1] {
+            for object in [Some(database_oid.parse::<u32>().unwrap()), None, Some(0)] {
+                let mut bind = b"db_priv_portal\0db_priv\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                bind.extend(2i16.to_be_bytes());
+                let parameter = object.map(|oid| {
+                    if binary == 1 {
+                        oid.to_be_bytes().to_vec()
+                    } else {
+                        oid.to_string().into_bytes()
+                    }
+                });
+                bind.extend(
+                    parameter
+                        .as_ref()
+                        .map_or(-1, |v| v.len() as i32)
+                        .to_be_bytes(),
+                );
+                if let Some(p) = parameter {
+                    bind.extend(p);
+                }
+                bind.extend(6i32.to_be_bytes());
+                bind.extend(b"CREATE");
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                send(&mut worker, b'B', &bind);
+                send(&mut worker, b'D', b"Pdb_priv_portal\0");
+                send(
+                    &mut worker,
+                    b'E',
+                    &[b"db_priv_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut worker, b'S', b"");
+                let result = until_ready(&mut worker);
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+                let expected = if object.is_none() || object == Some(0) {
+                    None
+                } else if binary == 1 {
+                    Some(vec![u8::from(granted)])
+                } else {
+                    Some(if granted {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    })
+                };
+                assert_eq!(values(&data(&result)[0]), vec![expected]);
+                assert_eq!(result.last(), Some(&(b'Z', vec![b'I'])));
+                send(&mut worker, b'C', b"Pdb_priv_portal\0");
+                send(&mut worker, b'S', b"");
+                until_ready(&mut worker);
+            }
+        }
+    }
+    let begun = ok(&mut worker, "BEGIN");
+    assert_eq!(begun.last(), Some(&(b'Z', vec![b'T'])));
+    denied(
+        &mut worker,
+        "SELECT has_database_privilege('cat14_17_created','BOGUS')",
+        "22023",
+        b'E',
+    );
+    denied(&mut worker, acl_sql, "25P02", b'E');
+    ok(&mut worker, "ROLLBACK");
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege(current_database(),'CONNECT')",
+        &[Some(true)],
+    );
+    // Explicit empty ACL remains distinct from the initial default NULL. Owner still holds grant authority.
+    ok(
+        &mut owner,
+        "REVOKE ALL ON DATABASE cat14_17_created FROM cat14_17_reader CASCADE",
+    );
+    ok(
+        &mut owner,
+        "REVOKE ALL ON DATABASE cat14_17_created FROM cat14_17_other CASCADE",
+    );
+    ok(
+        &mut owner,
+        "REVOKE ALL ON DATABASE cat14_17_created FROM cat14_17_owner CASCADE",
+    );
+    assert_eq!(row(&mut worker, acl_sql), vec![Some(b"{}".to_vec())]);
+    acl_binary(&mut worker, false);
+    bools(
+        &mut owner,
+        "SELECT has_database_privilege(current_database(),'CONNECT'),has_database_privilege(current_database(),'CONNECT WITH GRANT OPTION')",
+        &[Some(false), Some(true)],
+    );
+    ok(
+        &mut owner,
+        "GRANT CONNECT ON DATABASE cat14_17_created TO PUBLIC",
+    );
+    bools(
+        &mut worker,
+        "SELECT has_database_privilege('public',current_database(),'CONNECT'),has_database_privilege('public',current_database(),'CREATE')",
+        &[Some(true), Some(false)],
+    );
+
+    // Explicit name/OID users have separate formal overloads. Bind both formats and NULL users.
+    for user_type in [19u32, 26] {
+        send(
+            &mut worker,
+            b'P',
+            &[
+                b"db_priv_user\0SELECT has_database_privilege($1,$2,$3)\0".as_slice(),
+                &3i16.to_be_bytes(),
+                &user_type.to_be_bytes(),
+                &26u32.to_be_bytes(),
+                &25u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut worker, b'S', b"");
+        let parsed = until_ready(&mut worker);
+        assert!(!parsed.iter().any(|m| m.0 == b'E'), "{parsed:?}");
+        for binary in [0i16, 1] {
+            for null_user in [false, true] {
+                let user = if null_user {
+                    None
+                } else if user_type == 19 {
+                    Some(b"cat14_17_reader".to_vec())
+                } else if binary == 1 {
+                    Some((reader_oid as u32).to_be_bytes().to_vec())
+                } else {
+                    Some(reader_oid.to_string().into_bytes())
+                };
+                let object = if binary == 1 {
+                    database_oid.parse::<u32>().unwrap().to_be_bytes().to_vec()
+                } else {
+                    database_oid.as_bytes().to_vec()
+                };
+                let mut bind = b"db_priv_user_portal\0db_priv_user\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                bind.extend(3i16.to_be_bytes());
+                for value in [user, Some(object), Some(b"CONNECT".to_vec())] {
+                    bind.extend(value.as_ref().map_or(-1, |v| v.len() as i32).to_be_bytes());
+                    if let Some(v) = value {
+                        bind.extend(v);
+                    }
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                send(&mut worker, b'B', &bind);
+                send(&mut worker, b'D', b"Pdb_priv_user_portal\0");
+                send(
+                    &mut worker,
+                    b'E',
+                    &[b"db_priv_user_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut worker, b'S', b"");
+                let result = until_ready(&mut worker);
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+                assert_eq!(
+                    values(&data(&result)[0]),
+                    vec![if null_user {
+                        None
+                    } else if binary == 1 {
+                        Some(vec![1])
+                    } else {
+                        Some(b"t".to_vec())
+                    }]
+                );
+                let desc = &result.iter().find(|m| m.0 == b'T').unwrap().1;
+                let at = 2 + desc[2..].iter().position(|b| *b == 0).unwrap() + 1;
+                assert_eq!(&desc[at..at + 4], &0u32.to_be_bytes());
+                assert_eq!(&desc[at + 4..at + 6], &0i16.to_be_bytes());
+                assert_eq!(&desc[at + 6..at + 10], &16u32.to_be_bytes());
+                assert_eq!(&desc[at + 10..at + 12], &1i16.to_be_bytes());
+                assert_eq!(&desc[at + 12..at + 16], &(-1i32).to_be_bytes());
+                assert_eq!(&desc[at + 16..at + 18], &binary.to_be_bytes());
+                assert_eq!(result.last(), Some(&(b'Z', vec![b'I'])));
+                send(&mut worker, b'C', b"Pdb_priv_user_portal\0");
+                send(&mut worker, b'S', b"");
+                until_ready(&mut worker);
+            }
+        }
+        send(&mut worker, b'C', b"Sdb_priv_user\0");
+        send(&mut worker, b'S', b"");
+        until_ready(&mut worker);
+    }
+    send(&mut worker, b'C', b"Sdb_priv\0");
+    send(&mut worker, b'S', b"");
+    until_ready(&mut worker);
+    for c in [
+        &mut worker,
+        &mut other,
+        &mut owner,
+        &mut member,
+        &mut reader,
+        &mut admin,
+    ] {
+        send(c, b'X', b"");
+    }
+}

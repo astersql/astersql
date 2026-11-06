@@ -757,6 +757,9 @@ fn adapt_create(
         .get(table)
         .is_some_and(|t| t.word("temporary") || t.word("temp"))
     {
+        if tokens[table].word("temp") {
+            edits.insert(tokens[table].start, (tokens[table].end, "TEMPORARY".into()));
+        }
         table += 1;
     }
     if !tokens.get(table).is_some_and(|t| t.word("table")) {

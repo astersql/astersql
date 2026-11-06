@@ -2096,6 +2096,7 @@ impl ConcreteSession {
                     | "current_schema"
                     | "pg_typeof"
                     | "pg_backend_pid"
+                    | "has_database_privilege"
                     | "version"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -2123,19 +2124,57 @@ impl ConcreteSession {
                 )
             })?;
             let mut arguments: Vec<Box<dyn astersql_expression::Expression>> = Vec::new();
-            for (argument, input) in Args.iter().zip(inputs) {
-                let mut value = self
-                    .relational_query_expression_value(argument, row, group_rows)?
+            let mut strict_database_null = false;
+            for (argument, mut input) in Args.iter().zip(inputs) {
+                if FnName.L == "has_database_privilege"
+                    && input.GetType() == astersql_parser_mysql::r#type::TypeNull
+                {
+                    // Unknown literals take the selected text/name input type; an actual NULL Datum remains NULL.
+                    input = astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeVarString,
+                    );
+                }
+                let text = self.relational_query_expression_value(argument, row, group_rows)?;
+                strict_database_null |= text.is_none();
+                let mut value = text
                     .map(|text| astersql_expression::NewStrConst(&text))
                     .unwrap_or_else(astersql_expression::NewNull);
                 value.RetType = Some(input);
                 arguments.push(Box::new(value));
             }
+            let database_privilege = if FnName.L == "has_database_privilege"
+                && !strict_database_null
+            {
+                let facts = self.pg_database_facts(None)?;
+                let snapshot = self.domain.info_schema();
+                let databases = snapshot
+                    .AllSchemas()
+                    .into_iter()
+                    .filter_map(|s| {
+                        facts
+                            .iter()
+                            .find(|f| f.id == s.id)
+                            .map(|f| (s.name.original.clone(), f.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                let roles = self.pg_role_facts()?;
+                let actor = self.pg_schema_identity();
+                Some(Arc::new(move |values: &[Option<String>], oids: &[bool]| {
+                    pg_database::pg_has_database_privilege(&databases, &roles, &actor, values, oids)
+                        .map_err(SessionError::into_shared)
+                })
+                    as astersql_expression::exprctx::PgDatabasePrivilegeEvaluator)
+            } else {
+                None
+            };
             let context = astersql_expression_exprstatic::NewExprContext(vec![
                 astersql_expression_exprstatic::WithEvalCtx(Arc::new(
                     astersql_expression_exprstatic::NewEvalContext(vec![
                         astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
                         astersql_expression_exprstatic::WithCurrentDB(self.current_database()),
+                        astersql_expression_exprstatic::WithPgDatabasePrivilegeEvaluator(
+                            database_privilege,
+                        ),
                         astersql_expression_exprstatic::WithPgBackendPid(
                             astersql_expression::pg_backend_pid(self.connection_id()),
                         ),
@@ -2202,7 +2241,7 @@ impl ConcreteSession {
                     )
                 })?;
             return Ok((!null).then(|| {
-                if FnName.L == "isempty" {
+                if matches!(FnName.L.as_str(), "isempty" | "has_database_privilege") {
                     if value == 0 {
                         "f".to_owned()
                     } else {
@@ -3564,6 +3603,7 @@ impl ConcreteSession {
                                 | "current_schema"
                                 | "pg_typeof"
                                 | "pg_backend_pid"
+                                | "has_database_privilege"
                                 | "version"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -4877,6 +4917,7 @@ impl ConcreteSession {
                             | "current_schema"
                             | "pg_typeof"
                             | "pg_backend_pid"
+                            | "has_database_privilege"
                             | "version"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -5789,8 +5830,10 @@ impl ConcreteSession {
             ast::ExprKind::Value(_) => Some("?column?".into()),
             ast::ExprKind::Column(column) => Some(column.Name.O.clone()),
             ast::ExprKind::Function { FnName, Schema, .. }
-                if FnName.L == "current_schema"
-                    && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+                if matches!(
+                    FnName.L.as_str(),
+                    "current_schema" | "has_database_privilege"
+                ) && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
             {
                 Some(FnName.L.clone())
             }
@@ -6563,6 +6606,7 @@ impl ConcreteSession {
                         | "current_schema"
                         | "pg_typeof"
                         | "pg_backend_pid"
+                        | "has_database_privilege"
                         | "version"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -6583,7 +6627,7 @@ impl ConcreteSession {
                                 .expect("validated array append signature"),
                         );
                     }
-                    if FnName.L == "isempty" {
+                    if matches!(FnName.L.as_str(), "isempty" | "has_database_privilege") {
                         result.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
                     }
                     return result;
@@ -8252,6 +8296,34 @@ impl ConcreteSession {
                 } else {
                     table_source.Source.Schema.L.as_str()
                 };
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if let Some(model) = self
+                        .local_temporary_table(table_database, relation_name(&table_source.Source))
+                    {
+                        // Database TEMPORARY authorizes creation. An existing connection-owned
+                        // relation retains its owner rights after that database privilege is revoked.
+                        let owner = model.PostgreSQLOwner.ok_or_else(|| {
+                            super::pg_schema::namespace_error(
+                                "0A000",
+                                "temporary relation owner is unavailable",
+                            )
+                        })?;
+                        let facts = self.pg_role_facts()?;
+                        let actor = self.pg_schema_identity();
+                        let member = facts
+                            .iter()
+                            .find(|f| f.name == actor)
+                            .ok_or_else(|| {
+                                super::pg_schema::namespace_error("42704", "role does not exist")
+                            })?
+                            .oid;
+                        if actor == "root"
+                            || pg_database::pg_role_reachable(&facts, member, owner, "USAGE")?
+                        {
+                            continue;
+                        }
+                    }
+                }
                 if !privileges.RequestVerification(
                     &active_roles,
                     user,

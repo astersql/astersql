@@ -152,3 +152,10 @@ PG10-10：关系适配入口保留解析器类型化能力拒绝为0A000，复�
 只读 CTE 求值门禁：显式 MATERIALIZED/NOT MATERIALIZED、SEARCH/CYCLE、行锁和已知 volatile/序列调用在名称分析阶段返回 0A000，保留原始关键字，不改写为普通 SELECT。共享执行层另外对未建立纯度证据的函数/变量保留执行门槛。
 
 check_index_options 同时拒绝无持久事实支撑的 NULLS NOT DISTINCT、CONCURRENTLY、CLUSTER 与 ALTER TABLE REPLICA IDENTITY；采用词元而非字符串替换，避免接受后目录伪报默认状态。pg13_017_differential 保存合法参考端行为及产品0A000、恢复与无残留证据。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+无显式schema的CREATE TEMP TABLE跳过显式search_path schema的CREATE判断；临时命名空间归连接所有，数据库TEMPORARY在共享分配器检查。普通永久关系绑定保持原有schema门禁。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

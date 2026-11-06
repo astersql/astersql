@@ -274,3 +274,10 @@ PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受�
 ## 索引DDL路径解析（2026-11-05）
 
 扩展Parse入口通过pg_sql::adapt_with_session使用连接实际有效search_path，与Q共用目录OID到存储表内索引的解析；后续仍走现有Prepare/Bind/Execute执行。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+扩展协议把共享数据库授权命令的通知加入portal本次已编码响应；后续分页/重执行沿现有缓存语义，不能重复触发授权写入。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

@@ -226,3 +226,10 @@ RustCodeGraph 将本文件标记为被 73 个文件使用；这个数字包含�
 ## 2026-10-24 规划求值身份与缓存隔离
 
 WithSQLDialect 将连接方言保存为独立于系统变量的静态快照，默认 MySQL；Apply、LoadSystemVars 和 MakeEvalContextStatic 均保留身份，trait 调用与具体类型读取一致。只新增 parser_ast 内部 path 依赖。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+WithPgDatabasePrivilegeEvaluator为当前语句设置不可变事实回调，Clone及MakeEvalContextStatic保留同一语句快照。缺少回调时由正式builtin拒绝；不会生成默认授权结果。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

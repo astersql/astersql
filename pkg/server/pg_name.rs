@@ -324,6 +324,19 @@ impl Resolver<'_> {
                 return None;
             }
             let name = parts.last().unwrap().clone();
+            // A local temporary relation belongs to the connection's temporary namespace,
+            // independently of CREATE in its explicit search_path schemas. The shared
+            // allocator enforces database TEMPORARY before creating any local metadata.
+            if self.create
+                && schema.is_none()
+                && self
+                    .tokens
+                    .iter()
+                    .take(3)
+                    .any(|t| t.word("temp") || t.word("temporary"))
+            {
+                return Some(Ok(name));
+            }
             let bound = context.pg_bind_relation(schema.clone(), name.clone(), self.create);
             // DROP IF EXISTS still binds the namespace but must not require the
             // relation to exist. Preserve that established utility behavior.

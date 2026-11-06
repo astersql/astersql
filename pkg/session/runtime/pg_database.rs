@@ -17,6 +17,16 @@ pub enum PgDatabaseCommand {
         is_template: Option<bool>,
         allow_connections: Option<bool>,
     },
+    Privileges {
+        database: String,
+        role: String,
+        /// PUBLIC is a role specification, not a role-name sentinel.
+        public: bool,
+        privileges: String,
+        grant: bool,
+        grant_option: bool,
+        cascade: bool,
+    },
     Connect {
         database: String,
         role: String,
@@ -30,6 +40,11 @@ pub struct PgDatabaseFact {
     pub id: i64,
     pub owner: Option<(i64, String)>,
     pub can_connect: bool,
+    /// None is an unmigrated ACL, distinct from a default ACL or explicit empty ACL.
+    pub acl: Option<Vec<PgDatabaseGrant>>,
+    pub acl_default: bool,
+    /// Transient command diagnostic; never persisted as an ACL attribute.
+    pub warning: Option<(&'static str, String)>,
     pub is_template: Option<bool>,
     pub allow_connections: Option<bool>,
     pub roles: Arc<BTreeMap<i64, String>>,
@@ -180,14 +195,249 @@ struct DatabasePolicy {
 struct Access {
     public: bool,
     roles: BTreeSet<i64>,
+    #[serde(default)]
+    acl: Option<Vec<PgDatabaseGrant>>,
+    #[serde(default)]
+    default_acl: bool,
 }
 impl Default for Access {
     fn default() -> Self {
         Self {
             public: true,
             roles: BTreeSet::new(),
+            acl: None,
+            default_acl: false,
         }
     }
+}
+
+/// One persistent database ACL item; 0 is PUBLIC, never a native login role.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PgDatabaseGrant {
+    pub grantor: i64,
+    pub grantee: i64,
+    pub privileges: u8,
+    pub grant_options: u8,
+}
+
+fn default_database_acl(owner: i64) -> Vec<PgDatabaseGrant> {
+    vec![
+        PgDatabaseGrant {
+            grantor: owner,
+            grantee: 0,
+            privileges: 3,
+            grant_options: 0,
+        },
+        PgDatabaseGrant {
+            grantor: owner,
+            grantee: owner,
+            privileges: 7,
+            grant_options: 0,
+        },
+    ]
+}
+
+/// Internal bits are deliberately separate from native MySQL privilege bits.
+/// Validate the whole comma list before applying its any-of semantics.
+pub fn pg_database_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
+    text.split(',')
+        .map(|item| {
+            let item = item.trim().to_ascii_uppercase();
+            let (base, option) = item
+                .strip_suffix(" WITH GRANT OPTION")
+                .map_or((item.as_str(), false), |base| (base, true));
+            let bit = match base {
+                "CONNECT" => 1,
+                "TEMP" | "TEMPORARY" => 2,
+                "CREATE" => 4,
+                _ => {
+                    return Err(namespace_error(
+                        "22023",
+                        "unrecognized database privilege type",
+                    ));
+                }
+            };
+            Ok((bit, option))
+        })
+        .collect()
+}
+
+fn validate_database_acl(
+    acl: &[PgDatabaseGrant],
+    exists: impl Fn(i64) -> bool,
+) -> SessionResult<()> {
+    if acl.iter().any(|e| {
+        e.grantor == 0
+            || !exists(e.grantor)
+            || e.grantee != 0 && !exists(e.grantee)
+            || e.privileges & !7 != 0
+            || e.grant_options & !e.privileges != 0
+            || e.grantee == 0 && e.grant_options != 0
+    }) {
+        return Err(namespace_error(
+            "0A000",
+            "database ACL identity or privileges are unavailable",
+        ));
+    }
+    Ok(())
+}
+
+impl PgDatabaseFact {
+    fn validate_acl(&self) -> SessionResult<&Vec<PgDatabaseGrant>> {
+        let acl = self
+            .acl
+            .as_ref()
+            .ok_or_else(|| namespace_error("0A000", "database ACL requires explicit migration"))?;
+        validate_database_acl(acl, |id| self.roles.contains_key(&id))?;
+        Ok(acl)
+    }
+    pub fn has_privilege(
+        &self,
+        facts: &[PgRoleFact],
+        actor: i64,
+        bit: u8,
+        option: bool,
+    ) -> SessionResult<bool> {
+        let acl = self.validate_acl()?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or_else(|| namespace_error("0A000", "database owner is unavailable"))?
+            .0;
+        let superuser = facts.iter().find(|f| f.oid == actor).is_some_and(|f| {
+            f.name == "root" || f.attributes.as_ref().is_some_and(|a| a.superuser)
+        });
+        if superuser || (option && pg_role_reachable(facts, actor, owner, "USAGE")?) {
+            return Ok(true);
+        }
+        for item in acl {
+            let rights = if option {
+                item.grant_options
+            } else {
+                item.privileges
+            };
+            if rights & bit != 0
+                && (item.grantee == 0 || pg_role_reachable(facts, actor, item.grantee, "USAGE")?)
+            {
+                return Ok(true);
+            }
+        }
+        if facts
+            .iter()
+            .any(|f| f.oid == actor && f.attributes.is_none())
+        {
+            return Err(namespace_error(
+                "0A000",
+                "database role superuser policy is unknown",
+            ));
+        }
+        Ok(false)
+    }
+
+    /// Canonical aclitem[] text; role quoting and array quoting are distinct layers.
+    pub fn acl_text(&self) -> SessionResult<Option<String>> {
+        let acl = self.validate_acl()?;
+        if self.acl_default {
+            return Ok(None);
+        }
+        let role = |id: i64| -> SessionResult<String> {
+            if id == 0 {
+                return Ok(String::new());
+            }
+            let name = self
+                .roles
+                .get(&id)
+                .ok_or_else(|| namespace_error("0A000", "database ACL role is unavailable"))?;
+            if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                Ok(name.clone())
+            } else {
+                Ok(format!("\"{}\"", name.replace('"', "\"\"")))
+            }
+        };
+        let mut out = Vec::new();
+        for item in acl {
+            let mut rights = String::new();
+            // PostgreSQL ACL_ALL_RIGHTS_STR order: CREATE, TEMPORARY, CONNECT.
+            for (bit, ch) in [(4, 'C'), (2, 'T'), (1, 'c')] {
+                if item.privileges & bit != 0 {
+                    rights.push(ch);
+                    if item.grant_options & bit != 0 {
+                        rights.push('*');
+                    }
+                }
+            }
+            let text = format!("{}={}/{}", role(item.grantee)?, rights, role(item.grantor)?);
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            // Always quoting is valid PostgreSQL array text, but use its canonical output policy.
+            if text
+                .bytes()
+                .any(|b| b.is_ascii_whitespace() || b"{},\\\"".contains(&b))
+            {
+                out.push(format!("\"{escaped}\""));
+            } else {
+                out.push(text);
+            }
+        }
+        Ok(Some(format!("{{{}}}", out.join(","))))
+    }
+}
+
+/// Shared SQL function evaluation, used by ordinary and catalog consumers.
+pub fn pg_has_database_privilege(
+    databases: &[(String, PgDatabaseFact)],
+    roles: &[PgRoleFact],
+    actor: &str,
+    values: &[Option<String>],
+    oids: &[bool],
+) -> SessionResult<Option<bool>> {
+    if values.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+    let offset = usize::from(values.len() == 3);
+    let user = if offset == 0 {
+        actor
+    } else {
+        values[0].as_deref().unwrap()
+    };
+    let member = if offset == 1 && oids[0] {
+        user.parse::<u32>()
+            .map(i64::from)
+            .map_err(|_| namespace_error("22P02", "invalid role OID"))?
+    } else if user == "public" {
+        0
+    } else {
+        roles
+            .iter()
+            .find(|f| f.name == user)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+            .oid
+    };
+    let object = values[offset].as_deref().unwrap();
+    // Name resolution precedes privilege validation; OID absence is tested after it (PG18 acl.c).
+    let database = if oids[offset] {
+        let oid = object
+            .parse::<u32>()
+            .map_err(|_| namespace_error("22P02", "invalid database OID"))?;
+        databases.iter().find(|(_, f)| {
+            f.id.checked_mul(2).and_then(|id| id.checked_add(16384)) == Some(i64::from(oid))
+        })
+    } else {
+        Some(
+            databases
+                .iter()
+                .find(|(name, _)| name == object)
+                .ok_or_else(|| namespace_error("3D000", "database does not exist"))?,
+        )
+    };
+    let modes = pg_database_privileges(values[offset + 1].as_deref().unwrap())?;
+    let Some((_, fact)) = database else {
+        return Ok(None);
+    };
+    let mut allowed = false;
+    for (bit, option) in modes {
+        allowed |= fact.has_privilege(roles, member, bit, option)?;
+    }
+    Ok(Some(allowed))
 }
 
 fn load<T: serde::de::DeserializeOwned + Default>(
@@ -906,6 +1156,7 @@ impl ConcreteSession {
         let target = match command {
             Some(
                 PgDatabaseCommand::Owner { database, .. }
+                | PgDatabaseCommand::Privileges { database, .. }
                 | PgDatabaseCommand::Connect { database, .. }
                 | PgDatabaseCommand::Policy { database, .. },
             ) => Some(
@@ -919,7 +1170,14 @@ impl ConcreteSession {
         };
         // Assigning ownership of a legacy database is always an explicit admin operation.
         if command.is_some()
-            && !matches!(command, Some(PgDatabaseCommand::Policy { .. }))
+            && !matches!(
+                command,
+                Some(
+                    PgDatabaseCommand::Policy { .. }
+                        | PgDatabaseCommand::Privileges { .. }
+                        | PgDatabaseCommand::Connect { .. }
+                )
+            )
             && actor != "root"
         {
             return Err(namespace_error(
@@ -935,15 +1193,34 @@ impl ConcreteSession {
             Some(PgDatabaseCommand::Connect { role, .. }) if role != "PUBLIC" => {
                 Some(self.pg_database_role_id(role)?)
             }
+            Some(PgDatabaseCommand::Privileges {
+                role,
+                public: false,
+                ..
+            }) => Some(self.pg_database_role_id(role)?),
             _ => None,
+        };
+        // Legacy database policy reads do not require a complete PG role snapshot.
+        // Acquire it only when a real ACL/membership decision consumes it.
+        let role_cache = std::cell::RefCell::new(None::<Vec<PgRoleFact>>);
+        let role_facts = || -> Result<Vec<PgRoleFact>, kv::errors::SharedError> {
+            if role_cache.borrow().is_none() {
+                *role_cache.borrow_mut() = Some(
+                    self.pg_role_facts()
+                        .map_err(|e| kv::errors::New(e.to_string()))?,
+                );
+            }
+            Ok(role_cache.borrow().as_ref().unwrap().clone())
         };
         let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
         let mut facts = Vec::new();
+        let mut warning: Option<(&'static str, String)> = None;
         self.domain
             .storage_handle()
             .with_storage(|store| {
                 kv::RunInNewTxn(&ctx, store, true, |_, txn| {
                     facts.clear();
+                    warning = None;
                     if let Some(id) = target {
                         txn.Get(
                             &ctx,
@@ -955,32 +1232,265 @@ impl ConcreteSession {
                         )?;
                     }
                     if let (Some(id), Some(owner)) = (target, owner) {
+                        let old_owner: Option<i64> = load(txn, &ctx, owner_key(id))?;
+                        let mut access: Access = load(txn, &ctx, access_key(id))?;
+                        if let (Some(old), Some(entries)) = (old_owner, access.acl.as_mut()) {
+                            for entry in entries.iter_mut() {
+                                if entry.grantor == old {
+                                    entry.grantor = owner;
+                                }
+                                if entry.grantee == old {
+                                    entry.grantee = owner;
+                                }
+                            }
+                            let mut merged: Vec<PgDatabaseGrant> = Vec::new();
+                            for entry in entries.drain(..) {
+                                if let Some(existing) = merged.iter_mut().find(|e| {
+                                    e.grantor == entry.grantor && e.grantee == entry.grantee
+                                }) {
+                                    existing.privileges |= entry.privileges;
+                                    existing.grant_options |= entry.grant_options;
+                                } else {
+                                    merged.push(entry);
+                                }
+                            }
+                            *entries = merged;
+                            txn.Set(
+                                access_key(id),
+                                serde_json::to_vec(&access)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
                         txn.Set(
                             owner_key(id),
                             serde_json::to_vec(&owner)
                                 .map_err(|e| kv::errors::New(e.to_string()))?,
                         )?;
                     }
-                    if let (Some(id), Some(PgDatabaseCommand::Connect { role, grant, .. })) =
-                        (target, command)
-                    {
-                        let mut access: Access = load(txn, &ctx, access_key(id))?;
-                        if role == "PUBLIC" {
-                            access.public = *grant;
-                        } else if *grant {
-                            access
-                                .roles
-                                .insert(connect_role.expect("validated role identity"));
-                        } else {
-                            access
-                                .roles
-                                .remove(&connect_role.expect("validated role identity"));
+                    let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    if let (Some(id), Some(cmd)) = (target, command) {
+                        let mutation = match cmd {
+                            PgDatabaseCommand::Connect { role, grant, .. } => {
+                                Some((role, role == "PUBLIC", "CONNECT", *grant, false, false))
+                            }
+                            PgDatabaseCommand::Privileges {
+                                role,
+                                public,
+                                privileges,
+                                grant,
+                                grant_option,
+                                cascade,
+                                ..
+                            } => Some((
+                                role,
+                                *public,
+                                privileges.as_str(),
+                                *grant,
+                                *grant_option,
+                                *cascade,
+                            )),
+                            _ => None,
+                        };
+                        if let Some((role, is_public, privileges, grant, option, cascade)) =
+                            mutation
+                        {
+                            let mut access: Access = load(txn, &ctx, access_key(id))?;
+                            let owner: Option<i64> = load(txn, &ctx, owner_key(id))?;
+                            if access.acl.is_none() {
+                                // Existing CONNECT policy remains usable, but never becomes fabricated ACL evidence.
+                                if !matches!(cmd, PgDatabaseCommand::Connect { .. })
+                                    || actor != "root"
+                                {
+                                    return Err(kv::errors::New(
+                                        "database ACL requires explicit migration",
+                                    ));
+                                }
+                                if is_public {
+                                    access.public = grant;
+                                } else if grant {
+                                    access.roles.insert(connect_role.unwrap());
+                                } else {
+                                    access.roles.remove(&connect_role.unwrap());
+                                }
+                            } else {
+                                validate_database_acl(access.acl.as_ref().unwrap(), |id| {
+                                    roles.values().any(|value| *value == id)
+                                })
+                                .map_err(|e| kv::errors::New(e.to_string()))?;
+                                let owner = owner.ok_or_else(|| {
+                                    kv::errors::New("database ACL requires explicit migration")
+                                })?;
+                                let modes = if privileges == "ALL" {
+                                    vec![(7, false)]
+                                } else {
+                                    pg_database_privileges(privileges).map_err(|_| {
+                                        kv::errors::New("invalid database privilege")
+                                    })?
+                                };
+                                let bits = modes.iter().fold(0, |bits, (bit, _)| bits | bit);
+                                let actor_id = *roles.get(&actor).ok_or_else(|| {
+                                    kv::errors::New("database ACL role is unavailable")
+                                })?;
+                                let grantee = if is_public { 0 } else { connect_role.unwrap() };
+                                if option && grant && grantee == 0 {
+                                    return Err(kv::errors::New(
+                                        "grant options cannot be granted to PUBLIC",
+                                    ));
+                                }
+                                if access.default_acl {
+                                    access.acl = Some(default_database_acl(owner));
+                                }
+                                let entries = access.acl.as_mut().unwrap();
+                                let owner_actor = actor == "root"
+                                    || pg_role_reachable(&role_facts()?, actor_id, owner, "USAGE")
+                                        .map_err(|_| {
+                                            kv::errors::New("database ACL membership unknown")
+                                        })?;
+                                let (grantor, available) = if owner_actor {
+                                    (owner, 7)
+                                } else {
+                                    // Select one actual inherited grantor, maximizing requested grant authority (PG select_best_grantor).
+                                    let mut best = (actor_id, 0u8);
+                                    for candidate in std::iter::once(actor_id)
+                                        .chain(roles.values().copied().filter(|id| *id != actor_id))
+                                    {
+                                        let options = entries
+                                            .iter()
+                                            .filter(|e| e.grantee == candidate)
+                                            .fold(0, |b, e| b | e.grant_options)
+                                            & bits;
+                                        if options.count_ones() <= best.1.count_ones() {
+                                            continue;
+                                        }
+                                        if pg_role_reachable(
+                                            &role_facts()?,
+                                            actor_id,
+                                            candidate,
+                                            "USAGE",
+                                        )
+                                        .map_err(|_| {
+                                            kv::errors::New("database ACL membership unknown")
+                                        })? {
+                                            best = (candidate, options);
+                                        }
+                                    }
+                                    if best.1 == 0 {
+                                        let mut any = false;
+                                        for e in entries.iter().filter(|e| e.privileges != 0) {
+                                            if e.grantee == 0
+                                                || pg_role_reachable(
+                                                    &role_facts()?,
+                                                    actor_id,
+                                                    e.grantee,
+                                                    "USAGE",
+                                                )
+                                                .map_err(|_| {
+                                                    kv::errors::New(
+                                                        "database ACL membership unknown",
+                                                    )
+                                                })?
+                                            {
+                                                any = true;
+                                                break;
+                                            }
+                                        }
+                                        if !any {
+                                            return Err(kv::errors::New(
+                                                "database privilege requires grant option",
+                                            ));
+                                        }
+                                    }
+                                    best
+                                };
+                                let requested = bits;
+                                let bits = bits & available;
+                                if bits == 0 || bits != requested && privileges != "ALL" {
+                                    warning = Some((
+                                        if grant { "01007" } else { "01006" },
+                                        if bits == 0 {
+                                            if grant {
+                                                "no privileges were granted"
+                                            } else {
+                                                "no privileges could be revoked"
+                                            }
+                                        } else if grant {
+                                            "not all privileges were granted"
+                                        } else {
+                                            "not all privileges could be revoked"
+                                        }
+                                        .to_owned(),
+                                    ));
+                                }
+                                if grant {
+                                    if let Some(entry) = entries
+                                        .iter_mut()
+                                        .find(|e| e.grantor == grantor && e.grantee == grantee)
+                                    {
+                                        entry.privileges |= bits;
+                                        if option {
+                                            entry.grant_options |= bits;
+                                        }
+                                    } else {
+                                        entries.push(PgDatabaseGrant {
+                                            grantor,
+                                            grantee,
+                                            privileges: bits,
+                                            grant_options: if option { bits } else { 0 },
+                                        });
+                                    }
+                                } else {
+                                    for entry in entries
+                                        .iter_mut()
+                                        .filter(|e| e.grantor == grantor && e.grantee == grantee)
+                                    {
+                                        entry.grant_options &= !bits;
+                                        if !option {
+                                            entry.privileges &= !bits;
+                                        }
+                                    }
+                                    // An option revoke may invalidate grants made using it; preserve RESTRICT and CASCADE.
+                                    for bit in [1, 2, 4] {
+                                        let mut authorized = BTreeSet::from([owner]);
+                                        loop {
+                                            let old = authorized.len();
+                                            for e in entries
+                                                .iter()
+                                                .filter(|e| e.grant_options & bit != 0)
+                                            {
+                                                if authorized.contains(&e.grantor) {
+                                                    authorized.insert(e.grantee);
+                                                }
+                                            }
+                                            if old == authorized.len() {
+                                                break;
+                                            }
+                                        }
+                                        for e in entries.iter_mut() {
+                                            if e.privileges & bit != 0
+                                                && !authorized.contains(&e.grantor)
+                                            {
+                                                if !cascade {
+                                                    return Err(kv::errors::New(
+                                                        "dependent database privileges exist",
+                                                    ));
+                                                }
+                                                e.privileges &= !bit;
+                                                e.grant_options &= !bit;
+                                            }
+                                        }
+                                    }
+                                }
+                                entries.retain(|e| e.privileges != 0);
+                                if bits != 0 {
+                                    access.default_acl = false;
+                                }
+                            }
+                            txn.Set(
+                                access_key(id),
+                                serde_json::to_vec(&access)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
                         }
-                        txn.Set(
-                            access_key(id),
-                            serde_json::to_vec(&access)
-                                .map_err(|e| kv::errors::New(e.to_string()))?,
-                        )?;
                     }
                     let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
                     if let (
@@ -1051,20 +1561,65 @@ impl ConcreteSession {
                             || roles
                                 .get(&actor)
                                 .is_some_and(|id| access.roles.contains(id));
-                        facts.push(PgDatabaseFact {
+                        let mut fact = PgDatabaseFact {
                             id: schema.id,
-                            owner,
+                            owner: owner.clone(),
                             can_connect,
+                            acl: if access.default_acl {
+                                owner.as_ref().map(|(id, _)| default_database_acl(*id))
+                            } else {
+                                access.acl.clone()
+                            },
+                            acl_default: access.default_acl,
+                            warning: if Some(schema.id) == target {
+                                warning.clone()
+                            } else {
+                                None
+                            },
                             is_template: policy.is_template,
                             allow_connections: policy.allow_connections,
                             roles: role_names.clone(),
-                        });
+                        };
+                        if fact.acl.is_some() {
+                            // Validate before committing any command write, so an unavailable
+                            // policy or damaged ACL cannot turn an error response into a partial grant.
+                            fact.validate_acl()
+                                .map_err(|e| kv::errors::New(e.to_string()))?;
+                            fact.can_connect = if actor == "root" {
+                                true
+                            } else {
+                                fact.has_privilege(
+                                    &role_facts()?,
+                                    roles.get(&actor).copied().unwrap_or(-1),
+                                    1,
+                                    false,
+                                )
+                                .map_err(|e| kv::errors::New(e.to_string()))?
+                            };
+                        }
+                        facts.push(fact);
                     }
                     Ok(())
                 })
             })
             .map_err(|e| {
-                if e.to_string() == "database policy requires owner" {
+                if e.to_string() == "database ACL requires explicit migration"
+                    || e.to_string() == "database ACL membership unknown"
+                    || e.to_string() == "database ACL identity or privileges are unavailable"
+                    || e.to_string() == "database role superuser policy is unknown"
+                    || e.to_string() == "native membership options are unknown"
+                    || e.to_string() == "complete PostgreSQL role facts are unavailable"
+                {
+                    namespace_error("0A000", &e.to_string())
+                } else if e.to_string() == "database privilege requires grant option" {
+                    namespace_error("42501", "permission denied for database")
+                } else if e.to_string() == "dependent database privileges exist" {
+                    namespace_error("2BP01", "dependent privileges exist; use CASCADE")
+                } else if e.to_string() == "grant options cannot be granted to PUBLIC" {
+                    namespace_error("0LP01", "grant options cannot be granted to PUBLIC")
+                } else if e.to_string() == "invalid database privilege" {
+                    namespace_error("22023", "unrecognized database privilege type")
+                } else if e.to_string() == "database policy requires owner" {
                     namespace_error("42501", "must be owner of database")
                 } else if e.to_string() == "cannot disallow connections for current database" {
                     namespace_error("22023", "cannot disallow connections for current database")
@@ -1075,6 +1630,34 @@ impl ConcreteSession {
                 }
             })?;
         Ok(facts)
+    }
+
+    /// Actual DDL consumers share the same ACL and membership interpretation as has_database_privilege.
+    pub(super) fn pg_require_database_privilege(&self, bit: u8) -> SessionResult<()> {
+        if self.pg_schema_identity() == "root" {
+            return Ok(());
+        }
+        let snapshot = self.domain.info_schema();
+        let database = snapshot
+            .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
+            .ok_or_else(|| namespace_error("3D000", "database does not exist"))?;
+        let facts = self.pg_database_facts(None)?;
+        let fact = facts
+            .iter()
+            .find(|f| f.id == database.id)
+            .ok_or_else(|| namespace_error("3D000", "database does not exist"))?;
+        let roles = self.pg_role_facts()?;
+        let actor = self.pg_schema_identity();
+        let id = roles
+            .iter()
+            .find(|f| f.name == actor)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+            .oid;
+        if fact.has_privilege(&roles, id, bit, false)? {
+            Ok(())
+        } else {
+            Err(namespace_error("42501", "permission denied for database"))
+        }
     }
 
     // Native account names may be reused, so never retain an old role identity
@@ -1105,6 +1688,12 @@ impl ConcreteSession {
                             if owner == Some(*oid) {
                                 return Err(kv::errors::New("role owns a database"));
                             }
+                            let access: Access = load(txn, &ctx, access_key(schema.id))?;
+                            if access.acl.as_ref().is_some_and(|acl| {
+                                acl.iter().any(|e| e.grantor == *oid || e.grantee == *oid)
+                            }) {
+                                return Err(kv::errors::New("role has database privileges"));
+                            }
                         }
                     }
                     if remove && let Some(oid) = roles.remove(role) {
@@ -1133,7 +1722,13 @@ impl ConcreteSession {
                     Ok(())
                 })
             })
-            .map_err(|e| session_error("drop database role identity", e))
+            .map_err(|e| {
+                if e.to_string() == "role has database privileges" {
+                    namespace_error("2BP01", "role has database privileges")
+                } else {
+                    session_error("drop database role identity", e)
+                }
+            })
     }
 
     /// Authenticate against the existing shared account owner, including locks and expiry.

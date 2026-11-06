@@ -2878,6 +2878,25 @@ pub mod formal_registry {
             // TEXT columns and text casts have different physical storage codes.
             return resolve_pg_signature(name, &[mysql::TypeVarString; 2]);
         }
+        if name == "has_database_privilege" {
+            if !matches!(inputs.len(), 2 | 3) {
+                return Err("42883");
+            }
+            for (index, tp) in inputs.iter().enumerate() {
+                let oid = tp.PostgreSQLTypeOid();
+                let unknown = tp.GetType() == mysql::TypeNull || oid == Some(705);
+                let identity = index + 1 != inputs.len();
+                if !unknown
+                    && !(matches!(oid, Some(19 | 25 | 1042 | 1043)) || identity && oid == Some(26))
+                {
+                    return Err("42883");
+                }
+            }
+            return Ok(PgFunctionCandidate {
+                arguments: inputs.iter().map(|tp| tp.GetType()).collect(),
+                result: mysql::TypeTiny,
+            });
+        }
         if name == "pg_typeof" {
             if inputs.len() != 1 || inputs[0].PostgreSQLTypeOid().is_none() {
                 return Err("42883");
@@ -4477,6 +4496,7 @@ pub mod formal_registry {
         PgRangeUpper,
         PgRangeIsEmpty,
         PgBackendPid,
+        PgDatabasePrivilege,
         PgCurrentDatabase,
         PgCurrentSchema,
         PgTypeOf,
@@ -4869,6 +4889,24 @@ pub mod formal_registry {
         }
         fn evalInt(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<(i64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgDatabasePrivilege => {
+                    let mut values = Vec::new();
+                    let mut oids = Vec::new();
+                    for argument in &self.base.args {
+                        let (text, null) = argument.EvalString(ctx, row.clone())?;
+                        values.push((!null).then_some(text));
+                        oids.push(argument.GetType(ctx).PostgreSQLTypeOid() == Some(26));
+                    }
+                    // Strictness precedes fact lookup, including a missing fact provider.
+                    if values.iter().any(Option::is_none) {
+                        return Ok((0, true));
+                    }
+                    let evaluator = ctx.PgDatabasePrivilegeEvaluator().ok_or_else(|| {
+                        errors::New("missing shared database privilege evaluator")
+                    })?;
+                    let value = evaluator(&values, &oids).map_err(errors::Error::from)?;
+                    Ok(value.map_or((0, true), |v| (i64::from(v), false)))
+                }
                 CoreBuiltinKind::PgBackendPid => ctx
                     .PgBackendPid()
                     .filter(|pid| *pid > 0)
@@ -7149,6 +7187,20 @@ pub mod formal_registry {
                     "builtinConcatSig",
                 )
             }
+            "has_database_privilege" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
+                let mut result = *types::NewFieldType(mysql::TypeTiny);
+                result.AddFlag(mysql::IsBooleanFlag);
+                (
+                    CoreBuiltinKind::PgDatabasePrivilege,
+                    result,
+                    "builtinPgDatabasePrivilegeSig",
+                )
+            }
             "pg_backend_pid" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 resolve_pg_signature(
                     name,
@@ -8685,6 +8737,7 @@ pub mod formal_registry {
             CoreBuiltinKind::Sleep
                 | CoreBuiltinKind::Rand
                 | CoreBuiltinKind::PgBackendPid
+                | CoreBuiltinKind::PgDatabasePrivilege
                 | CoreBuiltinKind::Version(_)
         ) {
             RegistryBuiltinBase::new_never(args, return_type)
@@ -9037,6 +9090,7 @@ pub mod formal_registry {
     core_factory!(pg_current_schema_factory, "current_schema");
     core_factory!(pg_typeof_factory, "pg_typeof");
     core_factory!(pg_backend_pid_factory, "pg_backend_pid");
+    core_factory!(pg_database_privilege_factory, "has_database_privilege");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -9148,6 +9202,7 @@ pub mod formal_registry {
         ("current_schema", pg_current_schema_factory),
         ("pg_typeof", pg_typeof_factory),
         ("pg_backend_pid", pg_backend_pid_factory),
+        ("has_database_privilege", pg_database_privilege_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -9545,6 +9600,7 @@ pub mod formal_registry {
         ("current_schema", 0, 0),
         ("pg_typeof", 1, 1),
         ("pg_backend_pid", 0, 0),
+        ("has_database_privilege", 2, 3),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -9856,6 +9912,7 @@ pub mod formal_registry {
                     | "current_schema"
                     | "pg_typeof"
                     | "pg_backend_pid"
+                    | "has_database_privilege"
                     | "numeric_abs"
                     | "float4abs"
                     | "float8abs"

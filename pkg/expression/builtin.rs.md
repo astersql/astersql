@@ -172,3 +172,10 @@ PG目标TypeDouble在正式工厂选择PgFloat8分支，调用严格pg_cast_floa
 ### 2026-10-26 定长文本（任务23）
 
 正式 PG CAST 按返回 FieldType 文本 OID 与源表达式类型调用 pg_text_cast；保留 PgBoolean 专属转换及 MySQL 分支。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+has_database_privilege沿正式签名解析和core工厂注册2/3参数重载，结果为带IsBooleanFlag的bool。身份接受name/text/OID，末参仅text；严格NULL先于事实读取。执行期上下文提供共享数据库权限回调，禁止常量折叠及跨会话共享。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。

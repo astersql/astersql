@@ -184,6 +184,10 @@ impl EvalContext for assertionEvalContext<'_> {
     fn PgCurrentSchema(&self) -> Option<String> {
         self.eval_context.PgCurrentSchema()
     }
+    fn PgDatabasePrivilegeEvaluator(&self) -> Option<exprctx::PgDatabasePrivilegeEvaluator> {
+        self.eval_context.PgDatabasePrivilegeEvaluator()
+    }
+
     fn CurrentDB(&self) -> String {
         self.eval_context.CurrentDB()
     }

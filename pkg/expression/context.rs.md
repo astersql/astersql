@@ -88,3 +88,10 @@
 ## 2026-10-24 规划求值身份与缓存隔离
 
 assertionEvalContext 显式向底层 EvalContext 转发 SQLDialect，防止 builtin 测试包装将 PostgreSQL 退回默认 MySQL；相邻独立测试覆盖真实静态上下文的包装。
+
+
+## 2026-11-06 数据库授权事实与查询
+
+assertionEvalContext将PgDatabasePrivilegeEvaluator完整转发到当前执行上下文，避免断言装饰器丢失共享数据库权限提供者。
+
+聚焦行为回归：`pg_catalog_test::cat14_17`。
