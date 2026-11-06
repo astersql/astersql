@@ -1554,6 +1554,17 @@ pub(crate) fn adapt(
     // Gate valid PG partition DDL before the native parser can misdiagnose it
     // as malformed MySQL partition syntax or create partial metadata.
     let parts = tokens(sql)?;
+    // User routines have no shared declaration/publication source yet. Keep
+    // valid CREATE FUNCTION probes at the capability boundary, before the
+    // native parser reports MySQL syntax errors or publishes partial metadata.
+    if parts.first().is_some_and(|t| t.word("create"))
+        && (parts.get(1).is_some_and(|t| t.word("function"))
+            || (parts.get(1).is_some_and(|t| t.word("or"))
+                && parts.get(2).is_some_and(|t| t.word("replace"))
+                && parts.get(3).is_some_and(|t| t.word("function"))))
+    {
+        return Err(error("0A000", "PostgreSQL user functions are unsupported"));
+    }
     if parts.first().is_some_and(|t| t.word("create"))
         && parts
             .iter()

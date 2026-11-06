@@ -448,6 +448,8 @@ fn length(n: usize) -> io::Result<i32> {
 #[derive(Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum CatalogColumnType {
+    // Only NULL (all-IN) mode arrays are exposed by the bounded pg_proc provider.
+    InternalCharArray = 219,
     InternalChar = 230,
     Oid = 231,
     Regclass = 232,
@@ -468,6 +470,7 @@ pub(crate) enum CatalogColumnType {
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
         Some(match code {
+            219 => Self::InternalCharArray,
             230 => Self::InternalChar,
             231 => Self::Oid,
             232 => Self::Regclass,
@@ -489,6 +492,7 @@ impl CatalogColumnType {
     }
     fn wire_type(self) -> (u32, i16) {
         match self {
+            Self::InternalCharArray => (1002, -1),
             Self::InternalChar => (18, 1),
             Self::Name => (19, 64),
             Self::PgNodeTree => (194, -1),

@@ -1554,6 +1554,10 @@ impl CatalogQuery {
                     // These are PostgreSQL catalog attribute numbers, not the
                     // compact row slots used internally by the catalog evaluator.
                     let attribute = match (relation.name.as_str(), slot % CATALOG_ROW_WIDTH) {
+                        ("pg_proc", slot) => [
+                            1, 2, 3, 10, 5, 26, 23, 22, 20, 21, 24, 8, 19, 14, 15, 13, 11, 29, 6,
+                            4, 7, 12, 16, -2, 30, 17, 18,
+                        ][slot],
                         ("pg_type", 0) => 1,
                         ("pg_type", 1) => 2,
                         ("pg_type", 2) => 3,
@@ -5110,6 +5114,10 @@ const INTERNAL_LANGUAGE_OID: i64 = 12;
 struct IntrospectionFunction {
     oid: i64,
     name: &'static str,
+    namespace: i64,
+    input_types: &'static [i64],
+    result_type: i64,
+    argument_name: &'static str,
     arguments: &'static str,
     result: &'static str,
 }
@@ -5117,18 +5125,30 @@ const FUNCTION_INTROSPECTION: &[IntrospectionFunction] = &[
     IntrospectionFunction {
         oid: 16000,
         name: "pg_get_function_arguments",
+        namespace: 11,
+        input_types: &[26],
+        result_type: 25,
+        argument_name: "function_oid",
         arguments: "function_oid oid",
         result: "text",
     },
     IntrospectionFunction {
         oid: 16001,
         name: "pg_get_function_result",
+        namespace: 11,
+        input_types: &[26],
+        result_type: 25,
+        argument_name: "function_oid",
         arguments: "function_oid oid",
         result: "text",
     },
     IntrospectionFunction {
         oid: 16002,
         name: "pg_get_function_sqlbody",
+        namespace: 11,
+        input_types: &[26],
+        result_type: 25,
+        argument_name: "function_oid",
         arguments: "function_oid oid",
         result: "text",
     },
@@ -5140,28 +5160,38 @@ fn function_rows() -> Vec<Vec<Value>> {
             vec![
                 Value::Signed(function.oid),
                 Value::Text(function.name.into()),
-                Value::Signed(11),
+                Value::Signed(function.namespace),
                 Value::Text("f".into()),
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text(function.name.into()),
-                Value::Text("{function_oid}".into()), // argument names
-                Value::Null,                          // all arguments are IN
-                Value::Text("26".into()),             // one oid input
-                Value::Null,                          // no OUT arguments
-                Value::Null,                          // no default arguments
-                Value::Signed(0),                     // not variadic
-                Value::Signed(25),                    // text return type
-                Value::Text("false".into()),          // scalar
-                Value::Text("s".into()),              // snapshot-stable introspection
-                Value::Text("false".into()),          // handles unknown/NULL OIDs
-                Value::Text("false".into()),          // invoker security
-                Value::Null,                          // no per-function configuration
-                Value::Null,                          // no native PostgreSQL cost model
-                Value::Null,                          // no PostgreSQL owner
-                Value::Signed(0),                     // not set-returning
-                Value::Text("false".into()),          // not leakproof
-                Value::Text("u".into()),              // no parallel execution contract
-                Value::Null,                          // no PostgreSQL transaction xmin
+                Value::Text(format!("{{{}}}", function.argument_name)), // argument names
+                Value::Null,                                            // all arguments are IN
+                Value::Text(
+                    function
+                        .input_types
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                Value::Null,                         // no OUT arguments
+                Value::Null,                         // no default arguments
+                Value::Signed(0),                    // not variadic
+                Value::Signed(function.result_type), // declared return identity
+                Value::Text("false".into()),         // scalar
+                Value::Text("s".into()),             // snapshot-stable introspection
+                Value::Text("false".into()),         // handles unknown/NULL OIDs
+                Value::Text("false".into()),         // invoker security
+                Value::Null,                         // no per-function configuration
+                Value::Null,                         // no native PostgreSQL cost model
+                Value::Null,                         // no PostgreSQL owner
+                Value::Null,                         // no native PG row estimate
+                Value::Text("false".into()),         // not leakproof
+                Value::Text("u".into()),             // no parallel execution contract
+                Value::Null,                         // no PostgreSQL transaction xmin
+                Value::Null,                         // no PostgreSQL ACL fact
+                Value::Signed(function.input_types.len() as i64),
+                Value::Signed(0), // no argument defaults
             ]
         })
         .collect()
@@ -5290,10 +5320,15 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_aggregate", "aggtranstype") => (1, oid),
         ("pg_aggregate", "aggmtranstype") => (2, oid),
         ("pg_proc", "proargnames") => (6, crate::pg_result::CatalogColumnType::TextArray as u8),
-        ("pg_proc", "proargmodes") => (7, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_proc", "proargmodes") => (
+            7,
+            crate::pg_result::CatalogColumnType::InternalCharArray as u8,
+        ),
         ("pg_proc", "proargtypes") => (8, crate::pg_result::CatalogColumnType::OidVector as u8),
         ("pg_proc", "proallargtypes") => (9, crate::pg_result::CatalogColumnType::OidArray as u8),
-        ("pg_proc", "proargdefaults") => (10, 253),
+        ("pg_proc", "proargdefaults") => {
+            (10, crate::pg_result::CatalogColumnType::PgNodeTree as u8)
+        }
         ("pg_proc", "provariadic") => (11, oid),
         ("pg_proc", "prorettype") => (12, oid),
         ("pg_proc", "proretset") => (13, 1),
@@ -5301,20 +5336,22 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_proc", "proisstrict") => (15, 1),
         ("pg_proc", "prosecdef") => (16, 1),
         ("pg_proc", "proconfig") => (17, crate::pg_result::CatalogColumnType::TextArray as u8),
-        ("pg_proc", "procost") => (18, 8),
+        // No native cost model or MVCC identity exists for adapter primitives.
+        // Reject at binding, including queries that would otherwise return no rows.
+        ("pg_proc", "procost" | "prorows" | "xmin") => return None,
         ("pg_proc", "proowner") => (19, 8),
-        ("pg_proc", "prorows") => (20, 8),
         ("pg_proc", "proleakproof") => (21, 1),
         ("pg_proc", "proparallel") => (22, internal_char),
-        ("pg_proc", "xmin") => (23, 8),
         ("pg_proc", "oid") => (0, oid),
-        ("pg_proc", "proname") => (1, 253),
+        ("pg_proc", "proname") => (1, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_proc", "pronamespace") => (2, oid),
         ("pg_proc", "prokind") => (3, internal_char),
         ("pg_proc", "prolang") => (4, oid),
         ("pg_proc", "prosrc") => (5, 253),
+        ("pg_proc", "pronargs") => (25, 2),
+        ("pg_proc", "pronargdefaults") => (26, 2),
         ("pg_language", "oid") => (0, oid),
-        ("pg_language", "lanname") => (1, 253),
+        ("pg_language", "lanname") => (1, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_index", "indexrelid") => (0, oid),
         ("pg_index", "indrelid") => (1, oid),
         ("pg_index", "indnatts") => (2, 2),

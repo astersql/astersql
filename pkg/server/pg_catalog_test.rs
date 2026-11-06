@@ -10248,3 +10248,454 @@ fn pg13_041_virtual_system_schema_is_not_a_database() {
     context.close().unwrap();
     domain.close();
 }
+
+#[test]
+fn cat14_02() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP TABLE IF EXISTS test.cat14_02_unrelated")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let messages = query(socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+        assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+        messages
+    }
+    fn description(body: &[u8]) -> Vec<(u32, i16, i32, i16)> {
+        let mut offset = 2;
+        (0..u16::from_be_bytes(body[..2].try_into().unwrap()))
+            .map(|_| {
+                offset += body[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+                let value = (
+                    u32::from_be_bytes(body[offset + 6..offset + 10].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 10..offset + 12].try_into().unwrap()),
+                    i32::from_be_bytes(body[offset + 12..offset + 16].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 16..offset + 18].try_into().unwrap()),
+                );
+                offset += 18;
+                value
+            })
+            .collect()
+    }
+    let sql = "SELECT oid,proname,pronamespace,proargtypes,prorettype,proacl FROM pg_catalog.pg_proc WHERE pronamespace=11 ORDER BY oid";
+    let baseline = ok(&mut socket, sql);
+    let types = vec![
+        (26, 4, -1, 0),
+        (19, 64, -1, 0),
+        (26, 4, -1, 0),
+        (30, -1, -1, 0),
+        (26, 4, -1, 0),
+        (1034, -1, -1, 0),
+    ];
+    assert_eq!(description(&baseline[0].1), types);
+    let names = [
+        "pg_get_function_arguments",
+        "pg_get_function_result",
+        "pg_get_function_sqlbody",
+    ];
+    let rows: Vec<_> = baseline
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| m.1.clone())
+        .collect();
+    assert_eq!(
+        rows,
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| row(&[
+                Some(&(16000 + i).to_string()),
+                Some(name),
+                Some("11"),
+                Some("26"),
+                Some("25"),
+                None,
+            ]))
+            .collect::<Vec<_>>()
+    );
+    let empty = ok(
+        &mut socket,
+        &sql.replace("pronamespace=11", "pronamespace=0"),
+    );
+    assert_eq!(description(&empty[0].1), types);
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    let detail_sql = "SELECT proargnames,proargmodes,proallargtypes,proargdefaults,pronargs,pronargdefaults,provariadic,prokind,proretset,provolatile,proisstrict,prosecdef,proleakproof,proparallel,prolang,prosrc,proconfig FROM pg_proc ORDER BY oid";
+    let detail = ok(&mut socket, detail_sql);
+    let expected_oids = [
+        1009, 1002, 1028, 194, 21, 21, 26, 18, 16, 18, 16, 16, 16, 18, 26, 25, 1009,
+    ];
+    assert_eq!(
+        columns(&detail[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        expected_oids
+    );
+    assert_eq!(
+        detail
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        names
+            .iter()
+            .map(|name| row(&[
+                Some("{function_oid}"),
+                None,
+                None,
+                None,
+                Some("1"),
+                Some("0"),
+                Some("0"),
+                Some("f"),
+                Some("f"),
+                Some("s"),
+                Some("f"),
+                Some("f"),
+                Some("f"),
+                Some("u"),
+                Some("12"),
+                Some(name),
+                None
+            ]))
+            .collect::<Vec<_>>()
+    );
+    let joined = ok(
+        &mut socket,
+        "SELECT p.oid,l.oid,l.lanname,t.oid,t.typname FROM pg_proc p JOIN pg_language l ON p.prolang=l.oid JOIN pg_type t ON p.prorettype=t.oid WHERE p.pronamespace=11 ORDER BY p.oid",
+    );
+    assert_eq!(
+        joined
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        (16000..16003)
+            .map(|oid| row(&[
+                Some(&oid.to_string()),
+                Some("12"),
+                Some("internal"),
+                Some("25"),
+                Some("text")
+            ]))
+            .collect::<Vec<_>>()
+    );
+    let input = ok(
+        &mut socket,
+        "SELECT t.oid,t.typname FROM pg_type t WHERE t.oid=26",
+    );
+    assert_eq!(
+        input.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("26"), Some("oid")])
+    );
+    let inputs = ok(
+        &mut socket,
+        "SELECT p.oid,t.oid,t.typname FROM pg_proc p JOIN pg_type t ON p.proargtypes[0]=t.oid WHERE p.pronamespace=11 ORDER BY p.oid",
+    );
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        (16000..16003)
+            .map(|oid| row(&[Some(&oid.to_string()), Some("26"), Some("oid")]))
+            .collect::<Vec<_>>()
+    );
+    // Missing cost/version facts must fail at binding, even for an empty relation.
+    for field in ["procost", "prorows", "xmin"] {
+        let sql = format!("SELECT {field} FROM pg_proc WHERE pronamespace=0");
+        let error = query(&mut socket, &sql);
+        assert!(
+            error
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+            "{error:?}"
+        );
+        assert!(!error.iter().any(|m| m.0 == b'T' || m.0 == b'D'));
+        assert_eq!(error.last(), Some(&(b'Z', vec![b'I'])));
+        ok(&mut socket, "SELECT 1");
+        send(
+            &mut socket,
+            b'P',
+            &[
+                b"bad\0".as_slice(),
+                sql.as_bytes(),
+                b"\0",
+                &0u16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut socket, b'S', b"");
+        let error = until_ready(&mut socket);
+        assert!(
+            error
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+            "{error:?}"
+        );
+        assert!(!error.iter().any(|m| m.0 == b'1'));
+        ok(&mut socket, "SELECT 1");
+    }
+    let ddl = query(
+        &mut socket,
+        "CREATE FUNCTION public.cat14_02_f(integer) RETURNS integer LANGUAGE SQL AS 'SELECT $1'",
+    );
+    assert!(
+        ddl.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+        "{ddl:?}"
+    );
+    ok(&mut socket, "SELECT 1");
+    send(&mut socket,b'P',&[b"no_user_ddl\0".as_slice(),b"/* bounded capability */ CREATE OR REPLACE FUNCTION public.cat14_02_f(bigint) RETURNS bigint LANGUAGE SQL AS 'SELECT $1'\0",&0u16.to_be_bytes()].concat());
+    send(&mut socket, b'S', b"");
+    let error = until_ready(&mut socket);
+    assert!(
+        error
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+        "{error:?}"
+    );
+    assert!(!error.iter().any(|m| m.0 == b'1'));
+    ok(&mut socket, "SELECT 'CREATE FUNCTION' AS literal");
+    let nonexistent = ok(
+        &mut socket,
+        "SELECT proname FROM pg_proc WHERE proname='cat14_02_f'",
+    );
+    assert!(!nonexistent.iter().any(|m| m.0 == b'D'));
+    assert_eq!(
+        query(&mut socket, "BEGIN").last(),
+        Some(&(b'Z', vec![b'T']))
+    );
+    let error = query(&mut socket, "SELECT procost FROM pg_proc");
+    assert!(
+        error
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+        "{error:?}"
+    );
+    assert_eq!(error.last(), Some(&(b'Z', vec![b'E'])));
+    ok(&mut socket, "ROLLBACK");
+    ok(&mut socket, "SELECT 1");
+    native
+        .execute("CREATE TABLE test.cat14_02_unrelated(a int)")
+        .unwrap();
+    let after = ok(&mut socket, sql);
+    assert_eq!(after, baseline);
+    native
+        .execute("DROP TABLE test.cat14_02_unrelated")
+        .unwrap();
+    // The extended path must retain the same descriptions with typed NULL and
+    // binary parameter/result formats, and recover to idle after every Sync.
+    let parameter_sql = sql.replace("pronamespace=11", "pronamespace=$1");
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cat14_02\0".as_slice(),
+            parameter_sql.as_bytes(),
+            b"\0",
+            &1u16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Scat14_02\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert!(!described.iter().any(|m| m.0 == b'E'), "{described:?}");
+    assert_eq!(
+        description(&described.iter().find(|m| m.0 == b'T').unwrap().1),
+        types
+    );
+    for (value, binary) in [
+        (Some(11u32), false),
+        (None, false),
+        (Some(0), true),
+        (Some(11), true),
+    ] {
+        let parameter = match value {
+            Some(v) if binary => [&4i32.to_be_bytes()[..], &v.to_be_bytes()].concat(),
+            Some(v) => {
+                let v = v.to_string();
+                [&(v.len() as i32).to_be_bytes()[..], v.as_bytes()].concat()
+            }
+            None => (-1i32).to_be_bytes().to_vec(),
+        };
+        send(
+            &mut socket,
+            b'B',
+            &[
+                b"\0cat14_02\0".as_slice(),
+                &1u16.to_be_bytes(),
+                &i16::from(binary).to_be_bytes(),
+                &1u16.to_be_bytes(),
+                &parameter,
+                &1u16.to_be_bytes(),
+                &i16::from(binary).to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut socket, b'D', b"P\0");
+        send(
+            &mut socket,
+            b'E',
+            &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(&mut socket, b'S', b"");
+        let messages = until_ready(&mut socket);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+        let mut expected = types.clone();
+        for t in &mut expected {
+            t.3 = i16::from(binary);
+        }
+        assert_eq!(
+            description(&messages.iter().find(|m| m.0 == b'T').unwrap().1),
+            expected
+        );
+        let data: Vec<_> = messages.iter().filter(|m| m.0 == b'D').collect();
+        assert_eq!(data.len(), if value == Some(11) { 3 } else { 0 });
+        if value == Some(11) && !binary {
+            assert_eq!(data.iter().map(|m| m.1.clone()).collect::<Vec<_>>(), rows);
+        }
+        if value == Some(11) && binary {
+            for (i, m) in data.iter().enumerate() {
+                let vector = [
+                    &1i32.to_be_bytes()[..],
+                    &0i32.to_be_bytes(),
+                    &26u32.to_be_bytes(),
+                    &1i32.to_be_bytes(),
+                    &0i32.to_be_bytes(),
+                    &4i32.to_be_bytes(),
+                    &26u32.to_be_bytes(),
+                ]
+                .concat();
+                let values = [
+                    Some((16000u32 + i as u32).to_be_bytes().to_vec()),
+                    Some(names[i].as_bytes().to_vec()),
+                    Some(11u32.to_be_bytes().to_vec()),
+                    Some(vector),
+                    Some(25u32.to_be_bytes().to_vec()),
+                    None,
+                ];
+                let mut expected = 6u16.to_be_bytes().to_vec();
+                for v in values {
+                    match v {
+                        Some(v) => {
+                            expected.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                            expected.extend(v);
+                        }
+                        None => expected.extend_from_slice(&(-1i32).to_be_bytes()),
+                    }
+                }
+                assert_eq!(m.1, expected);
+            }
+        }
+        assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+    }
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cat14_detail\0".as_slice(),
+            detail_sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0cat14_detail\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &1u16.to_be_bytes(),
+            &1u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"P\0");
+    send(
+        &mut socket,
+        b'E',
+        &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let detail_binary = until_ready(&mut socket);
+    assert!(
+        !detail_binary.iter().any(|m| m.0 == b'E'),
+        "{detail_binary:?}"
+    );
+    let lengths = [-1, -1, -1, -1, 2, 2, 4, 1, 1, 1, 1, 1, 1, 1, 4, -1, -1];
+    assert_eq!(
+        description(&detail_binary.iter().find(|m| m.0 == b'T').unwrap().1),
+        expected_oids
+            .iter()
+            .zip(lengths)
+            .map(|(oid, len)| (*oid, len, -1, 1))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(detail_binary.iter().filter(|m| m.0 == b'D').count(), 3);
+    for message in detail_binary.iter().filter(|m| m.0 == b'D') {
+        let mut pos = 2;
+        for field in 0..17 {
+            let len = i32::from_be_bytes(message.1[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if [1, 2, 3, 16].contains(&field) {
+                assert_eq!(len, -1);
+            } else {
+                assert!(len >= 0);
+            }
+            if len >= 0 {
+                pos += len as usize;
+            }
+        }
+        assert_eq!(pos, message.1.len());
+    }
+    send(&mut socket, b'C', b"Scat14_detail\0");
+    send(&mut socket, b'C', b"Scat14_02\0");
+    send(&mut socket, b'S', b"");
+    assert!(!until_ready(&mut socket).iter().any(|m| m.0 == b'E'));
+    send(&mut socket, b'X', b"");
+    println!(
+        "cat14_02: three signatures; Q/extended text/binary/NULL/zero describe; language/type joins; cost/version Parse gates; DDL refusal; stable after unrelated DDL; cleanup"
+    );
+}
