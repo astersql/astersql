@@ -11943,3 +11943,284 @@ fn cat14_05() {
     drop(socket);
     drop(cleanup);
 }
+
+#[test]
+fn cat14_06() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    astersql_session::runtime::EnableMockDDLForTest(&domain).unwrap();
+    for db in ["cat14_06_db", "cat14_06_other"] {
+        native.execute(&format!("CREATE DATABASE {db}")).unwrap();
+        native
+            .execute(&format!(
+                "CREATE TABLE {db}.local_comment(a int) COMMENT='local only'"
+            ))
+            .unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        for db in ["cat14_06_db", "cat14_06_other"] {
+            native
+                .execute(&format!("DROP DATABASE IF EXISTS {db}"))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("cat14_06 cleanup: own databases and listener removed");
+    });
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(r.iter().all(|m| m.0 != b'E'), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        r
+    }
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn description(body: &[u8]) -> Vec<(u32, i16, i32, i16)> {
+        let mut offset = 2;
+        (0..u16::from_be_bytes(body[..2].try_into().unwrap()))
+            .map(|_| {
+                offset += body[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+                let v = (
+                    u32::from_be_bytes(body[offset + 6..offset + 10].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 10..offset + 12].try_into().unwrap()),
+                    i32::from_be_bytes(body[offset + 12..offset + 16].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 16..offset + 18].try_into().unwrap()),
+                );
+                offset += 18;
+                v
+            })
+            .collect()
+    }
+    fn origins(body: &[u8]) -> Vec<(u32, i16)> {
+        let mut offset = 2;
+        (0..u16::from_be_bytes(body[..2].try_into().unwrap()))
+            .map(|_| {
+                offset += body[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+                let value = (
+                    u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 4..offset + 6].try_into().unwrap()),
+                );
+                offset += 18;
+                value
+            })
+            .collect()
+    }
+    let mut saved_oid = None;
+    for db in ["cat14_06_db", "cat14_06_other"] {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let startup = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{db}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((startup.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&startup).unwrap();
+        while read(&mut s).0 != b'Z' {}
+        let sql = "SELECT objoid,classoid,description FROM pg_catalog.pg_shdescription";
+        let r = ok(&mut s, sql);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+        assert_eq!(
+            description(&r[0].1),
+            vec![(26, 4, -1, 0), (26, 4, -1, 0), (25, -1, -1, 0)]
+        );
+        assert_eq!(origins(&r[0].1), vec![(2396, 1), (2396, 2), (2396, 3)]);
+        let r = ok(
+            &mut s,
+            "SELECT oid FROM pg_database WHERE datname='cat14_06_db'",
+        );
+        let rows = data(&r);
+        assert_eq!(rows.len(), 1);
+        let oid = String::from_utf8(rows[0][6..].to_vec()).unwrap();
+        assert_eq!(saved_oid.get_or_insert(oid.clone()), &oid);
+        let join = "SELECT d.oid,s.classoid,s.description FROM pg_database d LEFT JOIN pg_shdescription s ON s.objoid=d.oid AND s.classoid=1262 WHERE d.datname='cat14_06_db'";
+        assert_eq!(
+            data(&ok(&mut s, join)),
+            vec![row(&[Some(&oid), None, None])]
+        );
+        // A real local description must never leak into the shared function.
+        assert_eq!(
+            data(&ok(
+                &mut s,
+                "SELECT description FROM pg_description WHERE description='local only'"
+            )),
+            vec![row(&[Some("local only")])]
+        );
+        for expr in [
+            format!("shobj_description({oid},'pg_database')"),
+            "shobj_description(0,'pg_database')".into(),
+            "shobj_description(4294967295,'pg_authid')".into(),
+            "shobj_description(NULL,'pg_database')".into(),
+            format!("shobj_description({oid},NULL)"),
+            format!("shobj_description({oid},'missing')"),
+            "shobj_description(1259,'pg_class')".into(),
+        ] {
+            let r = ok(
+                &mut s,
+                &format!("SELECT pg_catalog.{expr} FROM pg_database WHERE datname='cat14_06_db'"),
+            );
+            assert_eq!(data(&r), vec![row(&[None])]);
+            assert_eq!(description(&r[0].1), vec![(25, -1, -1, 0)]);
+            assert_eq!(origins(&r[0].1), vec![(0, 0)]);
+        }
+        for target in ["DATABASE cat14_06_db", "ROLE root", "TABLESPACE pg_default"] {
+            for value in ["'库 中文'", "''", "NULL"] {
+                let sql = format!("COMMENT ON {target} IS {value}");
+                let r = query(&mut s, &sql);
+                assert_eq!(
+                    r.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"EZ",
+                    "{sql}: {r:?}"
+                );
+                assert!(r[0].1.windows(7).any(|v| v == b"C0A000\0"), "{sql}: {r:?}");
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                assert!(data(&ok(&mut s, "SELECT description FROM pg_shdescription")).is_empty());
+                assert_eq!(
+                    data(&ok(&mut s, join)),
+                    vec![row(&[Some(&oid), None, None])]
+                );
+            }
+        }
+        let sql = "SELECT shobj_description($1,$2) FROM pg_database WHERE datname='cat14_06_db'";
+        send(
+            &mut s,
+            b'P',
+            &[
+                b"shared\0".as_slice(),
+                sql.as_bytes(),
+                b"\0",
+                &2u16.to_be_bytes(),
+                &26u32.to_be_bytes(),
+                &19u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"Sshared\0");
+        send(&mut s, b'S', b"");
+        let r = until_ready(&mut s);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ", "{r:?}");
+        assert_eq!(
+            r[1].1,
+            [
+                &2u16.to_be_bytes()[..],
+                &26u32.to_be_bytes(),
+                &19u32.to_be_bytes()
+            ]
+            .concat()
+        );
+        for binary in [false, true] {
+            let bytes = if binary {
+                oid.parse::<u32>().unwrap().to_be_bytes().to_vec()
+            } else {
+                oid.as_bytes().to_vec()
+            };
+            for null in [None, Some(0), Some(1)] {
+                let mut bind = b"\0shared\0".to_vec();
+                bind.extend(1u16.to_be_bytes());
+                bind.extend(i16::from(binary).to_be_bytes());
+                bind.extend(2u16.to_be_bytes());
+                for (i, p) in [bytes.as_slice(), b"pg_database"].iter().enumerate() {
+                    if null == Some(i) {
+                        bind.extend((-1i32).to_be_bytes());
+                    } else {
+                        bind.extend((p.len() as i32).to_be_bytes());
+                        bind.extend(*p);
+                    }
+                }
+                bind.extend(1u16.to_be_bytes());
+                bind.extend(i16::from(binary).to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(
+                    &mut s,
+                    b'E',
+                    &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut s, b'S', b"");
+                let r = until_ready(&mut s);
+                assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{r:?}");
+                assert_eq!(description(&r[1].1), vec![(25, -1, -1, i16::from(binary))]);
+                assert_eq!(data(&r), vec![row(&[None])]);
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            }
+        }
+        // Bind failures recover at Sync without running a portal.
+        for (value, state) in [("bad", "22P02"), ("4294967296", "22003")] {
+            let mut bind = b"\0shared\0".to_vec();
+            bind.extend(0u16.to_be_bytes());
+            bind.extend(2u16.to_be_bytes());
+            for p in [value.as_bytes(), b"pg_database"] {
+                bind.extend((p.len() as i32).to_be_bytes());
+                bind.extend(p);
+            }
+            bind.extend(0u16.to_be_bytes());
+            send(&mut s, b'B', &bind);
+            send(&mut s, b'S', b"");
+            let r = until_ready(&mut s);
+            assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+            assert!(
+                r[0].1
+                    .windows(7)
+                    .any(|v| v == format!("C{state}\0").as_bytes())
+            );
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            ok(
+                &mut s,
+                "SELECT oid FROM pg_database WHERE datname='cat14_06_db'",
+            );
+        }
+        let r = query(&mut s, "BEGIN");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'T'])));
+        let r = query(&mut s, "COMMENT ON DATABASE cat14_06_db IS 'rejected'");
+        assert_eq!(r[0].0, b'E');
+        assert!(r[0].1.windows(7).any(|v| v == b"C0A000\0"));
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'E'])));
+        ok(&mut s, "ROLLBACK");
+        assert_eq!(
+            data(&ok(&mut s, join)),
+            vec![row(&[Some(&oid), None, None])]
+        );
+        for bad in [
+            "SELECT objsubid FROM pg_shdescription",
+            "SELECT shobj_description(1) FROM pg_database",
+            "SELECT shobj_description(1,2) FROM pg_database",
+        ] {
+            let r = query(&mut s, bad);
+            assert_eq!(r[0].0, b'E');
+            assert!(r[0].1.windows(7).any(|v| v == b"C0A000\0"));
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            ok(
+                &mut s,
+                "SELECT oid FROM pg_database WHERE datname='cat14_06_db'",
+            );
+        }
+        send(&mut s, b'C', b"Sshared\0");
+        send(&mut s, b'S', b"");
+        until_ready(&mut s);
+        send(&mut s, b'X', b"");
+    }
+    drop(cleanup);
+}

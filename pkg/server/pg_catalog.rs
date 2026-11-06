@@ -1258,7 +1258,7 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
-                    ("obj_description", [oid, catalog])
+                    ("obj_description" | "shobj_description", [oid, catalog])
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(catalog, Expr::Null)
                                 || textual_type(self.expr_type(catalog)?.0)) =>
@@ -3700,12 +3700,14 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
-                name @ ("obj_description" | "col_description") => {
+                name @ ("obj_description" | "col_description" | "shobj_description") => {
                     match (evaluate(&args[0])?, evaluate(&args[1])?) {
                         (Value::Null, _) | (_, Value::Null) => Value::Null,
                         (oid @ Value::Signed(_), target) => {
                             let (catalog, subid) = match (name, target) {
-                                ("obj_description", Value::Text(catalog)) => (catalog, 0),
+                                ("obj_description" | "shobj_description", Value::Text(catalog)) => {
+                                    (catalog, 0)
+                                }
                                 ("col_description", Value::Signed(column)) => {
                                     ("pg_class".into(), column)
                                 }
@@ -3720,9 +3722,15 @@ impl CatalogQuery {
                             // Reuse the provider's real comments, stable attribute slots,
                             // execution snapshot, materialization limit and work budget.
                             // A provider failure must propagate instead of becoming NULL.
-                            if !execution.providers.borrow().contains_key("pg_description") {
+                            // Shared comments use their own provider in every database.
+                            let relation = if name == "shobj_description" {
+                                "pg_shdescription"
+                            } else {
+                                "pg_description"
+                            };
+                            if !execution.providers.borrow().contains_key(relation) {
                                 let mut rows = self.provider_rows(
-                                    "pg_description",
+                                    relation,
                                     execution.context,
                                     execution.snapshot.as_ref(),
                                     database,
@@ -3736,18 +3744,18 @@ impl CatalogQuery {
                                 execution
                                     .providers
                                     .borrow_mut()
-                                    .insert("pg_description".into(), rows);
+                                    .insert(relation.into(), rows);
                             }
-                            let rows = execution.providers.borrow()["pg_description"].clone();
+                            let rows = execution.providers.borrow()[relation].clone();
                             let slot = |name| {
-                                description_column("pg_description", name)
+                                description_column(relation, name)
                                     .expect("registered description column")
                                     .0
                             };
                             let (object_slot, class_slot, subid_slot, text_slot) = (
                                 slot("objoid"),
                                 slot("classoid"),
-                                slot("objsubid"),
+                                (relation == "pg_description").then(|| slot("objsubid")),
                                 slot("description"),
                             );
                             let mut description = Value::Null;
@@ -3755,7 +3763,8 @@ impl CatalogQuery {
                                 execution.comparison()?;
                                 if row[object_slot] == oid
                                     && row[class_slot] == Value::Signed(i64::from(*classoid))
-                                    && row[subid_slot] == Value::Signed(subid)
+                                    && subid_slot
+                                        .is_none_or(|slot| row[slot] == Value::Signed(subid))
                                 {
                                     description = row[text_slot].clone();
                                     break;
@@ -4835,14 +4844,12 @@ fn visit_expr<E>(
 fn description_column(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
     match (relation, name) {
         ("pg_description" | "pg_shdescription", "description") => Some((2, 253, 0)),
-        ("pg_description", "objoid") => {
+        ("pg_description" | "pg_shdescription", "objoid") => {
             Some((6, crate::pg_result::CatalogColumnType::Oid as u8, 0))
         }
-        ("pg_description", "classoid") => {
+        ("pg_description" | "pg_shdescription", "classoid") => {
             Some((7, crate::pg_result::CatalogColumnType::Oid as u8, 0))
         }
-        ("pg_shdescription", "objoid") => Some((6, 8, 0)),
-        ("pg_shdescription", "classoid") => Some((7, 8, 0)),
         ("pg_description", "objsubid") => Some((9, 3, 0)),
         _ => None,
     }

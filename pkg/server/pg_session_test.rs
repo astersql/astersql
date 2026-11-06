@@ -209,3 +209,18 @@ fn pg13_037_constraint_utility_boundaries() {
         );
     }
 }
+
+#[test]
+fn cat14_06_shared_comment_gate() {
+    for target in ["DATABASE comment_db", "ROLE root", "TABLESPACE pg_default"] {
+        for value in ["'库 中文'", "''", "NULL"] {
+            let sql = format!("/* gate */ COMMENT ON {target} IS {value};");
+            assert_eq!(SessionQuery::parse(&sql).unwrap_err().0, "0A000", "{sql}");
+        }
+    }
+    assert!(
+        SessionQuery::parse("SELECT 'COMMENT ON DATABASE x IS NULL'")
+            .unwrap()
+            .is_none()
+    );
+}

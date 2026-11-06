@@ -558,6 +558,19 @@ impl SessionQuery {
             return Ok(Some(Self::Sequence(command, name)));
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
+        // Shared objects have no durable comment source yet. Refuse before
+        // native parsing or writes, including comment removal requests.
+        if word(tokens.first(), "comment")
+            && word(tokens.get(1), "on")
+            && ["database", "role", "tablespace"]
+                .iter()
+                .any(|target| word(tokens.get(2), target))
+        {
+            return Err((
+                "0A000",
+                "shared object comments have no persistent source".into(),
+            ));
+        }
         if (word(tokens.first(), "create") || word(tokens.first(), "alter"))
             && word(tokens.get(1), "table")
             && tokens.windows(3).any(|w| {
