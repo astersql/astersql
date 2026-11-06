@@ -354,6 +354,27 @@ impl ConcreteSession {
         });
         astersql_planner_core::InstallPlannerExpressionFactory()
             .map_err(|error| SessionError::new(error.to_string()))?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // Validate declarations before allocating or publishing metadata,
+            // even when there are no defaults or rows to invoke numeric casts.
+            for column in &statement.Cols {
+                if column.Tp.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
+                    || column.Tp.PostgreSQLArrayElement()
+                        == Some(astersql_parser_types::PostgreSQLArrayElement::Numeric)
+                {
+                    astersql_types::pg_numeric::PgNumeric::validate_modifier(
+                        column.Tp.GetFlen(),
+                        column.Tp.GetDecimal(),
+                    )
+                    .map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
+                }
+            }
+        }
         Self::validate_create_table_collations(statement)?;
         let strict_integer_display_width =
             unsafe { astersql_parser_types::TiDBStrictIntegerDisplayWidth };

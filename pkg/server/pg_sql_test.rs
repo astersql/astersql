@@ -224,3 +224,20 @@ fn pg13_023_default_literal_escapes() {
         "CREATE TABLE t (v TEXT DEFAULT 'a\\\\b')"
     );
 }
+
+#[test]
+fn pg13_034_interval_ddl_adaptation() {
+    for declaration in [
+        "interval",
+        "interval(3)",
+        "interval day to second(2)",
+        "interval year to month",
+    ] {
+        let sql = format!("CREATE TABLE t(v {declaration})");
+        let adapted = crate::pg_sql::adapt(&sql).unwrap();
+        assert!(
+            adapted.contains(&declaration.replacen("interval", "INTERVAL", 1)),
+            "{adapted}"
+        );
+    }
+}

@@ -8942,3 +8942,245 @@ fn pg13_033_contract() {
         "pg13_033_contract: scenarios=7 identity nullability types arrays stable_slots zero_describe error recovery cleanup"
     );
 }
+
+#[test]
+fn pg13_034_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_034_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_034_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG34 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_034_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn cells(body: &[u8]) -> Vec<Option<&str>> {
+        let count = u16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut pos = 2;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let len = i32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if len < 0 {
+                out.push(None);
+            } else {
+                let end = pos + len as usize;
+                out.push(Some(std::str::from_utf8(&body[pos..end]).unwrap()));
+                pos = end;
+            }
+        }
+        out
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.is_size_t(id integer, amount numeric(12,3), label varchar(7), stamp timestamp(3), plain text, f real, d double precision, dt date, n numeric, neg numeric(5,-2), iv interval day to second(2))",
+    );
+    let sql = "SELECT column_name,character_maximum_length,character_octet_length,numeric_precision,numeric_precision_radix,numeric_scale,datetime_precision,interval_type,interval_precision FROM information_schema.columns WHERE table_schema='public' AND table_name='is_size_t' ORDER BY ordinal_position";
+    let result = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 23, 23, 23, 23, 23, 23, 1043, 23]
+    );
+    let expected = vec![
+        vec![
+            Some("id"),
+            None,
+            None,
+            Some("32"),
+            Some("2"),
+            Some("0"),
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("amount"),
+            None,
+            None,
+            Some("12"),
+            Some("10"),
+            Some("3"),
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("label"),
+            Some("7"),
+            Some("28"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("stamp"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("3"),
+            None,
+            None,
+        ],
+        vec![
+            Some("plain"),
+            None,
+            Some("1073741824"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("f"),
+            None,
+            None,
+            Some("24"),
+            Some("2"),
+            None,
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("d"),
+            None,
+            None,
+            Some("53"),
+            Some("2"),
+            None,
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("dt"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("0"),
+            None,
+            None,
+        ],
+        vec![
+            Some("n"),
+            None,
+            None,
+            None,
+            Some("10"),
+            None,
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("neg"),
+            None,
+            None,
+            Some("5"),
+            Some("10"),
+            Some("2046"),
+            None,
+            None,
+            None,
+        ],
+        vec![
+            Some("iv"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("2"),
+            Some("DAY TO SECOND(2)"),
+            None,
+        ],
+    ];
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| cells(&m.1))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let empty = ok(&mut socket, &sql.replace("is_size_t'", "absent'"));
+    assert_eq!(columns(&empty[0].1), columns(&result[0].1));
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    let extra = ok(
+        &mut socket,
+        "SELECT character_set_catalog,character_set_schema,character_set_name,scope_catalog,scope_schema,scope_name,maximum_cardinality,is_self_referencing FROM information_schema.columns WHERE table_name='is_size_t' ORDER BY ordinal_position",
+    );
+    assert_eq!(
+        columns(&extra[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![19, 19, 19, 19, 19, 19, 23, 1043]
+    );
+    for row in extra.iter().filter(|m| m.0 == b'D') {
+        assert_eq!(
+            cells(&row.1),
+            vec![None, None, None, None, None, None, None, Some("NO")]
+        );
+    }
+    let bad = query(&mut socket, "SELECT absent FROM information_schema.columns");
+    assert!(
+        bad.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703"))
+    );
+    ok(&mut socket, "SELECT 1");
+    println!(
+        "pg13_034_contract: scenarios=14 types=11 lengths numeric temporal interval null zero_describe error recovery cleanup"
+    );
+}

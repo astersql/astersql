@@ -3782,6 +3782,7 @@ StringType : Char OptBinary @action;
 StringType : NChar FieldLen OptBinary @action;
 StringType : NChar OptBinary @action;
 StringType : Varchar FieldLen OptBinary @action;
+StringType : Varchar %prec empty @action;
 StringType : NVarchar FieldLen OptBinary @action;
 StringType : "BINARY" OptFieldLen @action;
 StringType : "VARBINARY" FieldLen @action;
@@ -4425,6 +4426,8 @@ PgTimestampType : "TIMESTAMP" OptFieldLen @action;
 SimpleExpr : SimpleExpr pgTypecast PgTimestampType %prec pgTypecast @action;
 
 // PostgreSQL interval declarations retain the field mask and fractional precision.
+DateAndTimeType : pgInterval %prec empty @action;
+DateAndTimeType : pgInterval PgIntervalOpt @action;
 PgCastType : pgInterval %prec empty @action;
 PgCastType : pgInterval PgIntervalOpt @action;
 UnReservedKeyword : pgInterval %prec empty;

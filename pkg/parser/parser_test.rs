@@ -7243,3 +7243,55 @@ fn pg13_023_timestamp_default_declaration() {
         );
     }
 }
+
+#[test]
+fn pg13_034_interval_column_declarations() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for (declaration, mask, precision) in [
+        ("interval", -1, -1),
+        ("interval(0)", 32767, 0),
+        ("interval day to second(2)", 7176, 2),
+        ("interval year to month", 6, -1),
+        ("interval second(6)", 4096, 6),
+    ] {
+        let (statements, _) = parser
+            .ParseSQL(&format!("CREATE TABLE t(v {declaration})"), &[])
+            .unwrap();
+        let table = statements[0]
+            .as_any()
+            .downcast_ref::<parser_ast::CreateTableStmt>()
+            .unwrap();
+        let tp = &table.Cols[0].Tp;
+        assert_eq!(tp.GetType(), parser_mysql::r#type::TypePgInterval);
+        assert_eq!(
+            (tp.GetFlen(), tp.GetDecimal()),
+            (mask, precision),
+            "{declaration}"
+        );
+        assert!(tp.IsPostgreSQLDeclaration());
+    }
+    assert!(
+        crate::Parser::default()
+            .ParseSQL("CREATE TABLE t(v interval day to second(2))", &[])
+            .is_err()
+    );
+}
+
+#[test]
+fn pg13_034_unbounded_varchar_column() {
+    let statement = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+        .ParseOneStmt("CREATE TABLE t(v varchar)", "", "")
+        .unwrap();
+    let table = statement
+        .as_any()
+        .downcast_ref::<parser_ast::CreateTableStmt>()
+        .unwrap();
+    assert_eq!(table.Cols[0].Tp.PostgreSQLTextOid(), Some(1043));
+    assert_eq!(table.Cols[0].Tp.GetFlen(), -1);
+    assert!(table.Cols[0].Tp.IsPostgreSQLDeclaration());
+    assert!(
+        crate::Parser::default()
+            .ParseSQL("CREATE TABLE t(v varchar)", &[])
+            .is_err()
+    );
+}

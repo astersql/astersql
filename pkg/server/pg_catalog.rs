@@ -53,19 +53,38 @@ const STANDARD_COLUMNS: &[(&str, usize)] = &[
     ("ordinal_position", 4),
     ("is_nullable", 6),
     ("data_type", 7),
+    ("character_maximum_length", 8),
+    ("character_octet_length", 9),
+    ("numeric_precision", 10),
+    ("numeric_precision_radix", 11),
+    ("numeric_scale", 12),
+    ("datetime_precision", 13),
+    ("interval_type", 14),
+    ("interval_precision", 15),
+    ("character_set_catalog", 16),
+    ("character_set_schema", 17),
+    ("character_set_name", 18),
+    ("collation_catalog", 19),
+    ("collation_schema", 20),
+    ("collation_name", 21),
     ("domain_catalog", 22),
     ("domain_schema", 23),
     ("domain_name", 24),
     ("udt_catalog", 25),
     ("udt_schema", 26),
     ("udt_name", 27),
+    ("scope_catalog", 28),
+    ("scope_schema", 29),
+    ("scope_name", 30),
+    ("maximum_cardinality", 31),
     ("dtd_identifier", 32),
+    ("is_self_referencing", 33),
 ];
 fn standard_column_type(slot: usize) -> u8 {
     match slot {
-        4 => 3,
-        6 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
-        7 => crate::pg_result::CatalogColumnType::Varchar as u8,
+        4 | 8..=13 | 15 | 31 => 3,
+        6 | 33 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
+        7 | 14 => crate::pg_result::CatalogColumnType::Varchar as u8,
         _ => crate::pg_result::CatalogColumnType::Name as u8,
     }
 }
@@ -826,6 +845,15 @@ impl CatalogQuery {
                 field
             } else {
                 match (relation.name.as_str(), name) {
+                    (
+                        "information_schema.columns",
+                        "collation_catalog" | "collation_schema" | "collation_name",
+                    ) => {
+                        return Err((
+                            "0A000",
+                            "PostgreSQL column collation identity is unavailable".into(),
+                        ));
+                    }
                     ("information_schema.columns", column) => STANDARD_COLUMNS
                         .iter()
                         .find(|(name, _)| *name == column)
@@ -1886,7 +1914,7 @@ impl CatalogQuery {
                         {
                             continue;
                         }
-                        let (oid, _) = native_column_type(column)?;
+                        let (oid, modifier) = native_column_type(column)?;
                         let tp = COLUMN_TYPES
                             .iter()
                             .find(|t| t.oid == oid)
@@ -1945,6 +1973,8 @@ impl CatalogQuery {
                         }
                         row[4] = Value::Signed((slot + 1) as i64);
                         row[32] = Value::Text((slot + 1).to_string());
+                        standard_column_size(&mut row, oid, modifier)?;
+                        row[33] = Value::Text("NO".into());
                         rows.push(row);
                         if rows.len() > MAX_CATALOG_ROWS {
                             return Err(catalog_row_limit());
@@ -2508,9 +2538,9 @@ impl CatalogQuery {
                 } else {
                     for (label, slot) in STANDARD_COLUMNS {
                         let domain = match slot {
-                            4 => standard.cardinal_number,
-                            6 => standard.yes_or_no,
-                            7 => standard.character_data,
+                            4 | 8..=13 | 15 | 31 => standard.cardinal_number,
+                            6 | 33 => standard.yes_or_no,
+                            7 | 14 => standard.character_data,
                             _ => standard.sql_identifier,
                         };
                         let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
@@ -5429,6 +5459,77 @@ const COLUMN_TYPES: &[BuiltinType] = &[
         by_value: false,
     },
 ];
+
+// Match PG18 information_schema helpers using the canonical declaration, never
+// native display widths. The listener accepts only UTF8 (pg_conn startup), whose
+// maximum encoded character length is four bytes. Arrays have no scalar sizes.
+fn standard_column_size(row: &mut [Value], oid: i64, modifier: i64) -> ConnResult<()> {
+    let number = |n: i64| -> ConnResult<Value> {
+        i32::try_from(n)
+            .map(|n| Value::Signed(i64::from(n)))
+            .map_err(|_| ConnError::UnsupportedCommand(0))
+    };
+    if matches!(oid, 1042 | 1043) && modifier != -1 {
+        row[8] = number(modifier - 4)?;
+    } else if matches!(oid, 1560 | 1562) && modifier != -1 {
+        row[8] = number(modifier)?;
+    }
+    if matches!(oid, 25 | 1042 | 1043) {
+        row[9] = number(if modifier == -1 {
+            1 << 30
+        } else {
+            (modifier - 4)
+                .checked_mul(4)
+                .ok_or(ConnError::UnsupportedCommand(0))?
+        })?;
+    }
+    if let Some(precision) = match oid {
+        21 => Some(16),
+        23 => Some(32),
+        20 => Some(64),
+        700 => Some(24),
+        701 => Some(53),
+        1700 if modifier != -1 => Some(((modifier - 4) >> 16) & 0xffff),
+        _ => None,
+    } {
+        row[10] = number(precision)?;
+    }
+    if matches!(oid, 20 | 21 | 23 | 700 | 701 | 1700) {
+        row[11] = number(if oid == 1700 { 10 } else { 2 })?;
+    }
+    if matches!(oid, 20 | 21 | 23) {
+        row[12] = number(0)?;
+    }
+    // PG18's information_schema helper exposes the low sixteen bits, including
+    // the encoded negative numeric scale, rather than format_type's signed scale.
+    if oid == 1700 && modifier != -1 {
+        row[12] = number((modifier - 4) & 0xffff)?;
+    }
+    if let Some(precision) = match oid {
+        1082 => Some(0),
+        1083 | 1114 | 1184 | 1266 => Some(if modifier < 0 { 6 } else { modifier }),
+        1186 => Some(if modifier < 0 || modifier & 0xffff == 0xffff {
+            6
+        } else {
+            modifier & 0xffff
+        }),
+        _ => None,
+    } {
+        row[13] = number(precision)?;
+    }
+    if oid == 1186 && modifier >= 0 {
+        let formatted = format_column_type(oid, Some(modifier))?;
+        // The upstream substring includes a trailing fractional precision when
+        // it follows a field range, e.g. DAY TO SECOND(2).
+        let fields = formatted
+            .strip_prefix("interval")
+            .ok_or(ConnError::UnsupportedCommand(0))?;
+        if fields.starts_with(' ') {
+            row[14] = Value::Text(fields.trim_start().to_ascii_uppercase());
+        }
+    }
+    Ok(())
+}
 
 fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i64, i64)> {
     use astersql_parser_mysql::r#type as mysql;

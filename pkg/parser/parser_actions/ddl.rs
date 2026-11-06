@@ -594,6 +594,8 @@ enum DdlRule {
     OptCharsetWithOptBinaryAlt03,
     OptCharsetWithOptBinaryAlt04,
     PgTimestampTzColumn,
+    PgIntervalColumn,
+    PgUnboundedVarchar,
     DateAndTimeTypeAlt01,
     DateAndTimeTypeAlt02,
     DateAndTimeTypeAlt03,
@@ -636,6 +638,8 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        id if id.starts_with("stringtype_varchar_prec_empty--") => Some(DdlRule::PgUnboundedVarchar),
+        id if id.starts_with("dateandtimetype_pginterval_pgintervalopt--") || id.starts_with("dateandtimetype_pginterval_prec_empty--") => Some(DdlRule::PgIntervalColumn),
         "pgunsupportedconstraint_check_expression_notsym--a6cedb10a696815f" => Some(DdlRule::PgUnsupportedNotValid),
         "altertablespec_pgvalidate_constraint_identifier--d78a67f4ef98b330" => Some(DdlRule::PgUnsupportedValidate),
         "altertablespec_alter_columnkeywordopt_columnname--7063fb2dfd9051a6" => Some(DdlRule::PgColumnType),
@@ -7330,6 +7334,35 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 }
                 .to_owned(),
             }))
+        }
+        DdlRule::PgUnboundedVarchar => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeVarchar);
+            tp.SetFlen(-1);
+            tp.SetPostgreSQLDeclaration();
+            tp.SetPostgreSQLTextOid(1043);
+            out.item = Some(Box::new(tp));
+        }
+        DdlRule::PgIntervalColumn => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            // PgIntervalOpt is also consumed by interval casts/literals. Reuse
+            // its validated field mask and precision in the stored declaration.
+            let (mask, precision) = rhs[rhs_len].item.as_deref()
+                .and_then(|v| v.downcast_ref::<(isize, isize)>()).copied()
+                .unwrap_or((0x7fff, -1));
+            let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypePgInterval);
+            tp.SetFlen(if mask == 0x7fff && precision == -1 { -1 } else { mask });
+            tp.SetDecimal(precision);
+            tp.SetCharset("binary".into());
+            tp.SetCollate("binary".into());
+            tp.SetPostgreSQLDeclaration();
+            out.item = Some(Box::new(tp));
         }
         DdlRule::PgTimestampTzColumn => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL

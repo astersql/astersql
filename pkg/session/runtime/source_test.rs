@@ -283,3 +283,52 @@ fn pg13_033_view_columns_do_not_inherit_not_null_constraints() {
     pg.execute("DROP TABLE pg33_nullable_base").unwrap();
     println!("pg13_033 view nullability: base_not_null=1 view_nullable=1 cleanup=2");
 }
+
+#[test]
+fn pg13_034_numeric_declarations_validate_before_publication() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    for declaration in ["numeric(0,0)", "numeric(1001,0)", "numeric(5,1001)"] {
+        let version = domain.info_schema().SchemaMetaVersion();
+        let sql = format!("CREATE TABLE pg34_invalid_numeric(v {declaration})");
+        assert!(pg.execute(&sql).is_err(), "{sql}");
+        assert!(domain.stats_table("test", "pg34_invalid_numeric").is_none());
+        assert_eq!(domain.info_schema().SchemaMetaVersion(), version);
+    }
+    for declaration in ["numeric", "numeric(5,-2)", "numeric(1000,1000)"] {
+        pg.execute(&format!("CREATE TABLE pg34_valid_numeric(v {declaration})"))
+            .unwrap();
+        pg.execute("DROP TABLE pg34_valid_numeric").unwrap();
+    }
+    println!(
+        "pg13_034 numeric declaration: rejected=3 accepted=3 no_invalid_publication cleanup=3"
+    );
+}
+
+#[test]
+fn pg13_034_plain_view_preserves_column_declarations() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg34_view_base(label varchar(7),stamp timestamp(3),amount numeric(12,3),iv interval day to second(2))").unwrap();
+    pg.execute("CREATE VIEW pg34_view AS SELECT label,stamp,amount,iv FROM pg34_view_base")
+        .unwrap();
+    let (_, base) = domain.stats_table("test", "pg34_view_base").unwrap();
+    let (_, view) = domain.stats_table("test", "pg34_view").unwrap();
+    let declaration = |c: &astersql_meta_model::ColumnInfo| {
+        (
+            c.GetType(),
+            c.GetFlen(),
+            c.GetDecimal(),
+            c.FieldType.PostgreSQLTextOid(),
+            c.FieldType.IsPostgreSQLDeclaration(),
+        )
+    };
+    assert_eq!(
+        base.Columns.iter().map(declaration).collect::<Vec<_>>(),
+        view.Columns.iter().map(declaration).collect::<Vec<_>>()
+    );
+    assert!(view.PostgreSQLView.is_some());
+    pg.execute("DROP VIEW pg34_view").unwrap();
+    pg.execute("DROP TABLE pg34_view_base").unwrap();
+    println!("pg13_034 plain view declarations: preserved=4 cleanup=2");
+}

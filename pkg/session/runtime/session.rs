@@ -3792,21 +3792,43 @@ impl ConcreteSession {
         for ((expression, field), column) in
             expressions.into_iter().zip(fields).zip(&mut view.Columns)
         {
-            let mut tp = field.column.FieldType;
+            // A plain PG column keeps its stored declaration and modifiers.
+            // Result inference describes expression values and can widen varchar
+            // or temporal types; it must not replace the view's catalog identity.
+            let source = if let B::Column(id) = &expression {
+                Some(
+                    base_model
+                        .Columns
+                        .iter()
+                        .find(|c| c.ID == *id)
+                        .ok_or_else(unsupported)?
+                        .FieldType
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            let declared = source
+                .as_ref()
+                .is_some_and(|tp| tp.IsPostgreSQLDeclaration());
+            let mut tp = source.unwrap_or(field.column.FieldType);
             // SQL unknown string/NULL projections resolve to text in a stored view.
-            if matches!(
-                tp.GetType(),
-                astersql_parser_mysql::r#type::TypeNull
-                    | astersql_parser_mysql::r#type::TypeVarString
-                    | astersql_parser_mysql::r#type::TypeString
-                    | astersql_parser_mysql::r#type::TypeVarchar
-            ) {
+            if !declared
+                && matches!(
+                    tp.GetType(),
+                    astersql_parser_mysql::r#type::TypeNull
+                        | astersql_parser_mysql::r#type::TypeVarString
+                        | astersql_parser_mysql::r#type::TypeString
+                        | astersql_parser_mysql::r#type::TypeVarchar
+                )
+            {
                 tp = astersql_parser_types::NewFieldType(
                     astersql_parser_mysql::r#type::TypeVarString,
                 );
                 tp.SetPostgreSQLTextOid(25);
             }
-            if (tp.GetType() != astersql_parser_mysql::r#type::TypeLong
+            if (!declared
+                && tp.GetType() != astersql_parser_mysql::r#type::TypeLong
                 && tp.PostgreSQLTextOid() != Some(25))
                 || astersql_parser_mysql::r#type::HasUnsignedFlag(tp.GetFlag())
             {

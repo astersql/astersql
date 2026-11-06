@@ -243,6 +243,8 @@ fn mapped_type(tokens: &[Token], start: usize) -> ParseResult<Option<(usize, &'s
         (start, "BLOB")
     } else if ty.word("date") {
         (start, "DATE")
+    } else if ty.word("interval") {
+        (start, "INTERVAL")
     } else if ty.word("time") {
         (start, "TIME")
     } else if ty.word("timestamp") {

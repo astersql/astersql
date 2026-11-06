@@ -340,3 +340,17 @@ sequence ALTER options retain their existing capability gate. These metadata
 changes use the current canonical fast path, without a new dependency graph or
 backfill. Focused coverage is `pg13_028_contract`, `pg13_028_differential`, and
 `pg13_028_sequence_owner_publication_is_atomic`.
+
+## Rust PostgreSQL standard column sizes
+
+`information_schema.columns` derives scalar lengths and precision from the same
+PG OID/typmod as `pg_attribute`, including UTF8 octet limits and interval fields.
+A bounded view's plain PG column projection now copies the source declaration,
+including varchar length, numeric scale and temporal precision, into its existing
+stored binding. Literal expressions retain the prior inference rules. The source
+column dependency and type checks still apply; this adds no new query grammar or
+view-write support. Numeric CREATE TABLE declarations reuse the existing numeric
+modifier validator before metadata allocation/publication. Focused coverage is
+`pg13_034_contract`, `pg13_034_differential`, and the two `pg13_034` source tests in
+`pkg/session/runtime/source_test.rs`. Missing PG column collation identity refuses
+only that projection; native collation names are not substituted.
