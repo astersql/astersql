@@ -377,7 +377,7 @@ fn catalog_database_description_semantics() {
         &mut socket,
         "SELECT pg_get_userbyid(123) FROM pg_catalog.pg_database LIMIT 1",
     );
-    assert_eq!(unknown_owner[1], (b'D', row(&[None])));
+    assert_eq!(unknown_owner[1], (b'D', row(&[Some("unknown (OID=123)")])));
     let mut selected = TcpStream::connect(addr).unwrap();
     selected
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -13916,4 +13916,259 @@ fn cat14_10() {
     send(&mut reader, b'X', b"");
     send(&mut other, b'X', b"");
     send(&mut admin, b'X', b"");
+}
+
+#[test]
+fn cat14_11() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_11_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_11_db")
+            .unwrap();
+        for name in ["cat14_11_reader", "cat14_11@owner'二"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect = |user: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0cat14_11_db\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (oid, len) in types {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&t[offset..offset + 6], &[0; 6]);
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE cat14_11_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_11@owner'二\" NOLOGIN");
+    let owner = native.pg_database_role_id("cat14_11@owner'二").unwrap();
+    let mut reader = connect("cat14_11_reader");
+    let mut other = connect("cat14_11_reader");
+    let expected = Some("cat14_11@owner'二".as_bytes().to_vec());
+    let sql =
+        format!("SELECT pg_catalog.pg_get_userbyid(oid) FROM pg_roles WHERE oid={owner}::oid");
+    let r = ok(&mut reader, &sql);
+    assert_eq!(values(&data(&r)[0]), vec![expected.clone()]);
+    description(&r, &[(19, 64)], 0);
+    let scalar = format!(
+        "SELECT pg_catalog.pg_get_userbyid({owner}::oid),pg_get_userbyid(NULL::oid),pg_get_userbyid(0::oid),pg_get_userbyid(4294967295::oid)"
+    );
+    let expected_row = vec![
+        expected.clone(),
+        None,
+        Some(b"unknown (OID=0)".to_vec()),
+        Some(b"unknown (OID=4294967295)".to_vec()),
+    ];
+    for c in [&mut reader, &mut other, &mut admin] {
+        let r = ok(c, &scalar);
+        assert_eq!(values(&data(&r)[0]), expected_row);
+        description(&r, &[(19, 64); 4], 0);
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+    }
+    ok(
+        &mut admin,
+        "GRANT \"cat14_11@owner'二\" TO cat14_11_reader WITH INHERIT FALSE, SET TRUE",
+    );
+    ok(&mut reader, "SET ROLE \"cat14_11@owner'二\"");
+    assert_eq!(values(&data(&ok(&mut reader, &scalar))[0]), expected_row);
+    assert_eq!(values(&data(&ok(&mut other, &scalar))[0]), expected_row);
+    ok(&mut reader, "RESET ROLE");
+    ok(
+        &mut admin,
+        "REVOKE \"cat14_11@owner'二\" FROM cat14_11_reader",
+    );
+    // OID parameter and name output share the existing checked text/binary codecs.
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"owner_stmt\0SELECT pg_get_userbyid($1)\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'D', b"Sowner_stmt\0");
+    send(&mut reader, b'S', b"");
+    let parsed = until_ready(&mut reader);
+    assert!(!parsed.iter().any(|m| m.0 == b'E'), "{parsed:?}");
+    description(&parsed, &[(19, 64)], 0);
+    for binary in [0i16, 1] {
+        for oid in [Some(owner as u32), None, Some(0)] {
+            let param = oid.map(|v| {
+                if binary == 1 {
+                    v.to_be_bytes().to_vec()
+                } else {
+                    v.to_string().into_bytes()
+                }
+            });
+            let mut bind = b"owner_portal\0owner_stmt\0".to_vec();
+            bind.extend(1i16.to_be_bytes());
+            bind.extend(binary.to_be_bytes());
+            bind.extend(1i16.to_be_bytes());
+            bind.extend(param.as_ref().map_or(-1, |v| v.len() as i32).to_be_bytes());
+            if let Some(p) = param {
+                bind.extend(p);
+            }
+            bind.extend(1i16.to_be_bytes());
+            bind.extend(binary.to_be_bytes());
+            send(&mut reader, b'B', &bind);
+            send(&mut reader, b'D', b"Powner_portal\0");
+            send(
+                &mut reader,
+                b'E',
+                &[b"owner_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+            );
+            send(&mut reader, b'S', b"");
+            let r = until_ready(&mut reader);
+            assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+            description(&r, &[(19, 64)], binary);
+            assert_eq!(
+                values(&data(&r)[0]),
+                vec![match oid {
+                    None => None,
+                    Some(0) => Some(b"unknown (OID=0)".to_vec()),
+                    _ => expected.clone(),
+                }]
+            );
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            send(&mut reader, b'C', b"Powner_portal\0");
+            send(&mut reader, b'S', b"");
+            until_ready(&mut reader);
+        }
+    }
+    ok(&mut admin, "DROP ROLE \"cat14_11@owner'二\"");
+    let r = ok(&mut other, &format!("SELECT pg_get_userbyid({owner}::oid)"));
+    assert_eq!(
+        values(&data(&r)[0]),
+        vec![Some(format!("unknown (OID={owner})").into_bytes())]
+    );
+    ok(&mut admin, "CREATE ROLE \"cat14_11@owner'二\" NOLOGIN");
+    assert_ne!(
+        native.pg_database_role_id("cat14_11@owner'二").unwrap(),
+        owner
+    );
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT pg_get_userbyid('bad'::oid)",
+        "22P02",
+        b'E',
+    );
+    denied(&mut reader, "SELECT pg_get_userbyid(0::oid)", "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    assert_eq!(
+        values(&data(&ok(&mut reader, "SELECT pg_get_userbyid(NULL::oid)"))[0]),
+        vec![None]
+    );
+    send(&mut reader, b'C', b"Sowner_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    for c in [&mut reader, &mut other, &mut admin] {
+        send(c, b'X', b"");
+    }
 }

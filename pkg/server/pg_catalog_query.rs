@@ -1182,7 +1182,7 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
 // Queries with native relations retain their existing executor ownership.
 fn identity_scalar(tokens: &[Token]) -> bool {
     !tokens.iter().any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
-        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role")))
+        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role" | "pg_get_userbyid")))
 }
 
 // Standalone OID constants use the checked catalog codec.

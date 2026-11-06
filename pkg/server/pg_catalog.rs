@@ -205,6 +205,16 @@ impl Execution<'_> {
             .cloned()
             .map_or(Value::Null, Value::Text))
     }
+    fn role_name(&self, oid: i64) -> ConnResult<Value> {
+        // Use public stable role identities, independently of database ownership
+        // and the caller's effective role. Unknown OIDs follow PostgreSQL nameout.
+        Ok(Value::Text(
+            self.role_facts()?
+                .into_iter()
+                .find(|role| role.oid == oid)
+                .map_or_else(|| format!("unknown (OID={oid})"), |role| role.name),
+        ))
+    }
     fn comparison(&self) -> ConnResult<()> {
         check_catalog_cancel(self.cancel)?;
         let work = self.work.get() + 1;
@@ -4237,7 +4247,7 @@ impl CatalogQuery {
                     .map_or(Value::Null, |s| Value::Text(s.clone())),
                 "pg_get_userbyid" => match evaluate(&args[0])? {
                     Value::Null => Value::Null,
-                    Value::Signed(oid) => execution.database_role_name(oid)?,
+                    Value::Signed(oid) => execution.role_name(oid)?,
                     _ => unreachable!("validated role OID"),
                 },
                 "pg_get_function_arguments"

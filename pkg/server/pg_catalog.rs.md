@@ -55,7 +55,7 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 
 关键硬边界包括：总物化行不超过 16,384；比较/连接工作不超过 100,000；CTE 输出不超过 24 列；每次循环和关键阶段检查取消；算术使用 checked 运算；OID、时间戳、事务 ID、列位置和类型 modifier 均检查范围。缺失 snapshot、损坏/不完整模型、非法数组、无穷数值、零日期、无法忠实翻译的 generated/default/check 表达式都会显式失败，而不是静默伪造结果。
 
-该实现不是完整 PostgreSQL：`age(transactionid)` 只用于原生 TSO 的“越小越旧”排序，不能投影为 PG XID 年龄；`array_agg` 目前只接受 bigint；通配符仅支持已知 CTE 列；表空间等无原生来源的关系为空；`pg_get_userbyid` 没有原生 owner 映射时返回 NULL；未知对象定义和不支持的索引形态不会猜测。
+该实现不是完整 PostgreSQL：`age(transactionid)` 只用于原生 TSO 的“越小越旧”排序，不能投影为 PG XID 年龄；`array_agg` 目前只接受 bigint；通配符仅支持已知 CTE 列；表空间等无原生来源的关系为空；`pg_get_userbyid(oid)` 使用共享持久角色身份反查，NULL 参数传播，未知 OID 返回 `unknown (OID=<十进制OID>)`（name/19）；未知对象定义和不支持的索引形态不会猜测。
 
 ## 并发与资源生命周期
 
@@ -98,3 +98,9 @@ catalog_indexes 校验表内索引ID唯一、多主索引和整数句柄的唯�
 `pg_has_role`支持省略调用者和显式name/oid调用者、text/oid目标，以及MEMBER/USAGE/SET、六种WITH ADMIN/GRANT OPTION后缀和逗号任一匹配。MEMBER遍历真实存在性，USAGE/SET每一跳分别要求INHERIT/SET；ADMIN沿成员闭包检查最后一跳ADMIN。NULL严格传播，不存在的名字42704，不存在数值OID返回false（不是其他has_*函数的通用NULL规则），非法权限22023。目录提供器的RowDescription来源OID/属性号保持0，oid/26与bool/16使用既有codec。
 
 ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能是有界目录消费者；普通SQL全局函数注册、完整角色DDL/委派授权、任意客户端UI流程仍有独立范围。
+
+## 角色 OID 反查（任务11）
+
+`Execution::role_name` 消费单次执行缓存的 `TiDBContext::pg_role_facts`，与 `pg_roles.oid/rolname` 使用同一稳定身份来源，不依赖数据库列表、owner 或调用者角色。`database_role_name` 仍服务于既有 owner 存在性检查，未知 owner 不由函数 fallback 掩盖。`pg_catalog_query::identity_scalar` 接入无 FROM 的普通/pg_catalog 限定调用及 OID 参数；带原生 FROM 的语句仍保留共享执行器归属。
+
+独立测试 `pg_catalog_test::cat14_11` 覆盖真实非root双连接、特殊名称、NULL、0/最大OID、删除/重建、文本/二进制参数及name结果描述、事务错误与恢复。未知值文字由固定PG18.4/18.6参考构建采证；对象owner写入与完整普通SQL函数工厂仍遵循其主责范围。
