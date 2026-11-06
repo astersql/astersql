@@ -141,3 +141,7 @@ pg_database.datacl按需消费共享PgDatabaseFact::acl_text，默认ACL为NULL�
 pg_proc.proowner按oid/26、来源1255/4投影；三条原语的name/OID与共享PG_INTROSPECTION_FUNCTION_IDENTITIES一致。目录从既有PgStandardSchema的function_owners读取逐函数初始owner，再应用逐数据库function_owner_overrides的显式事实。真实角色OID缺失时仅所需读取返回0A000；oid/proname仍可读。name等值合取项在角色JOIN前使用已有过滤，OR不下推，未匹配外连接保持SQL NULL。不从调用者、schema/type/view owner或root标签推断函数owner。
 
 真正新建共享标准记录时，在同一KV事务逐函数登记bootstrap管理角色的稳定OID；旧记录缺字段不自动回填，管理员ALTER FUNCTION ... OWNER可显式迁移或转移。新执行/新Bind和另一连接消费持久事实，三原语OID不变，其他数据库保持各自owner。独立cat14_16覆盖三条初始持久事实、真实reader、数据库隔离、历史字段缺失与显式恢复、text/binary和事务恢复；共享pg_schema_test::cat14_16_historical_function_owner_is_not_backfilled直接核验真实KV写入、旧记录重初始化不回填及显式迁移持久性。不开放完整用户函数DDL或函数ACL。
+
+## 命名空间授权（目录任务18）
+
+目录has_schema_privilege支持省略用户、name/text/OID用户及text/OID对象，严格NULL、未知对象OID NULL、缺名称3F000、缺角色42704、完整逗号列表和22023校验。消费pg_namespace_facts的同一持久ACL/成员来源，nspacl既有1034与2615/4属性不变；不按root或展示常量构造授权答案。cat14_18通过真实Domain和非owner wire连接验证。

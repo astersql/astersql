@@ -110,3 +110,7 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 聚焦行为回归：`pg_catalog_test::cat14_17`。
 
 PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"PUBLIC"分开；后者使用稳定角色OID，不能扩大为全体授权。
+
+## 命名空间授权（目录任务18）
+
+有界数据库GRANT/REVOKE解析器同时接收ON SCHEMA的USAGE/CREATE/ALL、真实引号PUBLIC、WITH GRANT OPTION与选项撤销RESTRICT/CASCADE。SchemaUtility::Privileges通过共享session worker返回01007/01006通知，命令标签GRANT/REVOKE；其他schema操作保持原入口。

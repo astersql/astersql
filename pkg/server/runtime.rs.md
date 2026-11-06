@@ -163,3 +163,7 @@ prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不�
 ## 类型初始化owner（目录任务15）
 
 PG会话worker显式初始化标准schema时，把pg_catalog::builtin_type_identities返回的现有COLUMN_TYPES声明传入共享pg_initialize_standard_schema_with_types。仅新建标准元数据记录时保存bootstrap稳定角色OID；已有记录补类型声明不会补历史owner。目录读取不触发初始化或分配身份，不从reader登录身份推断owner。
+
+## 命名空间授权（目录任务18）
+
+PgSchemaPrivileges请求在连接自己的ConcreteSession worker执行，共享schema ACL持久事务及有效身份，向PgSession传回可选通知；不使用mock provider或root代替真实认证用户。

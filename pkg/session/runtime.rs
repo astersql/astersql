@@ -121,7 +121,7 @@ mod pg_schema_test;
 mod pg_temporal;
 pub use pg_schema::{
     PG_INTROSPECTION_FUNCTION_IDENTITIES, PgNamespaceFact, PgSchemaCommand, PgStandardSchema,
-    PgTablePrivilege,
+    PgTablePrivilege, pg_has_schema_privilege, pg_schema_privileges,
 };
 #[cfg(test)]
 mod pg_temporal_test;

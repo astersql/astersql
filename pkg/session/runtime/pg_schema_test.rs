@@ -789,8 +789,14 @@ fn namespace_rename_preserves_table_identity_and_reads_do_not_allocate() {
 #[test]
 fn namespace_owner_revocation_preserves_identity_and_removes_effective_privileges() {
     let (domain, native) = CreateAnalyzeSession().unwrap();
-    native
-        .execute("CREATE USER 'ns_acl_owner'@'%' IDENTIFIED WITH mysql_native_password BY ''")
+    native.pg_register_bootstrap_role().unwrap();
+    let declaration =
+        ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    declaration
+        .pg_role_command(&super::pg_database::PgRoleCommand::Create {
+            name: "ns_acl_owner".into(),
+            can_login: true,
+        })
         .unwrap();
     let admin = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
     admin
@@ -908,7 +914,11 @@ fn pg13_030_standard_schema_is_durable_and_reads_never_allocate() {
             standard.standard.as_ref().unwrap().sql_identifier,
             first.sql_identifier
         );
-        assert!(standard.acl_available);
+        assert!(
+            !standard.acl_available,
+            "built-in namespace has no persisted ACL grantor/owner"
+        );
+        assert_eq!(standard.acl, None);
     }
     assert_eq!(read(), before);
     let mut corrupt = first.clone();
@@ -1729,5 +1739,139 @@ fn cat14_16_historical_function_owner_is_not_backfilled() {
         (after.sql_identifier, after.owner),
         (before.sql_identifier, before.owner)
     );
+    domain.close();
+}
+
+#[test]
+fn cat14_18_namespace_acl_provenance_atomicity_and_lifecycle() {
+    use super::pg_database::PgRoleCommand;
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.pg_register_bootstrap_role().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_role_command(&PgRoleCommand::Create {
+        name: "cat14_18_model_role".into(),
+        can_login: false,
+    })
+    .unwrap();
+    pg.pg_schema_command(&PgSchemaCommand::Create("cat14_18_model".into()))
+        .unwrap();
+    let fact = || {
+        pg.pg_namespace_facts()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "cat14_18_model")
+            .unwrap()
+    };
+    let first = fact();
+    assert!(first.acl_available);
+    assert_eq!(first.acl, None);
+    let command = |grant| PgSchemaCommand::Privileges {
+        schema: "cat14_18_model".into(),
+        grantee: "cat14_18_model_role".into(),
+        public: false,
+        privileges: "CREATE".into(),
+        grant,
+        grant_option: true,
+        cascade: false,
+    };
+    pg.pg_schema_command(&command(true)).unwrap();
+    assert!(fact().acl.unwrap().contains("cat14_18_model_role=C*/root"));
+    assert!(
+        pg.pg_database_drop_role("cat14_18_model_role", false)
+            .is_err()
+    );
+    let database = domain
+        .info_schema()
+        .SchemaByName(&astersql_infoschema::CiString::new("test"))
+        .unwrap();
+    let key = astersql_meta::transaction_meta_hash_key(
+        b"PgNamespaces",
+        database.id.to_string().as_bytes(),
+    );
+    let read = || {
+        domain
+            .storage_handle()
+            .with_storage(|store| {
+                let txn = store.Begin(&[])?;
+                Ok::<_, kv::errors::SharedError>(
+                    txn.Get(&kv::Context::default(), key.clone(), &[])?.Value,
+                )
+            })
+            .unwrap()
+    };
+    let write = |bytes: Vec<u8>| {
+        domain
+            .storage_handle()
+            .with_storage(|store| {
+                let mut txn = store.Begin(&[])?;
+                txn.Set(key.clone(), bytes)?;
+                txn.Commit(&kv::Context::default())
+            })
+            .unwrap()
+    };
+    let original = read();
+    for corruption in ["missing", "grantor", "bits", "owner"] {
+        let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        match corruption {
+            "missing" => {
+                document["cat14_18_model"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("grants");
+            }
+            "grantor" => document["cat14_18_model"]["grants"][0]["grantor"] = serde_json::json!(0),
+            "bits" => document["cat14_18_model"]["grants"][0]["privileges"] = serde_json::json!(2),
+            _ => document["cat14_18_model"]["owner_id"] = serde_json::json!(2147483646),
+        }
+        let damaged = serde_json::to_vec(&document).unwrap();
+        write(damaged.clone());
+        assert!(!fact().acl_available);
+        let error = pg.pg_schema_command(&command(false)).unwrap_err();
+        assert_eq!(
+            error.pg_function_error().unwrap().state,
+            "0A000",
+            "{corruption}: {error}"
+        );
+        assert_eq!(read(), damaged, "failed ACL write must be atomic");
+        let error = pg_has_schema_privilege(
+            &[fact()],
+            &pg.pg_role_facts().unwrap(),
+            "root",
+            &[Some("cat14_18_model".into()), Some("CREATE".into())],
+            &[false, false],
+        )
+        .unwrap_err();
+        assert_eq!(error.pg_function_error().unwrap().state, "0A000");
+        write(original.clone());
+    }
+    domain.force_full_reload_for_test().unwrap();
+    assert_eq!(fact().id, first.id);
+    pg.pg_schema_command(&PgSchemaCommand::Rename {
+        schema: "cat14_18_model".into(),
+        name: "cat14_18_renamed".into(),
+    })
+    .unwrap();
+    let renamed = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "cat14_18_renamed")
+        .unwrap();
+    assert_eq!(renamed.id, first.id);
+    assert!(renamed.acl.unwrap().contains("cat14_18_model_role=C*/root"));
+    pg.pg_schema_command(&PgSchemaCommand::Drop("cat14_18_renamed".into()))
+        .unwrap();
+    pg.pg_database_drop_role("cat14_18_model_role", false)
+        .unwrap();
+    pg.pg_schema_command(&PgSchemaCommand::Create("cat14_18_model".into()))
+        .unwrap();
+    assert_ne!(fact().id, first.id);
+    assert_eq!(fact().acl, None);
+    pg.pg_schema_command(&PgSchemaCommand::Drop("cat14_18_model".into()))
+        .unwrap();
+    pg.pg_role_command(&PgRoleCommand::Drop {
+        name: "cat14_18_model_role".into(),
+    })
+    .unwrap();
     domain.close();
 }

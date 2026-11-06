@@ -179,3 +179,7 @@ PG目标TypeDouble在正式工厂选择PgFloat8分支，调用严格pg_cast_floa
 has_database_privilege沿正式签名解析和core工厂注册2/3参数重载，结果为带IsBooleanFlag的bool。身份接受name/text/OID，末参仅text；严格NULL先于事实读取。执行期上下文提供共享数据库权限回调，禁止常量折叠及跨会话共享。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 命名空间授权（目录任务18）
+
+has_schema_privilege复用数据库权限函数的2/3参typed签名、statement-owned ACL回调及bool工厂。身份仅允许name/text/OID，最后权限参数为text；严格NULL不读取事实。该共享signature复用已有线程安全方法，不新增伪函数结果。

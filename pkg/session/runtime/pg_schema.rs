@@ -1,5 +1,5 @@
 // Copyright 2026 AsterSQL.
-//! Database-scoped PostgreSQL namespace identities, relation binding and USAGE ACLs.
+//! Database-scoped PostgreSQL namespace identities, relation binding and USAGE/CREATE ACLs.
 //! These metadata-only operations never create a native MySQL database.
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,15 @@ pub enum PgSchemaCommand {
         column: Option<String>,
         grant: bool,
     },
+    Privileges {
+        schema: String,
+        grantee: String,
+        public: bool,
+        privileges: String,
+        grant: bool,
+        grant_option: bool,
+        cascade: bool,
+    },
     RevokeAll {
         schema: String,
         grantee: String,
@@ -96,6 +105,8 @@ struct Namespace {
     create: BTreeSet<String>,
     #[serde(default)]
     explicit_acl: Option<bool>,
+    #[serde(default)]
+    grants: Option<Vec<super::pg_database::PgDatabaseGrant>>,
     #[serde(default = "owner_privilege_default")]
     owner_usage: bool,
     #[serde(default = "owner_privilege_default")]
@@ -126,7 +137,7 @@ impl ConcreteSession {
     fn pg_namespaces(
         &self,
         command: Option<&PgSchemaCommand>,
-    ) -> SessionResult<BTreeMap<String, Namespace>> {
+    ) -> SessionResult<(BTreeMap<String, Namespace>, Option<(&'static str, String)>)> {
         let database = self
             .domain
             .info_schema()
@@ -146,14 +157,16 @@ impl ConcreteSession {
             ) => Some(self.pg_database_role_id(owner)?),
             _ => None,
         };
-        // Persist grants only for a role from the same authoritative role catalog.
-        if let Some(
-            PgSchemaCommand::Usage { grantee, .. } | PgSchemaCommand::RevokeAll { grantee, .. },
-        ) = command
-            && grantee != "PUBLIC"
-        {
-            self.pg_database_role_id(grantee)?;
-        }
+        let grant_roles = if matches!(command, Some(PgSchemaCommand::Privileges { .. })) {
+            Some(if actor == "root" {
+                self.pg_namespace_role_identities()?
+            } else {
+                self.pg_role_facts()?
+            })
+        } else {
+            None
+        };
+        let mut command_warning = None;
         let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
         let standard = self.pg_standard_schema(false)?;
         let mut result = BTreeMap::new();
@@ -174,6 +187,7 @@ impl ConcreteSession {
                                     "public".into(),
                                     Namespace {
                                         explicit_acl: Some(false),
+                                        grants: None,
                                         owner_usage: true,
                                         owner_create: true,
                                         id: 0,
@@ -187,6 +201,7 @@ impl ConcreteSession {
                                     "pg_catalog".into(),
                                     Namespace {
                                         explicit_acl: Some(false),
+                                        grants: None,
                                         owner_usage: true,
                                         owner_create: true,
                                         id: 0,
@@ -209,6 +224,7 @@ impl ConcreteSession {
                                 usage: BTreeSet::from(["PUBLIC".into()]),
                                 create: BTreeSet::new(),
                                 explicit_acl: Some(false),
+                                grants: None,
                                 owner_usage: true,
                                 owner_create: true,
                             });
@@ -251,6 +267,7 @@ impl ConcreteSession {
                                     name.clone(),
                                     Namespace {
                                         explicit_acl: Some(false),
+                                        grants: command_owner_id.map(default_namespace_acl),
                                         owner_usage: true,
                                         owner_create: true,
                                         id: allocate_namespace_id(transaction, &context)?,
@@ -279,6 +296,7 @@ impl ConcreteSession {
                                         usage: BTreeSet::new(),
                                         create: BTreeSet::new(),
                                         explicit_acl: Some(false),
+                                        grants: command_owner_id.map(default_namespace_acl),
                                         owner_usage: true,
                                         owner_create: true,
                                     },
@@ -291,23 +309,110 @@ impl ConcreteSession {
                                 if actor != "root" {
                                     return Err(kv::errors::New("must be owner of schema"));
                                 }
+                                if let (Some(old), Some(new), Some(grants)) = (
+                                    existing.owner_id,
+                                    command_owner_id,
+                                    existing.grants.as_mut(),
+                                ) {
+                                    let mut merged = BTreeMap::<(i64, i64), (u8, u8)>::new();
+                                    for e in grants.iter() {
+                                        let key = (
+                                            if e.grantor == old { new } else { e.grantor },
+                                            if e.grantee == old { new } else { e.grantee },
+                                        );
+                                        let v = merged.entry(key).or_default();
+                                        v.0 |= e.privileges;
+                                        v.1 |= e.grant_options;
+                                    }
+                                    *grants = merged
+                                        .into_iter()
+                                        .map(|((grantor, grantee), (privileges, grant_options))| {
+                                            super::pg_database::PgDatabaseGrant {
+                                                grantor,
+                                                grantee,
+                                                privileges,
+                                                grant_options,
+                                            }
+                                        })
+                                        .collect();
+                                }
                                 existing.owner = owner.clone();
                                 existing.owner_id = command_owner_id;
                             }
-                            PgSchemaCommand::RevokeAll { schema, grantee } => {
-                                let existing = namespaces
+                            PgSchemaCommand::Privileges {
+                                schema,
+                                grantee,
+                                public,
+                                privileges,
+                                grant,
+                                grant_option,
+                                cascade,
+                            } => {
+                                let ns = namespaces
                                     .get_mut(schema)
                                     .ok_or_else(|| kv::errors::New("schema does not exist"))?;
-                                if actor != "root" && actor != existing.owner {
-                                    return Err(kv::errors::New("must be owner of schema"));
+                                let roles = grant_roles.as_ref().unwrap();
+                                let fact = namespace_acl_fact(ns, roles);
+                                fact.validate_acl()
+                                    .map_err(|e| kv::errors::New(e.to_string()))?;
+                                let owner = fact
+                                    .owner
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        kv::errors::New("schema ACL requires explicit migration")
+                                    })?
+                                    .0;
+                                let actor_id = roles
+                                    .iter()
+                                    .find(|r| r.name == actor)
+                                    .ok_or_else(|| {
+                                        kv::errors::New("schema ACL role is unavailable")
+                                    })?
+                                    .oid;
+                                let grantee = if *public {
+                                    0
+                                } else {
+                                    roles
+                                        .iter()
+                                        .find(|r| r.name == *grantee)
+                                        .ok_or_else(|| {
+                                            kv::errors::New("schema grantee role does not exist")
+                                        })?
+                                        .oid
+                                };
+                                if *grant && *grant_option && grantee == 0 {
+                                    return Err(kv::errors::New(
+                                        "grant options cannot be granted to PUBLIC",
+                                    ));
                                 }
-                                if grantee == &existing.owner {
-                                    existing.owner_usage = false;
-                                    existing.owner_create = false;
+                                let bits = if privileges == "ALL" {
+                                    5
+                                } else {
+                                    pg_schema_privileges(privileges)
+                                        .map_err(|e| kv::errors::New(e.to_string()))?
+                                        .iter()
+                                        .fold(0, |b, (v, _)| b | v)
+                                };
+                                let (warning, modified) = super::pg_database::update_object_acl(
+                                    ns.grants.as_mut().unwrap(),
+                                    owner,
+                                    &actor,
+                                    actor_id,
+                                    roles,
+                                    bits,
+                                    grantee,
+                                    *grant,
+                                    *grant_option,
+                                    *cascade,
+                                    privileges == "ALL",
+                                )?;
+                                command_warning = warning;
+                                if modified {
+                                    ns.explicit_acl = Some(true);
                                 }
-                                existing.usage.remove(grantee);
-                                existing.create.remove(grantee);
-                                existing.explicit_acl = Some(true);
+                            }
+                            PgSchemaCommand::RevokeAll { .. } | PgSchemaCommand::Usage { .. } => {
+                                unreachable!("normalized before namespace transaction")
                             }
                             PgSchemaCommand::Rename { schema, name } => {
                                 if matches!(
@@ -367,38 +472,6 @@ impl ConcreteSession {
                                 }
                                 namespaces.remove(name);
                             }
-                            PgSchemaCommand::Usage {
-                                create,
-                                schema,
-                                grantee,
-                                grant,
-                            } => {
-                                let schema = namespaces
-                                    .get_mut(schema)
-                                    .ok_or_else(|| kv::errors::New("schema does not exist"))?;
-                                if actor != "root" && actor != schema.owner {
-                                    return Err(kv::errors::New("must be owner of schema"));
-                                }
-                                schema.explicit_acl = Some(true);
-                                if grantee == &schema.owner {
-                                    if *create {
-                                        schema.owner_create = *grant;
-                                    } else {
-                                        schema.owner_usage = *grant;
-                                    }
-                                } else {
-                                    let privileges = if *create {
-                                        &mut schema.create
-                                    } else {
-                                        &mut schema.usage
-                                    };
-                                    if *grant {
-                                        privileges.insert(grantee.clone());
-                                    } else {
-                                        privileges.remove(grantee);
-                                    }
-                                }
-                            }
                         }
                         // Remove the empty extension record after the last owned schema
                         // is dropped, retaining modified built-in ACLs when present.
@@ -435,6 +508,25 @@ impl ConcreteSession {
                     "0A000",
                     "namespace identity requires explicit administrator migration",
                 ),
+                "dependent database privileges exist" => {
+                    namespace_error("2BP01", "dependent schema privileges exist")
+                }
+                "database privilege requires grant option" => {
+                    namespace_error("42501", "permission denied for schema")
+                }
+                "grant options cannot be granted to PUBLIC" => {
+                    namespace_error("0LP01", "grant options cannot be granted to PUBLIC")
+                }
+                "schema grantee role does not exist" => {
+                    namespace_error("42704", "schema grantee role does not exist")
+                }
+                message
+                    if message.contains("ACL")
+                        || message.contains("membership unknown")
+                        || message.contains("facts are unavailable") =>
+                {
+                    namespace_error("0A000", message)
+                }
                 "schema already exists" => namespace_error("42P06", "schema already exists"),
                 "schema does not exist" => namespace_error("3F000", "schema does not exist"),
                 "cannot drop schema because it is not empty" => {
@@ -449,10 +541,18 @@ impl ConcreteSession {
                 }
                 _ => session_error("PostgreSQL schema metadata", e),
             })?;
-        Ok(result)
+        Ok((result, command_warning))
     }
 
     pub fn pg_schema_command(&self, command: &PgSchemaCommand) -> SessionResult<()> {
+        if matches!(
+            command,
+            PgSchemaCommand::Usage { .. }
+                | PgSchemaCommand::RevokeAll { .. }
+                | PgSchemaCommand::Privileges { .. }
+        ) {
+            return self.pg_schema_privilege_command(command).map(|_| ());
+        }
         if let PgSchemaCommand::FunctionOwner {
             schema,
             name,
@@ -542,39 +642,76 @@ impl ConcreteSession {
                 "PostgreSQL schema metadata requires PostgreSQL dialect",
             ));
         }
-        if let PgSchemaCommand::Usage { grantee, .. } = command {
-            if grantee != "PUBLIC"
-                && !runtime_privilege_handle(&self.domain)
-                    .Get()
-                    .user
-                    .iter()
-                    .any(|u| u.base.User == *grantee)
-            {
-                return Err(SessionError::new("schema grantee role does not exist"));
-            }
-        }
         if matches!(command, PgSchemaCommand::Owner { .. }) && self.pg_schema_identity() != "root" {
             return Err(namespace_error("42501", "permission denied for schema"));
         }
-        self.pg_namespaces(Some(command))?;
-        Ok(())
+        self.pg_namespaces(Some(command)).map(|_| ())
+    }
+
+    pub fn pg_schema_privilege_command(
+        &self,
+        command: &PgSchemaCommand,
+    ) -> SessionResult<Option<(&'static str, String)>> {
+        let _guard = PG_NAMESPACE_DDL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
+            return Err(namespace_error(
+                "0A000",
+                "PostgreSQL ACL requires PostgreSQL dialect",
+            ));
+        }
+        let converted;
+        let command = match command {
+            PgSchemaCommand::Usage {
+                create,
+                schema,
+                grantee,
+                grant,
+            } => {
+                converted = PgSchemaCommand::Privileges {
+                    schema: schema.clone(),
+                    grantee: grantee.clone(),
+                    public: grantee == "PUBLIC",
+                    privileges: if *create { "CREATE" } else { "USAGE" }.into(),
+                    grant: *grant,
+                    grant_option: false,
+                    cascade: false,
+                };
+                &converted
+            }
+            PgSchemaCommand::RevokeAll { schema, grantee } => {
+                converted = PgSchemaCommand::Privileges {
+                    schema: schema.clone(),
+                    grantee: grantee.clone(),
+                    public: grantee == "PUBLIC",
+                    privileges: "ALL".into(),
+                    grant: false,
+                    grant_option: false,
+                    cascade: false,
+                };
+                &converted
+            }
+            PgSchemaCommand::Privileges { .. } => command,
+            _ => {
+                return Err(namespace_error(
+                    "0A000",
+                    "expected schema privilege command",
+                ));
+            }
+        };
+        self.pg_namespaces(Some(command))
+            .map(|(_, warning)| warning)
     }
 
     /// Read fresh committed metadata for each statement, including after GRANT/REVOKE.
     pub fn pg_effective_path(&self) -> SessionResult<Vec<String>> {
-        let namespaces = self.pg_namespaces(None)?;
+        let namespaces = self.pg_namespace_facts()?;
         let actor = self.pg_schema_identity();
-        let enabled = self.pg_enabled_namespace_roles()?;
         let mut result = Vec::new();
         for entry in &self.state.borrow().pg_search_path {
             let name = if entry == "$user" { &actor } else { entry };
-            if let Some(schema) = namespaces.get(name)
-                && (actor == "root"
-                    || (enabled.contains(&schema.owner) && schema.owner_usage)
-                    || schema.usage.contains("PUBLIC")
-                    || schema.usage.iter().any(|r| enabled.contains(r)))
-                && !result.contains(name)
-            {
+            if namespaces.iter().any(|ns| ns.name == *name && ns.usage) && !result.contains(name) {
                 result.push(name.clone());
             }
         }
@@ -592,6 +729,7 @@ pub struct PgNamespaceFact {
     pub can_create: bool,
     pub owner: Option<i64>,
     pub acl: Option<String>,
+    pub privilege_fact: Option<super::pg_database::PgDatabaseFact>,
     /// A default SQL NULL is only valid when the persisted ACL state is known.
     pub acl_available: bool,
     /// Ownership visibility is independent of the owner's revoked ACL bits.
@@ -650,6 +788,24 @@ impl ConcreteSession {
         enabled.extend(self.pg_declared_inherited_roles()?);
         Ok(enabled)
     }
+    fn pg_namespace_role_identities(&self) -> SessionResult<Vec<super::pg_database::PgRoleFact>> {
+        let names = self
+            .pg_database_facts(None)?
+            .first()
+            .map(|f| f.roles.clone())
+            .unwrap_or_default();
+        Ok(names
+            .iter()
+            .map(|(oid, name)| super::pg_database::PgRoleFact {
+                oid: *oid,
+                name: name.clone(),
+                can_login: None,
+                attributes: None,
+                valid_until_known: false,
+                memberships: Vec::new(),
+            })
+            .collect())
+    }
     pub fn pg_namespace_facts(&self) -> SessionResult<Vec<PgNamespaceFact>> {
         let actor = self.pg_schema_identity();
         let database = self
@@ -657,11 +813,17 @@ impl ConcreteSession {
             .info_schema()
             .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
             .ok_or_else(|| namespace_error("3D000", "no current database selected"))?;
-        let roles = self
-            .pg_database_facts(None)?
-            .first()
-            .map(|f| (*f.roles).clone())
-            .unwrap_or_default();
+        // Root's established bootstrap authority needs identity names for ACL
+        // validation, not declarations for unrelated historical native accounts.
+        let role_facts = if actor == "root" {
+            self.pg_namespace_role_identities()?
+        } else {
+            self.pg_role_facts()?
+        };
+        let roles = role_facts
+            .iter()
+            .map(|f| (f.oid, f.name.clone()))
+            .collect::<BTreeMap<_, _>>();
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
@@ -674,93 +836,66 @@ impl ConcreteSession {
         }
         let mut facts: Vec<_> = self
             .pg_namespaces(None)?
+            .0
             .into_iter()
-            .map(|(name, namespace)| PgNamespaceFact {
-                standard: (name == "information_schema")
-                    .then(|| standard.clone())
-                    .flatten(),
-                owner_usable: actor == "root" || enabled.contains(&namespace.owner),
-                owner: namespace
-                    .owner_id
-                    .filter(|id| roles.get(id) == Some(&namespace.owner)),
-                acl_available: namespace.explicit_acl.is_some()
-                    && roles.values().any(|name| name == &namespace.owner)
-                    && namespace
+            .map(|(name, namespace)| {
+                let fact = namespace_acl_fact(&namespace, &role_facts);
+                let available = fact.validate_acl().is_ok() && fact.owner.is_some();
+                let actor_id = role_facts
+                    .iter()
+                    .find(|r| r.name == actor)
+                    .map_or(-1, |r| r.oid);
+                let effective = |bit| -> SessionResult<bool> {
+                    if actor == "root" {
+                        Ok(true)
+                    } else {
+                        fact.has_privilege(&role_facts, actor_id, bit, false)
+                    }
+                };
+                Ok(PgNamespaceFact {
+                    standard: (name == "information_schema")
+                        .then(|| standard.clone())
+                        .flatten(),
+                    owner_usable: actor == "root" || enabled.contains(&namespace.owner),
+                    owner: namespace
                         .owner_id
-                        .is_none_or(|id| roles.get(&id) == Some(&namespace.owner))
-                    && namespace
-                        .usage
-                        .iter()
-                        .chain(namespace.create.iter())
-                        .all(|r| r == "PUBLIC" || roles.values().any(|name| name == r)),
-                acl: (namespace.explicit_acl == Some(true)).then(|| {
-                    fn quoted(value: &str) -> String {
-                        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-                    }
-                    let grantor = quoted(&namespace.owner);
-                    let mut entries = Vec::new();
-                    let privileges = format!(
-                        "{}{}",
-                        if namespace.owner_usage { "U" } else { "" },
-                        if namespace.owner_create { "C" } else { "" }
-                    );
-                    if !privileges.is_empty() {
-                        entries.push(format!(
-                            "{}={}/{}",
-                            quoted(&namespace.owner),
-                            privileges,
-                            grantor
-                        ));
-                    }
-                    let grantees: BTreeSet<_> = namespace.usage.union(&namespace.create).collect();
-                    entries.extend(grantees.into_iter().filter(|r| **r != namespace.owner).map(
-                        |role| {
-                            format!(
-                                "{}={}{}/{}",
-                                if role == "PUBLIC" {
-                                    String::new()
-                                } else {
-                                    quoted(role)
-                                },
-                                if namespace.usage.contains(role) {
-                                    "U"
-                                } else {
-                                    ""
-                                },
-                                if namespace.create.contains(role) {
-                                    "C"
-                                } else {
-                                    ""
-                                },
-                                grantor
-                            )
-                        },
-                    ));
-                    format!(
-                        "{{{}}}",
-                        entries
-                            .into_iter()
-                            .map(|e| quoted(&e))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )
-                }),
-                id: if name == "public" {
-                    database.id
-                } else {
-                    namespace.id
-                },
-                can_create: actor == "root"
-                    || (enabled.contains(&namespace.owner) && namespace.owner_create)
-                    || namespace.create.contains("PUBLIC")
-                    || namespace.create.iter().any(|r| enabled.contains(r)),
-                usage: actor == "root"
-                    || (enabled.contains(&namespace.owner) && namespace.owner_usage)
-                    || namespace.usage.contains("PUBLIC")
-                    || namespace.usage.iter().any(|r| enabled.contains(r)),
-                name,
+                        .filter(|id| roles.get(id) == Some(&namespace.owner)),
+                    acl_available: available,
+                    acl: if available {
+                        fact.acl_text_with_modes(&[(1, 'U'), (4, 'C')])?
+                    } else {
+                        None
+                    },
+                    privilege_fact: Some(fact.clone()),
+                    id: if name == "public" {
+                        database.id
+                    } else {
+                        namespace.id
+                    },
+                    can_create: if available {
+                        effective(4)?
+                    } else if namespace.grants.is_some() {
+                        false
+                    } else {
+                        actor == "root"
+                            || (enabled.contains(&namespace.owner) && namespace.owner_create)
+                            || namespace.create.contains("PUBLIC")
+                            || namespace.create.iter().any(|r| enabled.contains(r))
+                    },
+                    usage: if available {
+                        effective(1)?
+                    } else if namespace.grants.is_some() {
+                        false
+                    } else {
+                        actor == "root"
+                            || (enabled.contains(&namespace.owner) && namespace.owner_usage)
+                            || namespace.usage.contains("PUBLIC")
+                            || namespace.usage.iter().any(|r| enabled.contains(r))
+                    },
+                    name,
+                })
             })
-            .collect();
+            .collect::<SessionResult<Vec<_>>>()?;
         if let Some((id, owner)) = self
             .state
             .borrow()
@@ -775,6 +910,17 @@ impl ConcreteSession {
                 can_create: true,
                 owner: Some(owner),
                 acl: None,
+                privilege_fact: Some(super::pg_database::PgDatabaseFact {
+                    id,
+                    owner: roles.get(&owner).map(|n| (owner, n.clone())),
+                    can_connect: true,
+                    acl: Some(default_namespace_acl(owner)),
+                    acl_default: true,
+                    warning: None,
+                    is_template: None,
+                    allow_connections: None,
+                    roles: Arc::new(roles.clone()),
+                }),
                 acl_available: true,
                 owner_usable: true,
                 standard: None,
@@ -1592,4 +1738,158 @@ impl ConcreteSession {
             })
             .map_err(|e| session_error("persist PostgreSQL function owner", e))
     }
+}
+
+fn default_namespace_acl(owner: i64) -> Vec<super::pg_database::PgDatabaseGrant> {
+    vec![super::pg_database::PgDatabaseGrant {
+        grantor: owner,
+        grantee: owner,
+        privileges: 5,
+        grant_options: 0,
+    }]
+}
+fn namespace_acl_fact(
+    ns: &Namespace,
+    roles: &[super::pg_database::PgRoleFact],
+) -> super::pg_database::PgDatabaseFact {
+    let names = roles
+        .iter()
+        .map(|r| (r.oid, r.name.clone()))
+        .collect::<BTreeMap<_, _>>();
+    super::pg_database::PgDatabaseFact {
+        id: ns.id,
+        owner: ns
+            .owner_id
+            .filter(|id| names.get(id) == Some(&ns.owner))
+            .map(|id| (id, ns.owner.clone())),
+        can_connect: false,
+        acl: ns
+            .explicit_acl
+            .and(ns.grants.clone())
+            .filter(|entries| entries.iter().all(|e| e.privileges & !5 == 0)),
+        acl_default: ns.explicit_acl == Some(false),
+        warning: None,
+        is_template: None,
+        allow_connections: None,
+        roles: Arc::new(names),
+    }
+}
+pub fn pg_schema_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
+    text.split(',')
+        .map(|item| {
+            let item = item.trim().to_ascii_uppercase();
+            let (base, option) = item
+                .strip_suffix(" WITH GRANT OPTION")
+                .map_or((item.as_str(), false), |base| (base, true));
+            let bit = match base {
+                "USAGE" => 1,
+                "CREATE" => 4,
+                _ => {
+                    return Err(namespace_error(
+                        "22023",
+                        "unrecognized schema privilege type",
+                    ));
+                }
+            };
+            Ok((bit, option))
+        })
+        .collect()
+}
+/// Namespace query and DDL consumers share the persisted ACL and membership graph.
+pub fn pg_has_schema_privilege(
+    namespaces: &[PgNamespaceFact],
+    roles: &[super::pg_database::PgRoleFact],
+    actor: &str,
+    values: &[Option<String>],
+    oids: &[bool],
+) -> SessionResult<Option<bool>> {
+    if values.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+    let offset = usize::from(values.len() == 3);
+    let user = if offset == 0 {
+        actor
+    } else {
+        values[0].as_deref().unwrap()
+    };
+    let member = if offset == 1 && oids[0] {
+        user.parse::<u32>()
+            .map(i64::from)
+            .map_err(|_| namespace_error("22P02", "invalid role OID"))?
+    } else if user == "public" {
+        0
+    } else {
+        roles
+            .iter()
+            .find(|r| r.name == user)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+            .oid
+    };
+    let object = values[offset].as_deref().unwrap();
+    let fact = if oids[offset] {
+        let oid = object
+            .parse::<u32>()
+            .map(i64::from)
+            .map_err(|_| namespace_error("22P02", "invalid schema OID"))?;
+        namespaces.iter().find(|f| pg_namespace_oid(f) == Some(oid))
+    } else {
+        Some(
+            namespaces
+                .iter()
+                .find(|f| f.name == object)
+                .ok_or_else(|| namespace_error("3F000", "schema does not exist"))?,
+        )
+    };
+    let modes = pg_schema_privileges(values[offset + 1].as_deref().unwrap())?;
+    let Some(fact) = fact else { return Ok(None) };
+    let fact = fact
+        .privilege_fact
+        .as_ref()
+        .ok_or_else(|| namespace_error("0A000", "schema ACL requires explicit migration"))?;
+    let mut allowed = false;
+    for (bit, option) in modes {
+        allowed |= fact.has_privilege(roles, member, bit, option)?;
+    }
+    Ok(Some(allowed))
+}
+fn pg_namespace_oid(fact: &PgNamespaceFact) -> Option<i64> {
+    if fact.name == "pg_catalog" {
+        return Some(11);
+    }
+    if fact.id == 0 {
+        return None;
+    }
+    let signed = i64::try_from(fact.id.unsigned_abs())
+        .ok()?
+        .checked_mul(2)?
+        .checked_sub(i64::from(fact.id < 0))?;
+    signed.checked_add(16384).filter(|oid| *oid < 0x4000_0000)
+}
+
+pub(super) fn namespace_role_dependency(
+    txn: &dyn kv::Transaction,
+    ctx: &kv::Context,
+    database: i64,
+    oid: i64,
+    role: &str,
+) -> Result<(), kv::errors::SharedError> {
+    let key =
+        astersql_meta::transaction_meta_hash_key(b"PgNamespaces", database.to_string().as_bytes());
+    let namespaces: BTreeMap<String, Namespace> = match txn.Get(ctx, key, &[]) {
+        Ok(v) => serde_json::from_slice(&v.Value).map_err(|e| kv::errors::New(e.to_string()))?,
+        Err(e) if kv::IsErrNotFound(&e) => BTreeMap::new(),
+        Err(e) => return Err(e),
+    };
+    if namespaces.values().any(|ns| {
+        ns.owner_id == Some(oid)
+            || ns.usage.contains(role)
+            || ns.create.contains(role)
+            || ns
+                .grants
+                .as_ref()
+                .is_some_and(|a| a.iter().any(|e| e.grantor == oid || e.grantee == oid))
+    }) {
+        return Err(kv::errors::New("role has schema dependencies"));
+    }
+    Ok(())
 }

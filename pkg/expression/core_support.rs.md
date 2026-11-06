@@ -104,3 +104,7 @@ Rust 的 `ExprBox`、`String`、`Datum`、`Column` 等由所有权和析构管�
 has_database_privilege加入unFoldableFunctions；常量实参也必须在执行时读取授权事实。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 命名空间授权（目录任务18）
+
+核心正式函数名单加入has_schema_privilege，支持真实普通关系查询消费正式工厂。

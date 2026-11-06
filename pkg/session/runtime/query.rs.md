@@ -402,3 +402,7 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 聚焦行为回归：`pg_catalog_test::cat14_17`。
 
 本地PG临时表SELECT仅在当前连接拥有该局部模型且有效角色拥有/继承其真实owner时沿owner权限读取；撤销数据库TEMPORARY不删除现有表权限。永久表仍经原生共享Manager逐表验证，数据库授权不授予表SELECT。
+
+## 命名空间授权（目录任务18）
+
+has_schema_privilege与has_database_privilege复用正式签名/工厂和既有statement-owned权限回调槽。每次真实普通关系求值捕获namespace事实、角色及有效actor，不持有活Session；schema调用不读取无关数据库ACL。严格NULL先于事实读取，bool类型及列描述保持正式结果。

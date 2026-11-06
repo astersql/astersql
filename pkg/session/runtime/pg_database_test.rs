@@ -585,3 +585,54 @@ fn cat14_17_database_acl_defaults_legacy_and_identity_lifecycle() {
     .unwrap();
     domain.close();
 }
+
+#[test]
+fn cat14_18_database_acl_admin_ignores_unrelated_legacy_roles() {
+    use super::pg_database::PgDatabaseCommand;
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.pg_register_bootstrap_role().unwrap();
+    native
+        .execute(
+            "CREATE USER 'cat14_18_unregistered'@'%' IDENTIFIED WITH mysql_native_password BY ''",
+        )
+        .unwrap();
+    // Reproduce a historical native account that has not acquired a PG identity.
+    let ctx = kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgDatabaseRoleIds");
+                let mut ids: std::collections::BTreeMap<String, i64> =
+                    serde_json::from_slice(&txn.Get(&ctx, key.clone(), &[])?.Value).unwrap();
+                assert!(ids.remove("cat14_18_unregistered").is_some());
+                txn.Set(key, serde_json::to_vec(&ids).unwrap())
+            })
+        })
+        .unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE DATABASE cat14_18_admin_acl").unwrap();
+    let facts = pg
+        .pg_database_facts(Some(&PgDatabaseCommand::Privileges {
+            database: "cat14_18_admin_acl".into(),
+            role: "PUBLIC".into(),
+            public: true,
+            privileges: "CREATE".into(),
+            grant: true,
+            grant_option: false,
+            cascade: false,
+        }))
+        .unwrap();
+    let id = domain
+        .info_schema()
+        .SchemaByName(&astersql_infoschema::CiString::new("cat14_18_admin_acl"))
+        .unwrap()
+        .id;
+    let database = facts.iter().find(|f| f.id == id).unwrap();
+    assert!(database.acl_text().unwrap().unwrap().contains("=CTc/root"));
+    native.execute("DROP DATABASE cat14_18_admin_acl").unwrap();
+    native
+        .execute("DROP USER 'cat14_18_unregistered'@'%'")
+        .unwrap();
+    domain.close();
+}

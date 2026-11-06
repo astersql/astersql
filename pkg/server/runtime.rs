@@ -840,6 +840,10 @@ pub(crate) enum SessionRequest {
         command: astersql_session::runtime::PgRoleCommand,
         response: mpsc::SyncSender<ConnResult<()>>,
     },
+    PgSchemaPrivileges {
+        command: astersql_session::runtime::PgSchemaCommand,
+        response: mpsc::SyncSender<ConnResult<Option<(&'static str, String)>>>,
+    },
     PgDatabaseFacts {
         command: Option<astersql_session::runtime::PgDatabaseCommand>,
         response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>>>,
@@ -1082,6 +1086,13 @@ fn run_session_worker(
                 let _ = response.send(
                     session
                         .pg_role_command(&command)
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::PgSchemaPrivileges { command, response } => {
+                let _ = response.send(
+                    session
+                        .pg_schema_privilege_command(&command)
                         .map_err(session_protocol_error),
                 );
             }
@@ -2137,6 +2148,17 @@ impl TiDBContext for ConcreteTiDBContext {
     fn pg_role_command(&self, command: astersql_session::runtime::PgRoleCommand) -> ConnResult<()> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgRoleCommand {
+            command,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_schema_privileges(
+        &self,
+        command: astersql_session::runtime::PgSchemaCommand,
+    ) -> ConnResult<Option<(&'static str, String)>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgSchemaPrivileges {
             command,
             response: tx,
         })?;

@@ -2881,3 +2881,5 @@
 - [ ] [`pkg/session/runtime/pg_database.rs.md`](../pkg/session/runtime/pg_database.rs.md)
 - [ ] [`pkg/session/runtime/pg_schema.rs.md`](../pkg/session/runtime/pg_schema.rs.md)
 - [ ] [`pkg/server/pg_sql.rs.md`](../pkg/server/pg_sql.rs.md)
+
+2026-11-06：目录任务18同步上述12个生产Rust文件的同路径.rs.md：namespace持久ACL与权限查询、共享授予/撤销及codec、正式函数入口、协议通知和角色依赖检查；测试保留独立测试文件。

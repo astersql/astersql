@@ -97,3 +97,7 @@ Rust [`function_traits_test.rs`](function_traits_test.rs) 保留同一测试意�
 has_database_privilege登记不可缓存、不能用于生成列及会话相关函数策略，保持授权变化和有效角色变化可观察。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 命名空间授权（目录任务18）
+
+has_schema_privilege沿现有数据库权限查询的不可折叠/不可缓存和会话依赖声明，防止复用撤权前的权限常量。

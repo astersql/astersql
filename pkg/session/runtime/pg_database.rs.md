@@ -17,3 +17,9 @@
 旧数据库单纯策略读取不要求完整PG角色快照；角色事实惰性加载到确需继承/ACL判定的路径。损坏ACL/未知身份在写操作前及事务提交前验证，授权失败不产生部分写入，回归通过真实KV故障注入保留这一边界。
 
 PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"PUBLIC"分开；后者使用稳定角色OID，不能扩大为全体授权。
+
+## 命名空间授权（目录任务18）
+
+update_object_acl从既有数据库授权写入逻辑提取，供数据库与namespace同用真实grantor选择、权限选项、递归RESTRICT/CASCADE和01007/01006通知。返回实际可写权限标记，避免无grant option的空操作将默认NULL物化。acl_text_with_modes仅参数化UC/CTc字符顺序，保留原角色/数组两层引用规则；namespace适配复用同一has_privilege，不引入第二套继承解释。DROP ROLE在现有逐库检查中读取PgNamespaces的owner和ACL稳定身份，依赖存在2BP01。
+
+目录任务18增加cat14_18_database_acl_admin_ignores_unrelated_legacy_roles：真实KV移除无关历史原生账户的PG身份映射，管理员仍能进行不依赖其声明的数据库授予；提取算法保留root调用的惰性角色读取。该测试先取得运行期0A000红灯，再以同输入确认修复，避免共用schema算法引入数据库回归。

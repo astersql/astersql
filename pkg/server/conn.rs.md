@@ -145,3 +145,7 @@ NativeType 传递可选 postgresql_text_oid，独立于 MySQL code/flags/length/
 ## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
 
 仅 MySQL COM_STMT_EXECUTE 的 cursor metadata/flush 错误分支显式 close 尚未安装进 statement 的本地 result_set，并 finish response_lifecycle；保留原错误和计时边界。已安装 cursor 的重复执行/Reset/Close 复用 conn_stmt::PreparedStatement 清理。TiDBContext::user_connection_quota 提供认证账户和用户限额快照，具体实现由 runtime.rs 转发；不修改 PostgreSQL portal/Parse/Bind/Execute/Sync。
+
+## 命名空间授权（目录任务18）
+
+TiDBContext新增pg_schema_privileges命令桥接，返回共享层瞬时ACL通知，不将授权答案置于协议层。默认未提供实现时沿现有不支持错误。

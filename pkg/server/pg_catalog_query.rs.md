@@ -105,3 +105,7 @@ pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通
 独立has_database_privilege调用进入受限目录求值路径；含原生关系的查询保留普通执行器。增加name转换，用于明确用户name重载，不将其当任意类型转换入口。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 命名空间授权（目录任务18）
+
+将无FROM的has_schema_privilege识别为既有身份/权限scalar查询，使Q与扩展参数进入CatalogQuery；普通FROM仍由正式表达式执行链处理。

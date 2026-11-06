@@ -1341,7 +1341,7 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
-                    ("pg_has_role" | "has_database_privilege", values)
+                    ("pg_has_role" | "has_database_privilege" | "has_schema_privilege", values)
                         if matches!(values.len(), 2 | 3)
                             && values.iter().all(|v| {
                                 matches!(v, Expr::Null)
@@ -4074,6 +4074,45 @@ impl CatalogQuery {
                         .collect::<Vec<_>>();
                     let result = astersql_session::runtime::pg_has_database_privilege(
                         &databases,
+                        &execution.role_facts()?,
+                        &execution.session_identity()?.1,
+                        &values,
+                        &oids,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    result.map_or(Value::Null, |v| {
+                        Value::Text(if v { "t" } else { "f" }.into())
+                    })
+                }
+                "has_schema_privilege" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.iter().any(|v| *v == Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    let oids = values
+                        .iter()
+                        .map(|v| matches!(v, Value::Signed(_)))
+                        .collect::<Vec<_>>();
+                    let values = values
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Null => Ok(None),
+                            Value::Text(s) => Ok(Some(s)),
+                            Value::Signed(n) => Ok(Some(n.to_string())),
+                            _ => Err(database_identity_unavailable(
+                                "invalid database privilege argument",
+                            )),
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?;
+                    let namespaces = execution
+                        .context
+                        .pg_namespace_facts()
+                        .transpose()?
+                        .ok_or_else(|| {
+                            database_identity_unavailable("namespace facts unavailable")
+                        })?;
+                    let result = astersql_session::runtime::pg_has_schema_privilege(
+                        &namespaces,
                         &execution.role_facts()?,
                         &execution.session_identity()?.1,
                         &values,

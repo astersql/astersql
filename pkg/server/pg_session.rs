@@ -424,13 +424,25 @@ impl PgSession {
                 None
             }
             SessionQuery::SchemaUtility(command) => {
-                context
-                    .pg_schema_path(self.path.clone(), Some(command.clone()))
-                    .ok_or_else(|| {
-                        crate::conn::ConnError::Session(
-                            "PostgreSQL schema metadata unavailable".into(),
-                        )
-                    })??;
+                if matches!(
+                    command,
+                    astersql_session::runtime::PgSchemaCommand::Privileges { .. }
+                ) {
+                    if let Some((state, message)) = context.pg_schema_privileges(command.clone())? {
+                        self.database_notices.push((
+                            b'N',
+                            format!("SWARNING\0VWARNING\0C{state}\0M{message}\0\0").into_bytes(),
+                        ));
+                    }
+                } else {
+                    context
+                        .pg_schema_path(self.path.clone(), Some(command.clone()))
+                        .ok_or_else(|| {
+                            crate::conn::ConnError::Session(
+                                "PostgreSQL schema metadata unavailable".into(),
+                            )
+                        })??;
+                }
                 None
             }
         };
@@ -540,8 +552,12 @@ impl SessionQuery {
                     grant: false,
                     ..
                 } => "REVOKE",
-                astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
-                astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
+                astersql_session::runtime::PgSchemaCommand::Privileges { grant: true, .. }
+                | astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
+                astersql_session::runtime::PgSchemaCommand::Privileges { grant: false, .. }
+                | astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => {
+                    "REVOKE"
+                }
             },
             Self::Set(_)
             | Self::DefaultPath
@@ -879,10 +895,11 @@ impl SessionQuery {
                 })));
             }
         }
-        // Database ACLs reuse the shared database command and persistent Access record.
+        // Object ACL syntax dispatches to the existing database/namespace persistent records.
         if word(tokens.first(), "grant") || word(tokens.first(), "revoke") {
             if let Some(on) = tokens.iter().position(|t| word(Some(t), "on")) {
-                if word(tokens.get(on + 1), "database") {
+                if word(tokens.get(on + 1), "database") || word(tokens.get(on + 1), "schema") {
+                    let schema_acl = word(tokens.get(on + 1), "schema");
                     let grant = word(tokens.first(), "grant");
                     let only_option = !grant
                         && word(tokens.get(1), "grant")
@@ -912,8 +929,12 @@ impl SessionQuery {
                     }
                     let privileges = privileges.join(",");
                     if privileges != "ALL" {
-                        astersql_session::runtime::pg_database_privileges(&privileges)
-                            .map_err(|_| ("42601", "invalid database privilege".into()))?;
+                        (if schema_acl {
+                            astersql_session::runtime::pg_schema_privileges(&privileges)
+                        } else {
+                            astersql_session::runtime::pg_database_privileges(&privileges)
+                        })
+                        .map_err(|_| ("42601", "invalid database privilege".into()))?;
                     }
                     let database = tokens
                         .get(on + 2)
@@ -945,6 +966,17 @@ impl SessionQuery {
                                 && (cascade || word(suffix.first(), "restrict")))
                     {
                         return Err(("0A000", "unsupported database grant syntax".into()));
+                    }
+                    if schema_acl {
+                        return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Privileges {
+                            schema: database,
+                            grantee: role,
+                            public,
+                            privileges,
+                            grant,
+                            grant_option: option,
+                            cascade,
+                        })));
                     }
                     if privileges == "CONNECT"
                         && !option

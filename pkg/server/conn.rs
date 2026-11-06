@@ -926,6 +926,12 @@ pub trait TiDBContext: Send + Sync {
     ) -> ConnResult<()> {
         Err(ConnError::UnsupportedCommand(0))
     }
+    fn pg_schema_privileges(
+        &self,
+        _command: astersql_session::runtime::PgSchemaCommand,
+    ) -> ConnResult<Option<(&'static str, String)>> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     fn pg_database_facts(
         &self,
         _command: Option<astersql_session::runtime::PgDatabaseCommand>,
