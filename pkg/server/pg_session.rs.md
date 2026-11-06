@@ -131,3 +131,5 @@ TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受�
 任务22：有限GRANT/REVOKE ON TYPE/DOMAIN语法沿原对象ACL处理器接PgSchemaCommand::TypePrivileges；同样保留PUBLIC与带引号同名角色区分、WITH GRANT OPTION和RESTRICT/CASCADE。
 
 ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由共享层拒绝0LP01，避免修改元素权限之外的数组自身ACL。
+
+任务23：现有对象授权解析器新增 ON FUNCTION，完整限定/未限定函数名后要求唯一 oid 或 pg_catalog.oid 输入；不同重载返回42883。GRANT/REVOKE、PUBLIC、WITH GRANT OPTION、RESTRICT/CASCADE 经 FunctionPrivileges 交原共享 worker，保留 notice 与命令标签。

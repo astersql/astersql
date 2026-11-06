@@ -1037,7 +1037,20 @@ fn pg_datagrip_ui_metadata_core() {
 
 #[test]
 fn pg_datagrip_function_acl_row_width() {
-    let context = context();
+    // proacl needs real PostgreSQL bootstrap ownership and default ACL provenance.
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver =
+        ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
+    let context = driver
+        .open_ctx_with_dialect(
+            93023,
+            0,
+            45,
+            "test",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
     let acls = execute(context.as_ref(), "SELECT proacl FROM pg_proc");
     assert!(!acls.is_empty());
     assert!(acls.iter().all(|row| row == &[Value::Null]));
@@ -1051,4 +1064,6 @@ fn pg_datagrip_function_acl_row_width() {
         assert_eq!(row[1], Value::Null);
         assert_eq!(row[2], Value::Text("pg_catalog".into()));
     }
+    drop(context);
+    domain.close();
 }

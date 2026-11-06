@@ -121,3 +121,5 @@ has_database_privilege加入unFoldableFunctions；常量实参也必须在执行
 ## 类型授权（任务22）
 
 任务22：正式可执行函数集合新增has_type_privilege。
+
+任务23：has_function_privilege 加入不可折叠集合，确保新的执行读取真实授权。

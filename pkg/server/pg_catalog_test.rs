@@ -20751,3 +20751,671 @@ fn cat14_22() {
         "cat14_22: nonroot_identities=4 nonroot_connections=6 overloads=8 binds=12 acl_default_empty=1 delegation=1 revoke_cascade=1 recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn cat14_23() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_23_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_23_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_23_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_23_otherdb")
+            .unwrap();
+        for name in [
+            "cat14_23_reader",
+            "cat14_23_owner",
+            "cat14_23_other",
+            "cat14_23_member",
+            "PUBLIC",
+        ] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_database(user, "cat14_23_work");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = if *oid == 1034 { 1255u32 } else { 0u32 };
+            let attr = if *oid == 1034 { [30i16][index] } else { 0i16 };
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    #[track_caller]
+    fn check(s: &mut TcpStream, sql: &str, expected: &[Option<&str>]) -> Vec<(u8, Vec<u8>)> {
+        let r = ok(s, sql);
+        assert_eq!(data(&r).len(), 1, "{sql}: {r:?}");
+        assert_eq!(
+            values(&data(&r)[0]),
+            expected
+                .iter()
+                .map(|v| v.map(|s| s.as_bytes().to_vec()))
+                .collect::<Vec<_>>(),
+            "{sql}"
+        );
+        r
+    }
+    fn binary_acl(s: &mut TcpStream, default: bool) {
+        send(
+            s,
+            b'P',
+            &[
+                b"acl_stmt\0SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'\0"
+                    .as_slice(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'S', b"");
+        let p = until_ready(s);
+        assert!(!p.iter().any(|m| m.0 == b'E'), "{p:?}");
+        send(
+            s,
+            b'B',
+            &[
+                b"acl_portal\0acl_stmt\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"Pacl_portal\0");
+        send(
+            s,
+            b'E',
+            &[b"acl_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', b"");
+        let r = until_ready(s);
+        description(&r, &[(1034, -1)], 1);
+        if default {
+            assert_eq!(values(&data(&r)[0]), vec![None]);
+            assert!(!r.iter().any(|m| m.0 == b'E'));
+        } else {
+            assert!(
+                r.iter()
+                    .any(|m| m.0 == b'E' && m.1.windows(7).any(|v| v == b"C42883\0")),
+                "{r:?}"
+            );
+            assert!(data(&r).is_empty());
+        }
+        for close in [b"Pacl_portal\0".as_slice(), b"Sacl_stmt\0"] {
+            send(s, b'C', close);
+            send(s, b'S', b"");
+            until_ready(s);
+        }
+    }
+    let mut bootstrap = connect_database("root", "cat14_23_db");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_23_work");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_23_otherdb");
+    send(&mut bootstrap, b'X', b"");
+    let mut admin = connect("root");
+    for role in ["owner", "reader", "other", "member"] {
+        ok(&mut admin, &format!("CREATE ROLE cat14_23_{role} LOGIN"));
+    }
+    ok(&mut admin, "CREATE ROLE \"PUBLIC\" NOLOGIN");
+    ok(
+        &mut admin,
+        "ALTER FUNCTION pg_get_function_result(oid) OWNER TO cat14_23_owner",
+    );
+    let mut owner = connect("cat14_23_owner");
+    let mut reader = connect("cat14_23_reader");
+    let mut other = connect("cat14_23_other");
+    let r = check(
+        &mut reader,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+        &[None],
+    );
+    description(&r, &[(1034, -1)], 0);
+    binary_acl(&mut reader, true);
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE'),has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("t"), Some("f")],
+    );
+    ok(
+        &mut owner,
+        "REVOKE EXECUTE ON FUNCTION pg_get_function_result(oid) FROM PUBLIC",
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    ok(&mut owner, "BEGIN");
+    denied(
+        &mut owner,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO cat14_23_reader",
+        "0A000",
+        b'E',
+    );
+    ok(&mut owner, "ROLLBACK");
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    denied(
+        &mut reader,
+        "SELECT pg_get_function_result(16001::oid)",
+        "42501",
+        b'I',
+    );
+    ok(
+        &mut owner,
+        r#"GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO "PUBLIC""#,
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('PUBLIC','pg_get_function_result(oid)','EXECUTE'),has_function_privilege('public','pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t"), Some("f")],
+    );
+    let quoted = ok(
+        &mut reader,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+    );
+    assert!(
+        String::from_utf8(values(&data(&quoted)[0])[0].clone().unwrap())
+            .unwrap()
+            .contains("PUBLIC=X/cat14_23_owner")
+    );
+    ok(
+        &mut owner,
+        r#"REVOKE EXECUTE ON FUNCTION pg_get_function_result(oid) FROM "PUBLIC""#,
+    );
+    ok(
+        &mut owner,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO cat14_23_reader WITH GRANT OPTION",
+    );
+    ok(
+        &mut reader,
+        "CREATE TEMP TABLE cat14_23_allowed(id integer)",
+    );
+    ok(&mut reader, "INSERT INTO cat14_23_allowed VALUES(23)");
+
+    let r = check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE'),has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("t"), Some("t")],
+    );
+    description(&r, &[(16, 1), (16, 1)], 0);
+    let r = ok(
+        &mut reader,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+    );
+    let acl = String::from_utf8(values(&data(&r)[0])[0].clone().unwrap()).unwrap();
+    assert!(acl.contains("cat14_23_owner=X/cat14_23_owner"), "{acl}");
+    assert!(acl.contains("cat14_23_reader=X*/cat14_23_owner"), "{acl}");
+    binary_acl(&mut reader, false);
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE') FROM cat14_23_allowed",
+        &[Some("t")],
+    );
+    check(
+        &mut reader,
+        "SELECT pg_get_function_result(16001::oid)",
+        &[Some("text")],
+    );
+    denied(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(text)','EXECUTE')",
+        "42883",
+        b'I',
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_catalog.pg_get_function_result(pg_catalog.oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut reader,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO cat14_23_other",
+    );
+    denied(&mut admin, "DROP ROLE cat14_23_other", "2BP01", b'I');
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut reader,
+        "REVOKE EXECUTE ON FUNCTION pg_get_function_result(oid) FROM cat14_23_other",
+    );
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    ok(
+        &mut reader,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO cat14_23_other",
+    );
+    denied(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION pg_get_function_result(oid) FROM cat14_23_reader RESTRICT",
+        "2BP01",
+        b'I',
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("t")],
+    );
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION pg_get_function_result(oid) FROM cat14_23_reader CASCADE",
+    );
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("f")],
+    );
+    let revoked = ok(
+        &mut reader,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO cat14_23_other",
+    );
+    assert!(
+        revoked
+            .iter()
+            .any(|m| m.0 == b'N' && m.1.windows(7).any(|w| w == b"C01007\0")),
+        "{revoked:?}"
+    );
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    let user = String::from_utf8(
+        values(
+            &data(&ok(
+                &mut reader,
+                "SELECT oid FROM pg_roles WHERE rolname='cat14_23_reader'",
+            ))[0],
+        )[0]
+        .clone()
+        .unwrap(),
+    )
+    .unwrap();
+    for u in [
+        String::new(),
+        "'cat14_23_reader',".into(),
+        "'cat14_23_reader'::name,".into(),
+        format!("{user}::oid,"),
+    ] {
+        for obj in ["'pg_get_function_result(oid)'", "16001::oid"] {
+            check(
+                &mut reader,
+                &format!("SELECT has_function_privilege({u}{obj},'EXECUTE')"),
+                &[Some("t")],
+            );
+        }
+    }
+    check(
+        &mut reader,
+        "SELECT has_function_privilege(NULL::oid,'EXECUTE'),has_function_privilege(0::oid,'EXECUTE'),has_function_privilege('pg_get_function_result(oid)',NULL),has_function_privilege(NULL::oid,'pg_get_function_result(oid)','EXECUTE')",
+        &[None, None, None, None],
+    );
+    denied(
+        &mut reader,
+        "SELECT has_function_privilege('absent','EXECUTE')",
+        "22P02",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT has_function_privilege('absent(oid)','EXECUTE')",
+        "42883",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT has_function_privilege('absent','pg_get_function_result(oid)','EXECUTE')",
+        "42704",
+        b'I',
+    );
+    for mode in ["BOGUS", "EXECUTE,BOGUS", "BOGUS,EXECUTE"] {
+        denied(
+            &mut reader,
+            &format!("SELECT has_function_privilege('pg_get_function_result(oid)','{mode}')"),
+            "22023",
+            b'I',
+        );
+    }
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION,EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_23_reader TO cat14_23_member WITH INHERIT TRUE, SET TRUE",
+    );
+    let mut member = connect("cat14_23_member");
+    check(
+        &mut member,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_23_reader TO cat14_23_member WITH INHERIT FALSE, SET TRUE",
+    );
+    check(
+        &mut member,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("f")],
+    );
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','BOGUS')",
+        "22023",
+        b'E',
+    );
+    denied(&mut reader, "SELECT 1", "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    check(&mut reader, "SELECT 1", &[Some("1")]);
+    // A new Bind must re-read committed ACL facts, for text and binary OID parameters.
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"type_stmt\0SELECT has_function_privilege($1,$2)\0".as_slice(),
+            &2i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+            &25u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+    for allowed in [true, false] {
+        if !allowed {
+            ok(
+                &mut owner,
+                "REVOKE EXECUTE ON FUNCTION pg_get_function_result(oid) FROM cat14_23_reader",
+            );
+        }
+        for binary in [0i16, 1] {
+            for oid in [Some(16001u32), None, Some(0)] {
+                let v = oid.map(|oid| {
+                    if binary == 1 {
+                        oid.to_be_bytes().to_vec()
+                    } else {
+                        oid.to_string().into_bytes()
+                    }
+                });
+                let mut b = [
+                    b"type_portal\0type_stmt\0".as_slice(),
+                    &1i16.to_be_bytes(),
+                    &binary.to_be_bytes(),
+                    &2i16.to_be_bytes(),
+                ]
+                .concat();
+                for v in [v, Some(b"EXECUTE".to_vec())] {
+                    b.extend((v.as_ref().map_or(-1, |v| v.len() as i32)).to_be_bytes());
+                    if let Some(v) = v {
+                        b.extend(v);
+                    }
+                }
+                b.extend(1i16.to_be_bytes());
+                b.extend(binary.to_be_bytes());
+                send(&mut reader, b'B', &b);
+                send(&mut reader, b'D', b"Ptype_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"type_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(16, 1)], binary);
+                assert_eq!(
+                    values(&data(&r)[0]),
+                    vec![if oid != Some(16001) {
+                        None
+                    } else {
+                        Some(if binary == 1 {
+                            vec![u8::from(allowed)]
+                        } else {
+                            if allowed {
+                                b"t".to_vec()
+                            } else {
+                                b"f".to_vec()
+                            }
+                        })
+                    }]
+                );
+                send(&mut reader, b'C', b"Ptype_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+    }
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE') FROM cat14_23_allowed",
+        &[Some("f")],
+    );
+    denied(
+        &mut reader,
+        "SELECT pg_get_function_result(16001::oid)",
+        "42501",
+        b'I',
+    );
+    send(&mut reader, b'C', b"Stype_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    ok(
+        &mut owner,
+        "REVOKE ALL ON FUNCTION pg_get_function_result(oid) FROM cat14_23_owner",
+    );
+    check(
+        &mut reader,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+        &[Some("{}")],
+    );
+    check(
+        &mut owner,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE'),has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("f"), Some("t")],
+    );
+    ok(
+        &mut owner,
+        "GRANT EXECUTE ON FUNCTION pg_get_function_result(oid) TO PUBLIC",
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    let acl = String::from_utf8(
+        values(
+            &data(&ok(
+                &mut reader,
+                "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+            ))[0],
+        )[0]
+        .clone()
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(acl.contains("=X/cat14_23_owner"), "{acl}");
+    domain.reload().unwrap();
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+
+    let mut fresh = connect("cat14_23_reader");
+    check(
+        &mut fresh,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    let mut otherdb = connect_database("cat14_23_reader", "cat14_23_otherdb");
+    check(
+        &mut otherdb,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+        &[None],
+    );
+    check(
+        &mut otherdb,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "ALTER FUNCTION pg_get_function_result(oid) OWNER TO cat14_23_other",
+    );
+    check(
+        &mut reader,
+        "SELECT proacl FROM pg_proc WHERE proname='pg_get_function_result'",
+        &[Some("{=X/cat14_23_other}")],
+    );
+    check(
+        &mut other,
+        "SELECT has_function_privilege('pg_get_function_result(oid)','EXECUTE WITH GRANT OPTION')",
+        &[Some("t")],
+    );
+    check(
+        &mut reader,
+        "SELECT oid FROM pg_proc WHERE proname='pg_get_function_result'",
+        &[Some("16001")],
+    );
+    send(&mut fresh, b'X', b"");
+    send(&mut otherdb, b'X', b"");
+    for s in [&mut member, &mut other, &mut reader, &mut owner, &mut admin] {
+        send(s, b'X', b"");
+    }
+    eprintln!(
+        "cat14_23: nonroot_identities=4 nonroot_connections=6 overloads=8 binds=12 acl_default_empty=1 delegation=1 revoke_cascade=1 recovery=1 cleanup=1"
+    );
+}

@@ -4135,6 +4135,8 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 所有字段typmod=-1，name标准构建typlen64、oid/int4为4、bool为1、timestamptz为8、数组/text为-1；编码、来源属性描述与零行Describe沿第3章，不把text冒充name或aclitem[]。目录可读、对象USAGE/SELECT/CONNECT、search_path可见性是不同判断；本块不重复下一可见性块。安全目录内部取数应通过受控脱敏provider，禁止让公开pg_user查询直接暴露mysql.user原始列或绕过共享授权。
 
+2026-11-06任务23：三条真实内省原语的 `proacl` 与 `has_function_privilege`、实际执行共同读取 PgStandardSchema 中的持久 owner/默认来源及按库显式 ACL，授权委派复用原 update_object_acl 引擎。proacl 为 aclitem[]/1034、来源1255/30，默认 SQL NULL 与显式 {} 区分，PUBLIC 与同名角色、grantor/grantee/X* 保留；非NULL binary ACL 与PG18均42883。正式2/3参数工厂支持省略用户/name/text/OID与函数text/OID，text必须完整 oid 输入签名，不按函数名误匹配重载。真实非root授权/撤销、grant option RESTRICT/CASCADE、目录可读但函数执行42501、成员继承、新Bind/新连接/reload及库隔离见cat14_23。旧记录缺ACL来源不回填、读权限0A000，历史KV测试独立保留。精确18.4和18.6已分别实采，完整构建、协议与命令见目录计划任务23交接。本增量不开放任意用户函数/扩展例程或完整CREATE FUNCTION，不宣称完整客户端UI/ORM、生产认证或事务内GRANT实现。
+
 客户端必需候选签名登记（均为待采集/待实施，不能声称某客户端已调用）：对上述八个has_*函数，用户参数可省略或为name/19、oid/26；对象为text/25或oid/26，末参数权限text/25。has_column另含列text/25或int2/21；has_any_column无列参数；pg_has_role的目标角色为text/25或oid/26。结果均bool/16。函数对象文本按完整重载签名解析；类型对象按类型身份解析。权限按对象种类校验，支持逗号任一匹配及grant option；pg_has_role区分MEMBER、USAGE、SET及ADMIN选项，不能只查活动列表。扩展参数OID/绑定与普通SQL函数注册沿第3/4章，目录白名单不能代替全局实现。客户端若需求has_language/tablespace/server/foreign_data_wrapper/largeobject/parameter_privilege，先登记具体SQL和对象来源；未提供对象模型的签名明确0A000，不假定全部允许。
 
 2026-11-06任务11实测更新：目录入口的 `pg_get_userbyid(oid)` 已从共享稳定角色事实反查，输出name/19、NULL严格传播；未知OID按固定PG18.4/18.6参考返回 `unknown (OID=<十进制OID>)`。真实非root跨连接及扩展text/binary覆盖见目录计划交接文档任务11；对象owner生命周期及普通SQL函数工厂不能由该局部接线推导完成。

@@ -423,3 +423,5 @@ has_column_privilege/has_any_column_privilege复用statement-owned PgDatabasePri
 ## 类型授权（任务22）
 
 任务22：has_type_privilege通过正式表达式工厂，并将当前类型、角色及namespace事实注入既有PgDatabasePrivilegeEvaluator；支持有原生FROM的普通SQL与目录路径一致的授权。
+
+任务23：普通 FROM 表达式中的 has_function_privilege 沿正式 typed 工厂注入当前会话共享 pg_function_facts 消费者，复用角色/有效路径/namespace事实，保持严格NULL和当前授权更新。

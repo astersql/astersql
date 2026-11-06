@@ -164,3 +164,7 @@ attacl在实际选中pg_attribute行惰性读取本执行快照的TableInfo列AC
 ## 类型授权（任务22）
 
 任务22：pg_type.typacl接持久类型ACL，描述为1034/来源1247/32，缺源在取值前0A000；has_type_privilege与共享层使用同一真实USAGE/角色继承/委派授权。普通SQL函数正式工厂和目录标量使用一致接口，NULL与不存在OID保留SQL NULL。
+
+## 任务23：函数授权
+
+proacl 按实际投影读取共享 pg_function_facts，并以 aclitem[]/1034、来源1255/30输出；默认 SQL NULL 与显式空数组分开。has_function_privilege 使用同源角色/函数快照，支持省略用户及 name/text/OID 组合与完整 oid 输入签名。三条内省原语执行前检查调用者的真实 EXECUTE；目录读取仍可在无 EXECUTE 时读取。扩展新 Bind 重新取得事实，非NULL ACL binary 沿 PG18 的42883边界。

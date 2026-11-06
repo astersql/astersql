@@ -114,3 +114,5 @@ has_table_privilege列入不可缓存/不可折叠/生成列禁止集合，避�
 ## 类型授权（任务22）
 
 任务22：has_type_privilege沿同类对象权限函数的上下文/不可缓存策略。
+
+任务23：has_function_privilege 依赖当前角色与持久授权，禁止折叠/缓存及生成列使用，与现有 has_* 策略一致。

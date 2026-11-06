@@ -196,3 +196,5 @@ has_table_privilege复用现有PG权限函数的2/3参正式typed签名、bool�
 ## 类型授权（任务22）
 
 任务22：正式注册has_type_privilege两/三参数工厂，沿既有对象权限函数的typed signature选择和严格NULL求值，不在表达式层伪造权限。
+
+任务23：has_function_privilege 正式2/3参数工厂复用 has_* 的 typed text/name/OID 签名与 PgDatabasePrivilegeEvaluator，结果为bool；不在工厂内推断授权。

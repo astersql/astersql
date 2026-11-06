@@ -1930,3 +1930,70 @@ fn cat14_22_historical_type_acl_is_not_backfilled() {
     );
     domain.close();
 }
+
+#[test]
+fn cat14_23_historical_function_acl_is_not_backfilled() {
+    let (domain, pg) = CreateAnalyzeSession().unwrap();
+    let types = [(23, "int4", 1007, false), (1007, "_int4", 0, true)];
+    pg.pg_initialize_standard_schema_with_types(&types).unwrap();
+    let facts = || {
+        pg_function_facts(
+            &pg.pg_namespace_facts().unwrap(),
+            &pg.pg_namespace_role_identities().unwrap(),
+        )
+    };
+    let before = facts();
+    let before = &before
+        .iter()
+        .find(|(_, n, _)| n == "pg_get_function_result")
+        .unwrap()
+        .2;
+    assert!(pg_function_acl_text(before).unwrap().is_none());
+    let context = kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                let bytes = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                for key in [
+                    "function_acl_initialized",
+                    "function_acls",
+                    "function_acl_overrides",
+                ] {
+                    value.as_object_mut().unwrap().remove(key);
+                }
+                tx.Set(key, serde_json::to_vec(&value).unwrap())
+            })
+        })
+        .unwrap();
+    pg.pg_initialize_standard_schema_with_types(&types).unwrap();
+    let after = facts();
+    let after = &after
+        .iter()
+        .find(|(_, n, _)| n == "pg_get_function_result")
+        .unwrap()
+        .2;
+    assert_eq!((before.id, &before.owner), (after.id, &after.owner));
+    assert_eq!(
+        pg_function_acl_text(after)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    domain.force_full_reload_for_test().unwrap();
+    let again = facts();
+    assert!(
+        again
+            .iter()
+            .find(|(_, n, _)| n == "pg_get_function_result")
+            .unwrap()
+            .2
+            .acl
+            .is_none()
+    );
+    domain.close();
+}

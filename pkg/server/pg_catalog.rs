@@ -1387,6 +1387,7 @@ impl CatalogQuery {
                         "pg_has_role"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_function_privilege"
                         | "has_type_privilege"
                         | "has_sequence_privilege"
                         | "has_table_privilege"
@@ -3797,6 +3798,32 @@ impl CatalogQuery {
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_proc")
+                    && local == 24
+                    && row[base] != Value::Null
+                {
+                    // Only an actual proacl projection requires ACL provenance; identity lookups stay usable.
+                    let roles = execution.role_facts()?;
+                    let types = astersql_session::runtime::pg_function_facts(
+                        &execution.type_namespaces()?,
+                        &roles,
+                    );
+                    let fact = &types
+                        .iter()
+                        .find(|(_, _, f)| row[base] == Value::Signed(f.id))
+                        .ok_or_else(|| {
+                            database_identity_unavailable(
+                                "PostgreSQL function ACL source is unavailable",
+                            )
+                        })?
+                        .2;
+                    let text = astersql_session::runtime::pg_function_acl_text(fact)
+                        .map_err(crate::runtime::session_protocol_error)?;
+                    return Ok(text.map_or(Value::Null, Value::Text));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "pg_type")
                     && local == 20
                     && row[base] != Value::Null
@@ -4330,6 +4357,40 @@ impl CatalogQuery {
                         Value::Text(if v { "t" } else { "f" }.into())
                     })
                 }
+                "has_function_privilege" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    let oids = values
+                        .iter()
+                        .map(|v| matches!(v, Value::Signed(_)))
+                        .collect::<Vec<_>>();
+                    let values = values
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Null => Ok(None),
+                            Value::Signed(n) => Ok(Some(n.to_string())),
+                            Value::Text(s) => Ok(Some(s)),
+                            _ => Err(database_identity_unavailable(
+                                "invalid type privilege argument",
+                            )),
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?;
+                    let roles = execution.role_facts()?;
+                    let namespaces = execution.type_namespaces()?;
+                    let types = astersql_session::runtime::pg_function_facts(&namespaces, &roles);
+                    let result = astersql_session::runtime::pg_has_function_privilege(
+                        &types,
+                        &self.relation_path,
+                        &namespaces,
+                        &roles,
+                        &execution.session_identity()?.1,
+                        &values,
+                        &oids,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    result.map_or(Value::Null, |v| {
+                        Value::Text(if v { "t" } else { "f" }.into())
+                    })
+                }
                 "has_type_privilege" => {
                     let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
                     let oids = values
@@ -4741,6 +4802,37 @@ impl CatalogQuery {
                 "pg_get_function_arguments"
                 | "pg_get_function_result"
                 | "pg_get_function_sqlbody" => {
+                    let functions = astersql_session::runtime::pg_function_facts(
+                        &execution.type_namespaces()?,
+                        &execution.role_facts()?,
+                    );
+                    let function_oid =
+                        astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES
+                            .iter()
+                            .find(|(_, n)| *n == path.last().unwrap().as_str())
+                            .unwrap()
+                            .0;
+                    let allowed = astersql_session::runtime::pg_has_function_privilege(
+                        &functions,
+                        &self.relation_path,
+                        &execution.type_namespaces()?,
+                        &execution.role_facts()?,
+                        &execution.session_identity()?.1,
+                        &[Some(function_oid.to_string()), Some("EXECUTE".into())],
+                        &[true, false],
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    if allowed != Some(true) {
+                        return Err(ConnError::PgFunction(
+                            astersql_session::runtime::PgFunctionError {
+                                state: "42501",
+                                message: "permission denied for function".into(),
+                                detail: None,
+                                hint: None,
+                                position: None,
+                            },
+                        ));
+                    }
                     let value = evaluate(&args[0])?;
                     if value == Value::Null {
                         return Ok(Value::Null);

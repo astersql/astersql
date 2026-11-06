@@ -1595,6 +1595,9 @@ impl ConcreteSession {
                                 return Err(kv::errors::New("role owns a database"));
                             }
                             super::pg_type::type_role_dependency(txn, &ctx, schema.id, *oid)?;
+                            super::pg_function::function_role_dependency(
+                                txn, &ctx, schema.id, *oid,
+                            )?;
                             super::pg_schema::namespace_role_dependency(
                                 txn, &ctx, schema.id, *oid, role,
                             )?;
@@ -1637,6 +1640,7 @@ impl ConcreteSession {
                     || e.to_string() == "role has schema dependencies"
                     || e.to_string() == "role has relation dependencies"
                     || e.to_string() == "role has type dependencies"
+                    || e.to_string() == "role has function dependencies"
                 {
                     namespace_error("2BP01", &e.to_string())
                 } else {

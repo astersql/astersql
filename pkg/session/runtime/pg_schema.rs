@@ -52,6 +52,16 @@ pub enum PgSchemaCommand {
         schema: String,
         owner: String,
     },
+    FunctionPrivileges {
+        schema: Option<String>,
+        name: String,
+        grantee: String,
+        public: bool,
+        privileges: String,
+        grant: bool,
+        grant_option: bool,
+        cascade: bool,
+    },
     TypePrivileges {
         domain: bool,
         schema: Option<String>,
@@ -279,6 +289,7 @@ impl ConcreteSession {
                             PgSchemaCommand::TablePrivileges { .. }
                             | PgSchemaCommand::RelationPrivilege { .. }
                             | PgSchemaCommand::RelationOwner { .. }
+                            | PgSchemaCommand::FunctionPrivileges { .. }
                             | PgSchemaCommand::TypePrivileges { .. }
                             | PgSchemaCommand::TypeOwner { .. }
                             | PgSchemaCommand::FunctionOwner { .. } => {
@@ -578,6 +589,9 @@ impl ConcreteSession {
         ) {
             return self.pg_schema_privilege_command(command).map(|_| ());
         }
+        if matches!(command, PgSchemaCommand::FunctionPrivileges { .. }) {
+            return self.pg_function_privilege_command(command).map(|_| ());
+        }
         if matches!(command, PgSchemaCommand::TypePrivileges { .. }) {
             return self.pg_type_privilege_command(command).map(|_| ());
         }
@@ -669,6 +683,9 @@ impl ConcreteSession {
     ) -> SessionResult<Option<(&'static str, String)>> {
         if matches!(command, PgSchemaCommand::TablePrivileges { .. }) {
             return self.pg_table_privilege_command(command);
+        }
+        if matches!(command, PgSchemaCommand::FunctionPrivileges { .. }) {
+            return self.pg_function_privilege_command(command);
         }
         if matches!(command, PgSchemaCommand::TypePrivileges { .. }) {
             return self.pg_type_privilege_command(command);
@@ -850,6 +867,12 @@ impl ConcreteSession {
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
+            if let Some(acls) = standard.function_acl_overrides.get(&database.id) {
+                standard.function_acls.extend(acls.clone());
+            }
+            if let Some(owners) = standard.function_owner_overrides.get(&database.id) {
+                standard.function_owners.extend(owners);
+            }
             if let Some(acls) = standard.type_acl_overrides.get(&database.id) {
                 standard.type_acls.extend(acls.clone());
             }
@@ -1091,6 +1114,13 @@ pub struct PgStandardSchema {
     #[serde(default)]
     pub(super) builtin_types: BTreeMap<String, BuiltinTypeIdentity>,
     #[serde(default)]
+    pub(super) function_acl_initialized: bool,
+    #[serde(default)]
+    pub(super) function_acls: BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>,
+    #[serde(default)]
+    pub(super) function_acl_overrides:
+        BTreeMap<i64, BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>>,
+    #[serde(default)]
     pub(super) type_acl_initialized: bool,
     #[serde(default)]
     pub(super) type_acls: BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>,
@@ -1184,6 +1214,9 @@ impl ConcreteSession {
                             created = true;
                             let standard = PgStandardSchema {
                                 builtin_types: BTreeMap::new(),
+                                function_acl_initialized: true,
+                                function_acls: BTreeMap::new(),
+                                function_acl_overrides: BTreeMap::new(),
                                 type_acl_initialized: true,
                                 type_acls: BTreeMap::new(),
                                 type_acl_overrides: BTreeMap::new(),
@@ -1826,6 +1859,19 @@ impl ConcreteSession {
                     let value = txn.Get(&context, key.clone(), &[])?;
                     let mut standard: PgStandardSchema = serde_json::from_slice(&value.Value)
                         .map_err(|e| kv::errors::New(e.to_string()))?;
+                    let old = standard
+                        .function_owner_overrides
+                        .get(&database.id)
+                        .and_then(|m| m.get(&id))
+                        .or_else(|| standard.function_owners.get(&id))
+                        .copied();
+                    super::pg_function::transfer_function_acl(
+                        &mut standard,
+                        database.id,
+                        id,
+                        old,
+                        owner,
+                    );
                     standard
                         .function_owner_overrides
                         .entry(database.id)

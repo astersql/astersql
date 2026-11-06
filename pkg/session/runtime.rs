@@ -113,7 +113,11 @@ pub use pg_database::{
     PgDatabaseCommand, PgDatabaseFact, PgRoleAttributes, PgRoleCommand, PgRoleFact,
     pg_database_privileges, pg_has_database_privilege, pg_role_reachable,
 };
+mod pg_function;
 mod pg_schema;
+pub use pg_function::{
+    pg_function_acl_text, pg_function_facts, pg_function_privileges, pg_has_function_privilege,
+};
 mod pg_type;
 pub use pg_type::{pg_has_type_privilege, pg_type_acl_text, pg_type_facts, pg_type_privileges};
 mod pg_table;

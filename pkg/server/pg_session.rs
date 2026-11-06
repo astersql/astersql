@@ -426,7 +426,8 @@ impl PgSession {
             SessionQuery::SchemaUtility(command) => {
                 if matches!(
                     command,
-                    astersql_session::runtime::PgSchemaCommand::TypePrivileges { .. }
+                    astersql_session::runtime::PgSchemaCommand::FunctionPrivileges { .. }
+                        | astersql_session::runtime::PgSchemaCommand::TypePrivileges { .. }
                         | astersql_session::runtime::PgSchemaCommand::Privileges { .. }
                         | astersql_session::runtime::PgSchemaCommand::TablePrivileges { .. }
                 ) {
@@ -557,12 +558,20 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::TablePrivileges {
                     grant: true, ..
                 }
+                | astersql_session::runtime::PgSchemaCommand::FunctionPrivileges {
+                    grant: true,
+                    ..
+                }
                 | astersql_session::runtime::PgSchemaCommand::TypePrivileges {
                     grant: true, ..
                 }
                 | astersql_session::runtime::PgSchemaCommand::Privileges { grant: true, .. }
                 | astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::TablePrivileges {
+                    grant: false,
+                    ..
+                }
+                | astersql_session::runtime::PgSchemaCommand::FunctionPrivileges {
                     grant: false,
                     ..
                 }
@@ -976,7 +985,11 @@ impl SessionQuery {
                     }
                     let privileges = modes.join(",");
                     if privileges != "ALL" {
-                        (if word(tokens.get(on + 1), "type") || word(tokens.get(on + 1), "domain") {
+                        (if word(tokens.get(on + 1), "function") {
+                            astersql_session::runtime::pg_function_privileges
+                        } else if word(tokens.get(on + 1), "type")
+                            || word(tokens.get(on + 1), "domain")
+                        {
                             astersql_session::runtime::pg_type_privileges
                         } else if word(tokens.get(on + 1), "sequence") {
                             astersql_session::runtime::pg_sequence_privileges
@@ -988,7 +1001,8 @@ impl SessionQuery {
                     let at = on
                         + 1
                         + usize::from(
-                            word(tokens.get(on + 1), "type")
+                            word(tokens.get(on + 1), "function")
+                                || word(tokens.get(on + 1), "type")
                                 || word(tokens.get(on + 1), "domain")
                                 || word(tokens.get(on + 1), "table")
                                 || word(tokens.get(on + 1), "sequence"),
@@ -997,18 +1011,37 @@ impl SessionQuery {
                         .get(at)
                         .and_then(identifier)
                         .ok_or_else(|| ("42601", "expected relation".into()))?;
-                    let (schema, table, end) = if tokens.get(at + 1) == Some(&Token::Symbol('.')) {
-                        (
-                            Some(first),
-                            tokens
-                                .get(at + 2)
-                                .and_then(identifier)
-                                .ok_or_else(|| ("42601", "expected relation".into()))?,
-                            at + 3,
-                        )
-                    } else {
-                        (None, first, at + 1)
-                    };
+                    let (schema, table, mut end) =
+                        if tokens.get(at + 1) == Some(&Token::Symbol('.')) {
+                            (
+                                Some(first),
+                                tokens
+                                    .get(at + 2)
+                                    .and_then(identifier)
+                                    .ok_or_else(|| ("42601", "expected relation".into()))?,
+                                at + 3,
+                            )
+                        } else {
+                            (None, first, at + 1)
+                        };
+                    let function = word(tokens.get(on + 1), "function");
+                    if function {
+                        if tokens.get(end) != Some(&Token::Symbol('(')) {
+                            return Err(("42601", "expected function signature".into()));
+                        }
+                        end += 1;
+                        if word(tokens.get(end), "pg_catalog")
+                            && tokens.get(end + 1) == Some(&Token::Symbol('.'))
+                        {
+                            end += 2;
+                        }
+                        if !word(tokens.get(end), "oid")
+                            || tokens.get(end + 1) != Some(&Token::Symbol(')'))
+                        {
+                            return Err(("42883", "function does not exist".into()));
+                        }
+                        end += 2;
+                    }
                     if !word(tokens.get(end), if grant { "to" } else { "from" }) {
                         return Err(("0A000", "expected a single table grantee".into()));
                     }
@@ -1032,6 +1065,26 @@ impl SessionQuery {
                                 && (cascade || word(suffix.first(), "restrict")))
                     {
                         return Err(("0A000", "unsupported table grant syntax".into()));
+                    }
+                    if function {
+                        if !columns.is_empty() {
+                            return Err((
+                                "42601",
+                                "function privileges cannot specify columns".into(),
+                            ));
+                        }
+                        return Ok(Some(Self::SchemaUtility(
+                            PgSchemaCommand::FunctionPrivileges {
+                                schema,
+                                name: table,
+                                grantee,
+                                public,
+                                privileges,
+                                grant,
+                                grant_option: option,
+                                cascade,
+                            },
+                        )));
                     }
                     if word(tokens.get(on + 1), "type") || word(tokens.get(on + 1), "domain") {
                         if !columns.is_empty() {

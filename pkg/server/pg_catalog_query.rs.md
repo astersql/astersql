@@ -122,3 +122,5 @@ has_column_privilege/has_any_column_privilege无FROM标量查询接既有Catalog
 ## 类型授权（任务22）
 
 任务22：无FROM的has_type_privilege请求沿既有目录函数词法分类，保留name/OID cast与扩展参数语义。
+
+任务23：identity_scalar 同现有 has_* 路径接入 has_function_privilege；有原生 FROM 的查询仍由普通表达式工厂/共享授权消费者执行。

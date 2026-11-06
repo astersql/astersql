@@ -2881,6 +2881,7 @@
 - [ ] [`pkg/session/runtime/pg_database.rs.md`](../pkg/session/runtime/pg_database.rs.md)
 - [ ] [`pkg/session/runtime/pg_schema.rs.md`](../pkg/session/runtime/pg_schema.rs.md)
 - [ ] [`pkg/session/runtime/pg_table.rs.md`](../pkg/session/runtime/pg_table.rs.md)
+- [ ] [`pkg/session/runtime/pg_function.rs.md`](../pkg/session/runtime/pg_function.rs.md)
 - [ ] [`pkg/session/runtime/pg_type.rs.md`](../pkg/session/runtime/pg_type.rs.md)
 - [ ] [`pkg/server/pg_sql.rs.md`](../pkg/server/pg_sql.rs.md)
 
