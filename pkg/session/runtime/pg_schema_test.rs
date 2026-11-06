@@ -1287,3 +1287,89 @@ fn pg13_037_table_constraints_upgrade_is_explicit() {
         "pg13_037 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=8 catalog_reads_never_allocate=3"
     );
 }
+
+#[test]
+fn pg13_038_key_column_usage_upgrade_is_explicit() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.pg_initialize_standard_schema().unwrap();
+    let original = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    domain.storage_handle().with_storage(|store| {
+        let ctx = kv::Context::default();
+        kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+            let mut legacy = serde_json::to_value(&original).unwrap();
+            legacy.as_object_mut().unwrap().remove("key_column_usage");
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                serde_json::to_vec(&legacy).unwrap(),
+            )
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        pg.pg_namespace_facts()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    pg.pg_initialize_standard_schema().unwrap();
+    let upgraded = pg
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find_map(|f| f.standard)
+        .unwrap();
+    assert_eq!(original.namespace, upgraded.namespace);
+    assert_eq!(original.owner, upgraded.owner);
+    assert_eq!(original.character_data, upgraded.character_data);
+    assert_eq!(original.table_constraints, upgraded.table_constraints);
+    assert_eq!(original.schemata, upgraded.schemata);
+    assert_eq!(original.sql_identifier, upgraded.sql_identifier);
+    assert_eq!(upgraded.tables, original.tables);
+    assert_eq!(upgraded.yes_or_no, original.yes_or_no);
+    assert_eq!(upgraded.views, original.views);
+    assert_eq!(upgraded.columns, original.columns);
+    assert_eq!(upgraded.cardinal_number, original.cardinal_number);
+    assert!(upgraded.key_column_usage > original.key_column_usage);
+    let read = || {
+        domain.storage_handle().with_storage(|store| {
+            let ctx = kv::Context::default();
+            let mut value = Vec::new();
+            kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                value = txn
+                    .Get(
+                        &ctx,
+                        astersql_meta::transaction_meta_string_key(b"NextGlobalID"),
+                        &[],
+                    )?
+                    .Value;
+                Ok(())
+            })
+            .unwrap();
+            value
+        })
+    };
+    let before = read();
+    for _ in 0..3 {
+        let facts = pg.pg_namespace_facts().unwrap();
+        assert_eq!(
+            facts
+                .iter()
+                .find_map(|f| f.standard.as_ref())
+                .unwrap()
+                .key_column_usage,
+            upgraded.key_column_usage
+        );
+    }
+    assert_eq!(before, read());
+    println!(
+        "pg13_038 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=10 catalog_reads_never_allocate=3"
+    );
+}

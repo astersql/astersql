@@ -805,7 +805,12 @@ impl Parser {
                 if schema == "information_schema"
                     && matches!(
                         name.as_str(),
-                        "schemata" | "tables" | "views" | "columns" | "table_constraints"
+                        "schemata"
+                            | "tables"
+                            | "views"
+                            | "columns"
+                            | "table_constraints"
+                            | "key_column_usage"
                     ) =>
             {
                 format!("information_schema.{name}")
@@ -826,7 +831,7 @@ impl Parser {
                 "mixed public and catalog relations are unsupported",
             ));
         }
-        let standard = matches!(path.as_slice(), [schema, relation] if schema == "information_schema" && matches!(relation.as_str(), "schemata" | "tables" | "views" | "columns" | "table_constraints"));
+        let standard = matches!(path.as_slice(), [schema, relation] if schema == "information_schema" && matches!(relation.as_str(), "schemata" | "tables" | "views" | "columns" | "table_constraints" | "key_column_usage"));
         if cte_id.is_none() && !is_catalog_relation(&name) && !standard {
             return Err((
                 "42P01",
@@ -1193,7 +1198,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "information_schema")
             && w[2] == Token::Symbol('.')
-            && matches!(&w[3], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "schemata" | "tables" | "views" | "columns" | "table_constraints"))
+            && matches!(&w[3], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "schemata" | "tables" | "views" | "columns" | "table_constraints" | "key_column_usage"))
     });
     let catalog = standard || tokens.windows(4).enumerate().any(|(index, w)| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))

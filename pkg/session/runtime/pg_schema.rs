@@ -895,6 +895,8 @@ pub struct PgStandardSchema {
     pub cardinal_number: i64,
     #[serde(default)]
     pub table_constraints: i64,
+    #[serde(default)]
+    pub key_column_usage: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -932,6 +934,7 @@ impl ConcreteSession {
                                 columns: allocate_namespace_id(txn, &ctx)?,
                                 cardinal_number: allocate_namespace_id(txn, &ctx)?,
                                 table_constraints: allocate_namespace_id(txn, &ctx)?,
+                                key_column_usage: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
                                 key.clone(),
@@ -979,6 +982,14 @@ impl ConcreteSession {
                                     .map_err(|e| kv::errors::New(e.to_string()))?,
                             )?;
                         }
+                        if standard.key_column_usage == 0 {
+                            standard.key_column_usage = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
                     }
                     Ok(())
                 })
@@ -996,9 +1007,10 @@ impl ConcreteSession {
                 standard.columns,
                 standard.cardinal_number,
                 standard.table_constraints,
+                standard.key_column_usage,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 10
+            if unique.len() != 11
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()
