@@ -82,6 +82,13 @@ const STANDARD_COLUMNS: &[(&str, usize)] = &[
     ("maximum_cardinality", 31),
     ("dtd_identifier", 32),
     ("is_self_referencing", 33),
+    ("is_identity", 34),
+    ("identity_generation", 35),
+    ("identity_start", 36),
+    ("identity_increment", 37),
+    ("identity_maximum", 38),
+    ("identity_minimum", 39),
+    ("identity_cycle", 40),
     ("is_generated", 41),
     ("generation_expression", 42),
     ("is_updatable", 43),
@@ -89,8 +96,8 @@ const STANDARD_COLUMNS: &[(&str, usize)] = &[
 fn standard_column_type(slot: usize) -> u8 {
     match slot {
         4 | 8..=13 | 15 | 31 => 3,
-        6 | 33 | 43 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
-        5 | 7 | 14 | 41 | 42 => crate::pg_result::CatalogColumnType::Varchar as u8,
+        6 | 33 | 34 | 40 | 43 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
+        5 | 7 | 14 | 35..=39 | 41 | 42 => crate::pg_result::CatalogColumnType::Varchar as u8,
         _ => crate::pg_result::CatalogColumnType::Name as u8,
     }
 }
@@ -2549,8 +2556,8 @@ impl CatalogQuery {
                     for (label, slot) in STANDARD_COLUMNS {
                         let domain = match slot {
                             4 | 8..=13 | 15 | 31 => standard.cardinal_number,
-                            6 | 33 | 43 => standard.yes_or_no,
-                            5 | 7 | 14 | 41 | 42 => standard.character_data,
+                            6 | 33 | 34 | 40 | 43 => standard.yes_or_no,
+                            5 | 7 | 14 | 35..=39 | 41 | 42 => standard.character_data,
                             _ => standard.sql_identifier,
                         };
                         let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
@@ -2640,7 +2647,7 @@ impl CatalogQuery {
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "information_schema.columns")
-                    && matches!(local, 5 | 41..=43)
+                    && matches!(local, 5 | 34..=43)
                     && row[base] != Value::Null
                 {
                     let (Value::Signed(table_id), Value::Signed(column_id)) = (
@@ -7395,6 +7402,9 @@ pub(crate) fn standard_column_definition(
         .map(|v| Value::Text(if v { "YES" } else { "NO" }.into()))
         .ok_or_else(unsupported);
     }
+    if (34..=40).contains(&field) {
+        return standard_column_identity(snapshot, database, model, column, field);
+    }
     let generated = column.PostgreSQLGenerated.as_ref();
     if column.IsGenerated() != generated.is_some() {
         return Err(unsupported());
@@ -7479,4 +7489,65 @@ fn standard_column_updatable(
     // PG reports structural writability even for a projected generated source;
     // assignment restrictions are enforced separately by the write path.
     standard_column_updatable(snapshot, database, base, *id, visited)
+}
+
+// Resolve the internal dependency by durable IDs in this Execute's database.
+// The declaration copy on the column is never a substitute for the live sequence.
+pub(crate) fn standard_column_identity(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    model: &astersql_meta_model::TableInfo,
+    column: &astersql_meta_model::ColumnInfo,
+    field: usize,
+) -> ConnResult<Value> {
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    let Some(identity) = &column.PostgreSQLIdentity else {
+        // PG18's cycle CASE expression also yields NO for non-identity columns.
+        return Ok(if field == 34 || field == 40 {
+            Value::Text("NO".into())
+        } else {
+            Value::Null
+        });
+    };
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|e| ConnError::Session(e.to_string()))?;
+    let sequence = tables
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|t| t.ID == identity.SequenceID && t.State == astersql_meta_model::StatePublic)
+        .ok_or_else(unsupported)?;
+    if model.View.is_some()
+        || column.PostgreSQLGenerated.is_some()
+        || sequence.PostgreSQLSequenceOwner.is_some()
+        || sequence.PostgreSQLOwner != model.PostgreSQLOwner
+        || sequence.PostgreSQLNamespace.as_ref().map(|n| n.0)
+            != model.PostgreSQLNamespace.as_ref().map(|n| n.0)
+        || sequence_declared_type(snapshot, database, sequence)?
+            != native_column_type(column)?.0 as u32
+    {
+        return Err(unsupported());
+    }
+    let config = sequence.Sequence.as_ref().ok_or_else(unsupported)?;
+    if config.Increment == 0
+        || config.MinValue >= config.MaxValue
+        || !(config.MinValue..=config.MaxValue).contains(&config.Start)
+    {
+        return Err(unsupported());
+    }
+    Ok(Value::Text(match field {
+        34 => "YES".into(),
+        35 => if identity.Always {
+            "ALWAYS"
+        } else {
+            "BY DEFAULT"
+        }
+        .into(),
+        36 => config.Start.to_string(),
+        37 => config.Increment.to_string(),
+        38 => config.MaxValue.to_string(),
+        39 => config.MinValue.to_string(),
+        40 => if config.Cycle { "YES" } else { "NO" }.into(),
+        _ => unreachable!("validated identity field"),
+    }))
 }

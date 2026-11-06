@@ -433,6 +433,7 @@ impl SessionQuery {
     pub(crate) fn command(&self) -> &'static str {
         match self {
             Self::Sequence(command, _) => match command {
+                astersql_session::runtime::PgSequenceCommand::AlterIdentity { .. } => "ALTER TABLE",
                 astersql_session::runtime::PgSequenceCommand::Create { .. } => "CREATE SEQUENCE",
                 astersql_session::runtime::PgSequenceCommand::Drop { .. } => "DROP SEQUENCE",
                 astersql_session::runtime::PgSequenceCommand::OwnedBy { .. }

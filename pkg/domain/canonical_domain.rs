@@ -1355,6 +1355,91 @@ impl DdlMetadataService {
         })
     }
 
+    /// Keep the identity's declaration and internal sequence in one metadata transaction.
+    /// CACHE 1 and positive increments retain the existing allocator's supported boundary.
+    pub fn alter_postgresql_identity(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table_id: i64,
+        column_id: i64,
+        option: &str,
+        value: i64,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, |catalog| {
+            let (key, old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), t)| db == database && t.ID == table_id)
+                .map(|(key, t)| (key.clone(), t.clone()))
+                .ok_or_else(|| kv::errors::New("identity table no longer exists"))?;
+            let mut new = old.clone();
+            let column = new
+                .Columns
+                .iter_mut()
+                .find(|c| c.ID == column_id)
+                .ok_or_else(|| kv::errors::New("identity column no longer exists"))?;
+            let kind = match column.GetType() {
+                astersql_meta_model::mysql::TypeShort => {
+                    astersql_meta_model::PostgreSQLSequenceType::Smallint
+                }
+                astersql_meta_model::mysql::TypeLong => {
+                    astersql_meta_model::PostgreSQLSequenceType::Integer
+                }
+                astersql_meta_model::mysql::TypeLonglong => {
+                    astersql_meta_model::PostgreSQLSequenceType::Bigint
+                }
+                _ => return Err(kv::errors::New("invalid identity type")),
+            };
+            let identity = column
+                .PostgreSQLIdentity
+                .as_mut()
+                .ok_or_else(|| kv::errors::New("column is not an identity"))?;
+            let (seq_key, seq_old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), t)| db == database && t.ID == identity.SequenceID)
+                .map(|(key, t)| (key.clone(), t.clone()))
+                .ok_or_else(|| kv::errors::New("internal sequence no longer exists"))?;
+            let mut seq_new = seq_old.clone();
+            let config = seq_new
+                .Sequence
+                .as_mut()
+                .ok_or_else(|| kv::errors::New("invalid internal sequence"))?;
+            match option {
+                "generated" => identity.Always = value != 0,
+                "start" => config.Start = value,
+                "increment" => config.Increment = value,
+                "minvalue" => config.MinValue = value,
+                "maxvalue" => config.MaxValue = value,
+                "cycle" => config.Cycle = true,
+                "no" => config.Cycle = false,
+                _ => return Err(kv::errors::New("unsupported identity option")),
+            }
+            if config.Increment < 0 || config.CacheValue != 1 {
+                return Err(kv::errors::New("unsupported identity increment or cache"));
+            }
+            let (low, high) = kind.bounds();
+            if config.Increment == 0
+                || config.MinValue < low
+                || config.MaxValue > high
+                || config.MinValue >= config.MaxValue
+                || !(config.MinValue..=config.MaxValue).contains(&config.Start)
+            {
+                return Err(kv::errors::New("invalid identity sequence bounds"));
+            }
+            identity.Sequence = config.clone();
+            catalog.tables.insert(key, new.clone());
+            catalog.tables.insert(seq_key, seq_new.clone());
+            Ok(DdlMetadataChange {
+                changed: true,
+                old_tables: vec![(database.to_owned(), old), (database.to_owned(), seq_old)],
+                new_tables: vec![(database.to_owned(), new), (database.to_owned(), seq_new)],
+                ..Default::default()
+            })
+        })
+    }
+
     /// Atomically validate and publish a sequence's persistent column ownership.
     pub fn set_sequence_owner(
         &self,

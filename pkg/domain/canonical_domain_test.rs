@@ -2391,3 +2391,181 @@ fn pg13_028_sequence_owner_publication_is_atomic() {
     assert_eq!(dropped.old_tables.len(), 2);
     assert!(dropped.old_tables.iter().any(|(_, t)| t.ID == seq.ID));
 }
+
+#[test]
+fn pg13_036_identity_alteration_is_atomic() {
+    use astersql_meta_model::{
+        ColumnInfo, PostgreSQLIdentity, SequenceInfo, StatePublic, TableInfo,
+    };
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    let mut column = ColumnInfo::New(1, NewCIStr("id"));
+    column.State = StatePublic;
+    column.FieldType.SetType(3);
+    column.PostgreSQLIdentity = Some(PostgreSQLIdentity {
+        Always: false,
+        SequenceID: 0,
+        Sequence: SequenceInfo {
+            Start: 7,
+            Increment: 2,
+            MinValue: 1,
+            MaxValue: 99,
+            CacheValue: 1,
+            ..Default::default()
+        },
+    });
+    let created = service
+        .create_table(
+            storage.as_ref(),
+            "test",
+            TableInfo {
+                Name: NewCIStr("identity_alter"),
+                State: StatePublic,
+                ExactName: true,
+                Columns: vec![column],
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let table = created
+        .new_tables
+        .iter()
+        .map(|t| &t.1)
+        .find(|t| t.Name.O == "identity_alter")
+        .unwrap();
+    let cid = table.Columns[0].ID;
+    let sid = table.Columns[0]
+        .PostgreSQLIdentity
+        .as_ref()
+        .unwrap()
+        .SequenceID;
+    let mut version = created.schema_version;
+    for (option, value) in [
+        ("generated", 1),
+        ("increment", 3),
+        ("start", 11),
+        ("cycle", 1),
+    ] {
+        let change = service
+            .alter_postgresql_identity(storage.as_ref(), "test", table.ID, cid, option, value)
+            .unwrap();
+        assert_eq!(change.schema_version, version + 1);
+        version = change.schema_version;
+        let owner = change
+            .new_tables
+            .iter()
+            .map(|t| &t.1)
+            .find(|t| t.ID == table.ID)
+            .unwrap();
+        let sequence = change
+            .new_tables
+            .iter()
+            .map(|t| &t.1)
+            .find(|t| t.ID == sid)
+            .unwrap();
+        let identity = owner.Columns[0].PostgreSQLIdentity.as_ref().unwrap();
+        assert_eq!(identity.SequenceID, sid);
+        assert_eq!(
+            serde_json::to_value(&identity.Sequence).unwrap(),
+            serde_json::to_value(&sequence.Sequence).unwrap()
+        );
+    }
+    for (option, value) in [
+        ("increment", 0),
+        ("increment", -1),
+        ("minvalue", 200),
+        ("maxvalue", 1),
+        ("start", 200),
+        ("restart", 1),
+    ] {
+        assert!(
+            service
+                .alter_postgresql_identity(storage.as_ref(), "test", table.ID, cid, option, value)
+                .is_err()
+        );
+    }
+    let loaded = super::canonical_domain::KvInfoSchemaLoader::new()
+        .load_info_schema(storage.as_ref(), "identity")
+        .unwrap();
+    assert_eq!(loaded.schema.SchemaMetaVersion(), version);
+    let durable = loaded
+        .schema
+        .TableByID(table.ID)
+        .unwrap()
+        .ModelMeta()
+        .unwrap();
+    let identity = durable.Columns[0].PostgreSQLIdentity.as_ref().unwrap();
+    assert!(identity.Always && identity.Sequence.Cycle);
+    assert_eq!(identity.Sequence.Start, 11);
+    assert_eq!(identity.Sequence.Increment, 3);
+    println!(
+        "pg13_036_identity_alteration_is_atomic: committed=4 rejected_without_version_change=6 durable_reload=1"
+    );
+}
+
+#[test]
+fn pg13_036_sequence_configuration_preserves_watermark() {
+    use astersql_meta_model::{SequenceInfo, TableInfo};
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap_or_else(|_| panic!("mock storage has another owner"));
+    let domain = Domain::new(
+        storage,
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    for postgresql in [false, true] {
+        let mut model = TableInfo {
+            DBID: 1,
+            ID: if postgresql { 902 } else { 901 },
+            PostgreSQLOwner: postgresql.then_some(1),
+            Sequence: Some(SequenceInfo {
+                Start: 7,
+                Increment: 2,
+                MinValue: 1,
+                MaxValue: 99,
+                CacheValue: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(domain.sequence_next_value(&model).unwrap(), 7);
+        assert_eq!(domain.sequence_next_value(&model).unwrap(), 9);
+        model.Sequence.as_mut().unwrap().Start = 11;
+        model.Sequence.as_mut().unwrap().Increment = 3;
+        assert_eq!(
+            domain.sequence_next_value(&model).unwrap(),
+            if postgresql { 12 } else { 11 }
+        );
+    }
+    let endpoint = TableInfo {
+        DBID: 1,
+        ID: 903,
+        PostgreSQLOwner: Some(1),
+        Sequence: Some(SequenceInfo {
+            Start: i64::MIN,
+            Increment: 1,
+            MinValue: i64::MIN,
+            MaxValue: i64::MAX,
+            CacheValue: 1,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(domain.sequence_next_value(&endpoint).unwrap(), i64::MIN);
+    assert_eq!(domain.sequence_next_value(&endpoint).unwrap(), i64::MIN + 1);
+    println!(
+        "pg13_036_sequence_configuration_preserves_watermark: pg_progression=1 native_alignment=1 signed_endpoint=1"
+    );
+}

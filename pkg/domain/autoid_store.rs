@@ -28,6 +28,7 @@ impl KvAutoIdStore {
         database_id: i64,
         table_id: i64,
         base: i64,
+        postgresql_start: Option<i64>,
     ) -> Result<()> {
         let context = astersql_kv::Context::default();
         self.storage
@@ -51,7 +52,18 @@ impl KvAutoIdStore {
                     match transaction.Get(&context, key.clone(), &[]) {
                         Ok(_) => {}
                         Err(error) if astersql_kv::IsErrNotFound(&error) => {
-                            transaction.Set(key, base.to_string().into_bytes())?;
+                            transaction.Set(
+                                key,
+                                postgresql_start.unwrap_or(base).to_string().into_bytes(),
+                            )?;
+                            if postgresql_start.is_some() {
+                                // The first PG allocation consumes START exactly once.
+                                let pending = astersql_kv::Key(
+                                    format!("{AUTO_ID_KEY_PREFIX}:DB:{database_id}:SID-pg-reset:{table_id}")
+                                        .into_bytes(),
+                                );
+                                transaction.Set(pending, b"0".to_vec())?;
+                            }
                         }
                         Err(error) => return Err(error),
                     }
@@ -91,14 +103,15 @@ impl KvAutoIdStore {
     }
 
     /// Reserve a bounded contiguous range in the same KV transaction as setval.
-    /// Native allocators retain their original start-congruence semantics; after a
-    /// PG reset, the next value is the reset value plus the increment, even off-grid.
+    /// Native allocators retain start-congruence semantics. PostgreSQL advances
+    /// from its last allocation even after START/INCREMENT metadata changes.
     pub(crate) fn next_sequence_range(
         &self,
         database_id: i64,
         table_id: i64,
         sequence: &astersql_meta_model::SequenceInfo,
         count: i64,
+        postgresql: bool,
     ) -> Result<(i64, i64)> {
         self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
             let reset = match adapter
@@ -133,7 +146,7 @@ impl KvAutoIdStore {
             } else {
                 sequence.Start
             };
-            let next = if reset.is_some() {
+            let next = if postgresql || reset.is_some() {
                 let next = i128::from(base) + i128::from(sequence.Increment);
                 if next < i128::from(sequence.MinValue) || next > i128::from(sequence.MaxValue) {
                     None

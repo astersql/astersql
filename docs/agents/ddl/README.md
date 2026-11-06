@@ -334,10 +334,24 @@ edge; namespace identity comes from the sequence's stored namespace.
 Table/column renames preserve the reference. Exact-ID and native table drops,
 and column drops, remove owned sequences in the same metadata publication.
 Identity sequences continue to use `ColumnInfo.PostgreSQLIdentity.SequenceID`
-and `i` edges; direct sequence drops remain protected. The identity ALTER gate
-admits only the existing DROP COLUMN path for this lifecycle increment. Other
-sequence ALTER options retain their existing capability gate. These metadata
-changes use the current canonical fast path, without a new dependency graph or
+and `i` edges; direct sequence drops remain protected. Alongside DROP COLUMN,
+the bounded adapter accepts one `ALTER TABLE ... ALTER COLUMN ... SET` identity
+option per statement: GENERATED ALWAYS/BY DEFAULT, START, INCREMENT, MINVALUE,
+MAXVALUE, CYCLE or NO CYCLE. `alter_postgresql_identity` validates and publishes
+the owning column and its real internal sequence atomically. START updates the
+declaration without restarting the allocator. Positive increments and CACHE 1
+retain the existing allocation boundary; compound changes, RESTART and general
+sequence ALTER options retain their capability gates. `information_schema.columns`
+resolves fields 34–40 through that same Execute snapshot and durable SequenceID,
+never through AUTO_INCREMENT or the current allocation watermark. PostgreSQL 18.6
+returns identity_cycle=NO for ordinary columns as well; their other identity
+configuration fields are NULL. PG sequence initialization preserves an uncalled
+start marker and subsequent allocation advances from the water level, so changing
+START does not realign an already used sequence. Native sequence alignment remains
+unchanged. Focused task 36
+coverage includes `pg13_036_contract`, `pg13_036_differential`,
+`pg13_036_identity_alteration_runtime` and `pg13_036_identity_alteration_is_atomic`.
+These metadata changes use the current canonical fast path, without a new dependency graph or
 backfill. Focused coverage is `pg13_028_contract`, `pg13_028_differential`, and
 `pg13_028_sequence_owner_publication_is_atomic`.
 

@@ -45,6 +45,78 @@ fn owned_target(
     }
 }
 pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<String>)>> {
+    if word(tokens.first(), "alter") && word(tokens.get(1), "table") {
+        let mut i = 2;
+        let (schema, name) = relation(tokens, &mut i)?;
+        if word(tokens.get(i), "alter") {
+            i += 1;
+            if word(tokens.get(i), "column") {
+                i += 1;
+            }
+            let column = ident(tokens.get(i)).ok_or(("42601", "expected column name".into()))?;
+            i += 1;
+            if word(tokens.get(i), "set") {
+                i += 1;
+                let option =
+                    ident(tokens.get(i)).ok_or(("42601", "expected identity option".into()))?;
+                if matches!(
+                    option.as_str(),
+                    "generated" | "start" | "increment" | "minvalue" | "maxvalue" | "cycle" | "no"
+                ) {
+                    i += 1;
+                    let value = if option == "generated" {
+                        if word(tokens.get(i), "always") {
+                            i += 1;
+                            1
+                        } else if word(tokens.get(i), "by") && word(tokens.get(i + 1), "default") {
+                            i += 2;
+                            0
+                        } else {
+                            return Err(("42601", "expected identity generation mode".into()));
+                        }
+                    } else if option == "cycle" {
+                        1
+                    } else if option == "no" {
+                        if !word(tokens.get(i), "cycle") {
+                            return Err(("0A000", "unsupported identity option".into()));
+                        }
+                        i += 1;
+                        0
+                    } else {
+                        if (option == "start" && word(tokens.get(i), "with"))
+                            || (option == "increment" && word(tokens.get(i), "by"))
+                        {
+                            i += 1;
+                        }
+                        let negative = tokens.get(i) == Some(&Token::Symbol('-'));
+                        if negative {
+                            i += 1;
+                        }
+                        let Some(Token::Number(n)) = tokens.get(i) else {
+                            return Err(("42601", "expected integer identity option".into()));
+                        };
+                        i += 1;
+                        format!("{}{n}", if negative { "-" } else { "" })
+                            .parse::<i64>()
+                            .map_err(|_| ("22003", "identity option outside bigint".into()))?
+                    };
+                    if i != tokens.len() {
+                        return Err(("0A000", "unsupported compound identity alteration".into()));
+                    }
+                    return Ok(Some((
+                        Command::AlterIdentity {
+                            schema,
+                            name,
+                            column,
+                            option,
+                            value,
+                        },
+                        None,
+                    )));
+                }
+            }
+        }
+    }
     if word(tokens.first(), "alter") && word(tokens.get(1), "sequence") {
         let mut i = 2;
         let (schema, name) = relation(tokens, &mut i)?;

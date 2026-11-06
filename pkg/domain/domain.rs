@@ -3227,7 +3227,10 @@ impl Domain {
         let seq = table.Sequence.as_ref().ok_or_else(|| {
             astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
         })?;
-        let base = if seq.Increment > 0 {
+        let postgresql = table.PostgreSQLOwner.is_some();
+        let base = if postgresql {
+            Some(seq.Start)
+        } else if seq.Increment > 0 {
             seq.Start.checked_sub(1)
         } else {
             seq.Start.checked_add(1)
@@ -3237,10 +3240,14 @@ impl Domain {
                 "sequence initial water level overflows".into(),
             )
         })?;
+        KvAutoIdStore::new(self.storage_handle()).initialize_sequence(
+            table.DBID,
+            table.ID,
+            base,
+            postgresql.then_some(seq.Start),
+        )?;
         KvAutoIdStore::new(self.storage_handle())
-            .initialize_sequence(table.DBID, table.ID, base)?;
-        KvAutoIdStore::new(self.storage_handle())
-            .next_sequence_range(table.DBID, table.ID, seq, count)
+            .next_sequence_range(table.DBID, table.ID, seq, count, postgresql)
     }
 
     /// Atomically reset a PostgreSQL sequence to an already-called value.
@@ -4151,6 +4158,25 @@ impl Domain {
             .with_storage(|store| {
                 self.ddl_metadata
                     .set_postgresql_owner(store, database, table_id, owner)
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
+    /// Publish an identity declaration change without touching its allocator watermark.
+    pub fn ddl_alter_postgresql_identity(
+        &self,
+        database: &str,
+        table: i64,
+        column: i64,
+        option: &str,
+        value: i64,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .alter_postgresql_identity(store, database, table, column, option, value)
             })
             .map_err(|e| DomainError::Ddl(e.to_string()))?;
         self.publish_ddl_metadata_change(change).map(|_| ())

@@ -9,6 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Names are decoded identifiers; CREATE options are validated integer options.
 #[derive(Clone, Debug)]
 pub enum PgSequenceCommand {
+    /// One bounded identity declaration change; allocation state is preserved.
+    AlterIdentity {
+        schema: Option<String>,
+        name: String,
+        column: String,
+        option: String,
+        value: i64,
+    },
     Create {
         schema: Option<String>,
         name: String,
@@ -149,7 +157,52 @@ impl ConcreteSession {
                 "sequence operation requires PostgreSQL dialect",
             ));
         }
+        if let PgSequenceCommand::AlterIdentity {
+            schema,
+            name,
+            column,
+            option,
+            value,
+        } = command
+        {
+            let physical = self.pg_bind_relation(schema.as_deref(), name, false)?;
+            let database = self.current_database();
+            let table = self
+                .domain
+                .info_schema()
+                .ModelTableInfoByExactName(
+                    &astersql_infoschema::CiString::new(&database),
+                    &physical,
+                )
+                .map_err(|_| namespace_error("42P01", "relation does not exist"))?;
+            let actor = self.pg_schema_identity();
+            if actor != "root" && table.PostgreSQLOwner != Some(self.pg_database_role_id(&actor)?) {
+                return Err(namespace_error("42501", "must be owner of table"));
+            }
+            let column = table
+                .Columns
+                .iter()
+                .find(|c| c.Name.O == *column && !c.Hidden)
+                .ok_or_else(|| namespace_error("42703", "column does not exist"))?;
+            if column.PostgreSQLIdentity.is_none() {
+                return Err(namespace_error("55000", "column is not an identity column"));
+            }
+            self.domain
+                .ddl_alter_postgresql_identity(&database, table.ID, column.ID, option, *value)
+                .map_err(|e| {
+                    namespace_error(
+                        if e.to_string().contains("unsupported") {
+                            "0A000"
+                        } else {
+                            "22023"
+                        },
+                        "invalid identity sequence configuration",
+                    )
+                })?;
+            return Ok(None);
+        }
         let (schema, name) = match command {
+            PgSequenceCommand::AlterIdentity { .. } => unreachable!("handled above"),
             PgSequenceCommand::Value { name: None, .. }
             | PgSequenceCommand::Set { name: None, .. }
             | PgSequenceCommand::Set { value: None, .. }
@@ -386,7 +439,9 @@ impl ConcreteSession {
                         })
                 }
             }
-            PgSequenceCommand::Create { .. } => unreachable!(),
+            PgSequenceCommand::Create { .. } | PgSequenceCommand::AlterIdentity { .. } => {
+                unreachable!()
+            }
         }
     }
 }
