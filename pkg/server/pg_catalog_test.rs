@@ -17623,6 +17623,26 @@ fn cat14_18() {
         "GRANT CREATE ON SCHEMA cat14_18_ns TO cat14_18_other",
     );
     assert!(acl(&mut other).contains("cat14_18_other=C/cat14_18_reader"));
+    // The delegated nonowner can revoke its own grant, then delegate again.
+    ok(
+        &mut reader,
+        "REVOKE CREATE ON SCHEMA cat14_18_ns FROM cat14_18_other",
+    );
+    check(
+        &mut other,
+        "SELECT has_schema_privilege('cat14_18_ns','CREATE')",
+        &[Some("f")],
+    );
+    ok(
+        &mut reader,
+        "GRANT CREATE ON SCHEMA cat14_18_ns TO cat14_18_other",
+    );
+    check(
+        &mut other,
+        "SELECT has_schema_privilege('cat14_18_ns','CREATE')",
+        &[Some("t")],
+    );
+    assert!(acl(&mut other).contains("cat14_18_other=C/cat14_18_reader"));
     let before = acl(&mut reader);
     denied(
         &mut owner,
