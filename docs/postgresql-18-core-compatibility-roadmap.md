@@ -4111,17 +4111,20 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 | 需求→字段/查询 | 真实来源/关联与当前证据 | PG目标类型、可见性及缺失策略→验收 |
 | --- | --- | --- |
-| 用户身份→pg_user.usename/usesysid | 当前mysql.user.User，不含Host/稳定角色ID；usesysid未接线 | name/19、oid/26，非NULL；角色键关联pg_roles.oid（底层pg_authid.oid），pg_user只含可登录角色。公开脱敏目录不要求调用者有mysql.user读取权；没有可信映射时输出前0A000，禁止伪造ID/漏掉真实角色。ROLE-ID |
-| 用户属性→usesuper/usecreatedb/userepl/usebypassrls | 当前仅Super_priv，其他无PG策略来源 | 均bool/16、非NULL；分别来自明确超级用户/建库/复制/绕过RLS策略。无功能只有明确产品策略确认为禁用才可false；SUPER不能直接提升为PG超级用户，无可信策略则该投影0A000。ROLE-ID/SAFE |
-| 用户保密与默认值→passwd/valuntil/useconfig | 当前未提供 | text/25固定脱敏星号，timestamptz/1184可NULL（确无到期），text[]/1009可NULL（确无默认设置）；不得从凭证哈希造展示数据。缺来源或codec拒绝该投影，不以NULL声称无到期。ROLE-SAFE |
-| 角色列表→pg_roles.oid/rolname/rolcanlogin | 当前无provider | oid/26、name/19、bool/16，非NULL；含NOLOGIN角色，与pg_user身份一致；角色存在性为公开目录语义，不能照搬对象权限过滤。缺角色层0A000而非成功空集。ROLE-ID |
-| psql角色属性→rolsuper/rolinherit/rolcreaterole/rolcreatedb/rolreplication/rolbypassrls；rolconnlimit/rolvaliduntil | 当前均无PG接线；不得由登录结果推断 | 六个bool/16，int4/23（-1无上限），timestamptz/1184（确无到期可NULL）；其余非NULL。每项来自真实策略、继承及资源限制；缺来源逐字段门禁0A000。ROLE-PSQL |
-| pg_roles.rolpassword/rolconfig | 当前无接线 | text/25脱敏星号、text[]/1009可NULL，公开安全投影；pg_authid和pg_shadow原始认证数据不是公开替代视图。未授权直接读取敏感目录目标42501，产品尚未开放目录时0A000且不泄露内容。ROLE-SAFE |
+| 用户身份→pg_user.usename/usesysid | 2026-11-06任务7已接共享只读角色快照与PgDatabaseRoleIds；独立LOGIN声明，不执行调用者mysql.user SQL；缺失/冲突映射拒绝 | name/19、oid/26，非NULL；角色键关联pg_roles.oid（底层pg_authid.oid），pg_user只含可登录角色。公开脱敏目录不要求调用者有mysql.user读取权；没有可信映射时输出前0A000，禁止伪造ID/漏掉真实角色。ROLE-ID |
+| 用户属性→usesuper/usecreatedb/userepl/usebypassrls | 任务7读取新PG声明保存的NOSUPERUSER/NOCREATEDB/NOREPLICATION/NOBYPASSRLS默认策略；NOCREATEDB执行门禁已接线；旧原生属性未知则该投影0A000，不转换SUPER | 均bool/16、非NULL；分别来自明确超级用户/建库/复制/绕过RLS策略。无功能只有明确产品策略确认为禁用才可false；SUPER不能直接提升为PG超级用户，无可信策略则该投影0A000。ROLE-ID/SAFE |
+| 用户保密与默认值→passwd/valuntil/useconfig | 任务7提供固定脱敏星号；新PG角色无到期/无默认设置为有来源NULL；旧属性未知、原生到期变更无法映射时逐字段0A000 | text/25固定脱敏星号，timestamptz/1184可NULL（确无到期），text[]/1009可NULL（确无默认设置）；不得从凭证哈希造展示数据。缺来源或codec拒绝该投影，不以NULL声称无到期。ROLE-SAFE |
+| 角色列表→pg_roles.oid/rolname/rolcanlogin | 任务7已提供公开provider，包含独立NOLOGIN角色；旧OID已知时保留身份，缺LOGIN声明拒绝该属性；pg_user无法完整判定成员时拒绝整个读取 | oid/26、name/19、bool/16，非NULL；含NOLOGIN角色，与pg_user身份一致；角色存在性为公开目录语义，不能照搬对象权限过滤。缺角色层0A000而非成功空集。ROLE-ID |
+| psql角色属性→rolsuper/rolinherit/rolcreaterole/rolcreatedb/rolreplication/rolbypassrls；rolconnlimit/rolvaliduntil | 任务7已接显式声明的super/createdb/replication/bypassrls及有来源validuntil；inherit/createrole/connlimit仍归任务8，完整psql流程未验收；不得由登录结果推断 | 六个bool/16，int4/23（-1无上限），timestamptz/1184（确无到期可NULL）；其余非NULL。每项来自真实策略、继承及资源限制；缺来源逐字段门禁0A000。ROLE-PSQL |
+| pg_roles.rolpassword/rolconfig | 任务7已接固定星号和新PG角色无默认设置的有来源NULL；旧设置未知时0A000；普通连接读取pg_authid/pg_shadow为42501，管理员原始凭据投影未开放为0A000 | text/25脱敏星号、text[]/1009可NULL，公开安全投影；pg_authid和pg_shadow原始认证数据不是公开替代视图。未授权直接读取敏感目录目标42501，产品尚未开放目录时0A000且不泄露内容。ROLE-SAFE |
 | 成员关系→pg_auth_members.oid/roleid/member/grantor/admin_option/inherit_option/set_option | 原生Manager::ActiveRoles是候选，不证明PG成员边 | 前四列oid/26，后三列bool/16，非NULL；三个角色键关联pg_authid.oid，边OID独立；取真实成员授予事实，不用当前活动角色倒推全图。缺继承/SET/ADMIN边语义时0A000。ROLE-MEMBER |
 | session_user/current_user/current_role；pg_get_userbyid(oid) | 当前仅截断身份/固定NULL，正式注册沿第4章 | 均name/19；前三个非NULL，有效角色切换不改变session_user。owner查询由稳定角色OID反查，不能返回调用者名字；NULL参数返回NULL，未知OID的参考端fallback文字需参考构建采证，禁止当前固定NULL充当正确结果。ROLE-OWNER/NULL |
 | datdba/nspowner/relowner/typowner/proowner及相关owner显示 | 现有块记录无真实持久owner，部分描述为int8；不从mysql.user列表推断 | 原字段oid/26非NULL，反查name/19；按对象类别及原生ID关联真实owner，跨连接一致、ALTER OWNER后更新。缺来源只拒绝所需投影0A000，不造0、root或NULL。ROLE-OWNER |
 | datacl/nspacl/relacl/attacl/typacl/proacl；spcacl | 相关目录已有AclArray标记不证明存在真实授权事实；tablespace当前空关系 | aclitem[]/1034，元素aclitem/1033，来源包括grantor、grantee、权限及grant option；PUBLIC不是普通登录角色。NULL代表默认ACL，空数组代表显式无条目，二者不得互换；没有ACL模型时拒绝投影0A000，不能NULL掩盖。无原生tablespace沿对象块空集策略。ROLE-ACL |
 | has_table/schema/database/sequence/function/type/column/any_column_privilege；pg_has_role | 原生Manager请求验证可复用，但PG权限/对象/身份解析未接线 | bool/16、可因NULL参数或不存在OID为NULL；以下签名矩阵逐项取真实有效授权，不能按usesuper/认证成功返回true。缺能力0A000，不返回false冒充“无权限”。ROLE-PRIV/NULL |
+
+2026-11-06任务7证据：真实ConcreteSessionDriver/PgService非root连接覆盖LOGIN/NOLOGIN、锁定与LOGIN声明分离、跨库/连接及重载后OID稳定、DROP/重建新OID、含@/引号身份、Host冲突0A000与恢复、mysql.user授权变化不影响公开目录、文本/二进制类型及NULL、敏感目录拒绝和I/T/E恢复。用户明确选择“保留身份与稳定OID；缺失旧属性查询0A000；新PG角色保存PG18显式默认值”。有限CREATE ROLE/USER与DROP ROLE适配复用原生账户和现有OID表；不支持的正向角色属性、密码语法和事务内角色DDL仍拒绝，不代表完整角色管理/授权系统。参考PG18.4和18.6分别实际采样；完整构建与验证命令保存在[目录任务7交接](../.plans/2026-10-29-postgresql18-目录权限可见性与内省链/接口与证据.md)。本端目录为计算provider，RowDescription来源OID/属性号为0，不伪造参考端pg_roles视图OID；类型/typlen/typmod和格式已对照。psql完整角色属性、成员边、生产TLS/SCRAM和完整客户端UI/ORM仍由各自任务验收。
+
 
 所有字段typmod=-1，name标准构建typlen64、oid/int4为4、bool为1、timestamptz为8、数组/text为-1；编码、来源属性描述与零行Describe沿第3章，不把text冒充name或aclitem[]。目录可读、对象USAGE/SELECT/CONNECT、search_path可见性是不同判断；本块不重复下一可见性块。安全目录内部取数应通过受控脱敏provider，禁止让公开pg_user查询直接暴露mysql.user原始列或绕过共享授权。
 

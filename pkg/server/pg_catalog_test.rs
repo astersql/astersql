@@ -12224,3 +12224,516 @@ fn cat14_06() {
     }
     drop(cleanup);
 }
+
+#[test]
+fn cat14_07() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_07_a").unwrap();
+    native.execute("CREATE DATABASE cat14_07_b").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        let mut cleaned = true;
+        for db in ["cat14_07_a", "cat14_07_b", "cat14_07_forbidden"] {
+            cleaned &= native
+                .execute(&format!("DROP DATABASE IF EXISTS {db}"))
+                .is_ok();
+        }
+        cleaned &= native
+            .execute("DROP USER IF EXISTS 'cat14_07_reader'@'127.0.0.1'")
+            .is_ok();
+        for name in [
+            "cat14_07_reader",
+            "cat14_07_group",
+            "cat14_07@quoted'role",
+            "root@cat14_07",
+            "cat14_07_locked",
+            "cat14_07_legacy",
+            "cat14_07_forbidden",
+        ] {
+            cleaned &= native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .is_ok();
+        }
+        assert!(
+            cleaned,
+            "all task-owned databases and accounts must be removed"
+        );
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect = |user: &str, db: &str| {
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{db}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let messages = until_ready(&mut socket);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "login: {messages:?}");
+        socket
+    };
+    let ok = |socket: &mut TcpStream, sql: &str| {
+        let result = query(socket, sql);
+        assert!(!result.iter().any(|m| m.0 == b'E'), "{sql}: {result:?}");
+        assert_eq!(result.last().unwrap(), &(b'Z', b"I".to_vec()));
+        result
+    };
+    let data = |messages: &[(u8, Vec<u8>)]| {
+        messages
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut admin = connect("root", "cat14_07_a");
+    ok(&mut admin, "CREATE ROLE cat14_07_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_07_group NOLOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_07@quoted'role\" LOGIN");
+    let mut reader = connect("cat14_07_reader", "cat14_07_a");
+    let sql = "SELECT usename,usesysid,usesuper,passwd FROM pg_catalog.pg_user WHERE usename='cat14_07_reader'";
+    let users = ok(&mut reader, sql);
+    assert_eq!(
+        columns(&users[0].1),
+        vec![
+            ("usename".into(), 19),
+            ("usesysid".into(), 26),
+            ("usesuper".into(), 16),
+            ("passwd".into(), 25)
+        ]
+    );
+    let roles = ok(
+        &mut reader,
+        "SELECT oid,rolname,rolcanlogin FROM pg_roles WHERE rolname IN ('cat14_07_reader','cat14_07_group') ORDER BY rolname",
+    );
+    assert_eq!(
+        columns(&roles[0].1),
+        vec![
+            ("oid".into(), 26),
+            ("rolname".into(), 19),
+            ("rolcanlogin".into(), 16)
+        ]
+    );
+    assert_eq!(data(&roles).len(), 2);
+    let group_oid = native
+        .pg_database_role_id("cat14_07_group")
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        data(&roles)[0],
+        row(&[Some(&group_oid), Some("cat14_07_group"), Some("f")])
+    );
+
+    let oid = native
+        .pg_database_role_id("cat14_07_reader")
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        data(&users),
+        vec![row(&[
+            Some("cat14_07_reader"),
+            Some(&oid),
+            Some("f"),
+            Some("********")
+        ])]
+    );
+    assert_eq!(
+        data(&roles)[1],
+        row(&[Some(&oid), Some("cat14_07_reader"), Some("t")])
+    );
+    assert!(
+        data(&ok(
+            &mut reader,
+            "SELECT usename FROM pg_user WHERE usename='cat14_07_group'"
+        ))
+        .is_empty()
+    );
+    let mut other = connect("cat14_07_reader", "cat14_07_b");
+    assert_eq!(ok(&mut other, sql), users);
+    domain.force_full_reload_for_test().unwrap();
+    assert_eq!(ok(&mut reader, sql), users);
+    let denied = query(&mut reader, "SELECT rolpassword FROM pg_authid");
+    assert_eq!(denied.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(denied[0].1.windows(5).any(|w| w == b"42501"), "{denied:?}");
+    assert_eq!(data(&ok(&mut reader, "SELECT 1")), vec![row(&[Some("1")])]);
+    let denied = query(&mut reader, "SELECT User FROM mysql.user");
+    assert!(
+        denied.iter().any(|m| m.0 == b'E'),
+        "native user table must remain private: {denied:?}"
+    );
+    assert_eq!(ok(&mut reader, sql), users);
+    for promote in [false, true] {
+        if promote {
+            native
+                .execute("UPDATE mysql.user SET Super_priv='Y' WHERE User='root'")
+                .unwrap();
+        }
+        let legacy = query(
+            &mut admin,
+            "SELECT usesuper FROM pg_user WHERE usename='root'",
+        );
+        assert_eq!(legacy.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        assert!(legacy[0].1.windows(5).any(|w| w == b"0A000"));
+    }
+    // The native SUPER bit is not evidence of a PG role policy.
+    native
+        .execute("CREATE USER 'cat14_07_legacy'@'%' IDENTIFIED WITH mysql_native_password BY ''")
+        .unwrap();
+    native
+        .execute("GRANT SUPER ON *.* TO 'cat14_07_legacy'@'%'")
+        .unwrap();
+    let old = query(
+        &mut reader,
+        "SELECT usesuper FROM pg_user WHERE usename='cat14_07_legacy'",
+    );
+    assert_eq!(old.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(old[0].1.windows(5).any(|w| w == b"0A000"));
+    assert_eq!(ok(&mut reader, sql), users);
+
+    native.execute("CREATE USER 'cat14_07_locked'@'%' IDENTIFIED WITH mysql_native_password BY '' ACCOUNT LOCK").unwrap();
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT usename FROM pg_user WHERE usename='cat14_07_locked'"
+        )),
+        vec![row(&[Some("cat14_07_locked")])]
+    );
+    let quoted = native
+        .pg_database_role_id("cat14_07@quoted'role")
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT oid,rolname FROM pg_roles WHERE rolname='cat14_07@quoted''role'"
+        )),
+        vec![row(&[Some(&quoted), Some("cat14_07@quoted'role")])]
+    );
+    let mut quoted_login = connect("cat14_07@quoted'role", "cat14_07_a");
+    assert_eq!(
+        data(&ok(
+            &mut quoted_login,
+            "SELECT usename FROM pg_user WHERE usename='cat14_07@quoted''role'"
+        )),
+        vec![row(&[Some("cat14_07@quoted'role")])]
+    );
+    send(&mut quoted_login, b'X', &[]);
+
+    ok(&mut admin, "CREATE ROLE \"root@cat14_07\" LOGIN");
+    let mut impersonator = connect("root@cat14_07", "cat14_07_a");
+    let denied = query(&mut impersonator, "SELECT oid FROM pg_authid");
+    assert_eq!(denied.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(denied[0].1.windows(5).any(|w| w == b"42501"));
+    send(&mut impersonator, b'X', &[]);
+    let denied = query(&mut reader, "CREATE ROLE cat14_07_forbidden LOGIN");
+    assert!(denied[0].1.windows(5).any(|w| w == b"42501"));
+    assert!(
+        data(&ok(
+            &mut reader,
+            "SELECT rolname FROM pg_roles WHERE rolname='cat14_07_forbidden'"
+        ))
+        .is_empty()
+    );
+
+    // A reported NOCREATEDB declaration must also reject the actual operation.
+    let denied = query(&mut reader, "CREATE DATABASE cat14_07_forbidden");
+    assert_eq!(
+        denied.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"EZ",
+        "{denied:?}"
+    );
+    assert!(denied[0].1.windows(5).any(|w| w == b"42501"));
+
+    // Temporary account locks must not change LOGIN membership, and unlocking
+    // a native backing account must not grant a PG NOLOGIN role login rights.
+    native
+        .execute("ALTER USER 'cat14_07_group'@'%' ACCOUNT UNLOCK")
+        .unwrap();
+    let mut rejected = TcpStream::connect(address).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0cat14_07_group\0database\0cat14_07_a\0\0",
+    ]
+    .concat();
+    rejected
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    rejected.write_all(&body).unwrap();
+    let fatal = read(&mut rejected);
+    assert_eq!(fatal.0, b'E');
+    assert!(fatal.1.windows(5).any(|w| w == b"28P01"));
+    drop(rejected);
+
+    let old_group = native.pg_database_role_id("cat14_07_group").unwrap();
+    ok(&mut admin, "DROP ROLE cat14_07_group");
+    assert!(
+        data(&ok(
+            &mut reader,
+            "SELECT oid FROM pg_roles WHERE rolname='cat14_07_group'"
+        ))
+        .is_empty()
+    );
+    ok(&mut admin, "CREATE ROLE cat14_07_group NOLOGIN");
+    assert_ne!(
+        native.pg_database_role_id("cat14_07_group").unwrap(),
+        old_group
+    );
+
+    // Ambiguous native identities refuse the entire read before returning rows.
+    native
+        .execute(
+            "CREATE USER 'cat14_07_reader'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY ''",
+        )
+        .unwrap();
+    let ambiguous = query(&mut reader, "SELECT usename FROM pg_user");
+    assert_eq!(ambiguous.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(ambiguous[0].1.windows(5).any(|w| w == b"0A000"));
+    native
+        .execute("DROP USER 'cat14_07_reader'@'127.0.0.1'")
+        .unwrap();
+    assert_eq!(
+        ok(&mut reader, sql),
+        users,
+        "dropping the conflicting Host must preserve the original OID"
+    );
+
+    native
+        .execute("GRANT SELECT ON mysql.user TO 'cat14_07_reader'@'%'")
+        .unwrap();
+    assert_eq!(ok(&mut reader, sql), users);
+    native
+        .execute("REVOKE SELECT ON mysql.user FROM 'cat14_07_reader'@'%'")
+        .unwrap();
+    assert_eq!(ok(&mut reader, sql), users);
+
+    let safe = "SELECT oid,rolname,rolcanlogin,rolpassword,rolconfig,rolvaliduntil FROM pg_roles WHERE rolname=$1";
+    let parse = [
+        b"cat14_07_stmt\0".as_slice(),
+        safe.as_bytes(),
+        b"\0",
+        &1u16.to_be_bytes(),
+        &25u32.to_be_bytes(),
+    ]
+    .concat();
+    send(&mut reader, b'P', &parse);
+    let bind = [
+        b"cat14_07_portal\0cat14_07_stmt\0".as_slice(),
+        &0u16.to_be_bytes(),
+        &1u16.to_be_bytes(),
+        &(b"cat14_07_reader".len() as i32).to_be_bytes(),
+        b"cat14_07_reader",
+        &1u16.to_be_bytes(),
+        &1u16.to_be_bytes(),
+    ]
+    .concat();
+    send(&mut reader, b'B', &bind);
+    send(&mut reader, b'D', b"Pcat14_07_portal\0");
+    send(
+        &mut reader,
+        b'E',
+        &[b"cat14_07_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut reader, b'S', &[]);
+    let binary = until_ready(&mut reader);
+    assert_eq!(
+        binary.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"12TDCZ",
+        "{binary:?}"
+    );
+    assert_eq!(
+        columns(&binary[2].1),
+        vec![
+            ("oid".into(), 26),
+            ("rolname".into(), 19),
+            ("rolcanlogin".into(), 16),
+            ("rolpassword".into(), 25),
+            ("rolconfig".into(), 1009),
+            ("rolvaliduntil".into(), 1184)
+        ]
+    );
+    let mut expected = 6i16.to_be_bytes().to_vec();
+    for value in [
+        Some((oid.parse::<u32>().unwrap()).to_be_bytes().to_vec()),
+        Some(b"cat14_07_reader".to_vec()),
+        Some(vec![1]),
+        Some(b"********".to_vec()),
+        None,
+        None,
+    ] {
+        match value {
+            Some(v) => {
+                expected.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                expected.extend(v);
+            }
+            None => expected.extend_from_slice(&(-1i32).to_be_bytes()),
+        }
+    }
+    assert_eq!(data(&binary), vec![expected]);
+    let mut cursor = 2;
+    let mut descriptors = Vec::new();
+    for _ in 0..6 {
+        cursor += binary[2].1[cursor..].iter().position(|b| *b == 0).unwrap() + 1;
+        let field = &binary[2].1[cursor..cursor + 18];
+        descriptors.push((
+            u32::from_be_bytes(field[6..10].try_into().unwrap()),
+            i16::from_be_bytes(field[10..12].try_into().unwrap()),
+            i32::from_be_bytes(field[12..16].try_into().unwrap()),
+            i16::from_be_bytes(field[16..18].try_into().unwrap()),
+        ));
+        cursor += 18;
+    }
+    assert_eq!(
+        descriptors,
+        vec![
+            (26, 4, -1, 1),
+            (19, 64, -1, 1),
+            (16, 1, -1, 1),
+            (25, -1, -1, 1),
+            (1009, -1, -1, 1),
+            (1184, 8, -1, 1)
+        ]
+    );
+    send(&mut reader, b'C', b"Pcat14_07_portal\0");
+    send(&mut reader, b'S', &[]);
+    assert_eq!(
+        until_ready(&mut reader)
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"3Z"
+    );
+    let null_bind = [
+        b"cat14_07_portal\0cat14_07_stmt\0".as_slice(),
+        &0u16.to_be_bytes(),
+        &1u16.to_be_bytes(),
+        &(-1i32).to_be_bytes(),
+        &1u16.to_be_bytes(),
+        &0u16.to_be_bytes(),
+    ]
+    .concat();
+    send(&mut reader, b'B', &null_bind);
+    send(&mut reader, b'D', b"Pcat14_07_portal\0");
+    send(
+        &mut reader,
+        b'E',
+        &[b"cat14_07_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut reader, b'S', &[]);
+    let empty = until_ready(&mut reader);
+    assert_eq!(
+        empty.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"2TCZ",
+        "{empty:?}"
+    );
+    assert_eq!(columns(&empty[1].1), columns(&binary[2].1));
+    assert_eq!(empty.last().unwrap(), &(b'Z', b"I".to_vec()));
+
+    send(&mut reader, b'C', b"Pcat14_07_portal\0");
+    send(&mut reader, b'C', b"Scat14_07_stmt\0");
+    send(&mut reader, b'S', &[]);
+    assert_eq!(
+        until_ready(&mut reader)
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"33Z"
+    );
+    assert_eq!(
+        query(&mut reader, "BEGIN").last().unwrap(),
+        &(b'Z', b"T".to_vec())
+    );
+    let denied = query(&mut reader, "SELECT passwd FROM pg_shadow");
+    assert_eq!(denied.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(denied[0].1.windows(5).any(|w| w == b"42501"));
+    assert_eq!(denied.last().unwrap(), &(b'Z', b"E".to_vec()));
+    assert_eq!(
+        query(&mut reader, "ROLLBACK").last().unwrap(),
+        &(b'Z', b"I".to_vec())
+    );
+    assert_eq!(ok(&mut reader, sql), users);
+
+    native
+        .execute("ALTER USER 'cat14_07_reader'@'%' PASSWORD EXPIRE")
+        .unwrap();
+    // Native expiration has no verified absolute PG valuntil mapping. Refuse that
+    // field without discarding the independent, explicitly declared PG attributes.
+    assert_eq!(ok(&mut reader, sql), users);
+    let expired = query(
+        &mut reader,
+        "SELECT valuntil FROM pg_user WHERE usename='cat14_07_reader'",
+    );
+    assert_eq!(expired.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(expired[0].1.windows(5).any(|w| w == b"0A000"));
+    let raw = query(&mut admin, "SELECT passwd FROM pg_shadow");
+    assert_eq!(raw.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(raw[0].1.windows(5).any(|w| w == b"0A000"));
+    // A migrated stable OID can be known while old role declarations remain unknown.
+    let legacy_oid = native.pg_database_role_id("cat14_07_legacy").unwrap();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&astersql_kv::Context::default(), store, true, |_, txn| {
+                txn.Delete(astersql_meta::transaction_meta_hash_key(
+                    b"PgDatabaseRoleProperties",
+                    legacy_oid.to_string().as_bytes(),
+                ))
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT oid,rolname FROM pg_roles WHERE rolname='cat14_07_legacy'"
+        )),
+        vec![row(&[
+            Some(&legacy_oid.to_string()),
+            Some("cat14_07_legacy")
+        ])]
+    );
+    for sql in [
+        "SELECT rolcanlogin FROM pg_roles WHERE rolname='cat14_07_legacy'",
+        "SELECT usename FROM pg_user",
+    ] {
+        let unknown = query(&mut reader, sql);
+        assert_eq!(unknown.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        assert!(unknown[0].1.windows(5).any(|w| w == b"0A000"));
+    }
+    assert_eq!(
+        native.pg_database_role_id("cat14_07_legacy").unwrap(),
+        legacy_oid
+    );
+    native.execute("DROP USER 'cat14_07_legacy'@'%'").unwrap();
+    assert_eq!(ok(&mut reader, sql), users);
+    send(&mut reader, b'X', &[]);
+    send(&mut other, b'X', &[]);
+    send(&mut admin, b'X', &[]);
+}

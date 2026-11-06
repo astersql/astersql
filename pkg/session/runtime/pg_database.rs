@@ -35,6 +35,45 @@ pub struct PgDatabaseFact {
     pub roles: Arc<BTreeMap<i64, String>>,
 }
 
+/// Sanitized public role facts. Unknown legacy PG attributes stay unknown.
+#[derive(Clone, Debug)]
+pub struct PgRoleFact {
+    pub oid: i64,
+    pub name: String,
+    pub can_login: Option<bool>,
+    pub attributes: Option<PgRoleAttributes>,
+    pub valid_until_known: bool,
+}
+
+/// Explicit PG declaration defaults, not a conversion of native global privileges.
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct PgRoleAttributes {
+    pub superuser: bool,
+    pub create_db: bool,
+    pub replication: bool,
+    pub bypass_rls: bool,
+}
+
+/// Bounded PG declarations use native accounts and the existing persistent OID map.
+#[derive(Clone, Debug)]
+pub enum PgRoleCommand {
+    Create { name: String, can_login: bool },
+    Drop { name: String },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RoleProperties {
+    can_login: bool,
+    // Present only for explicit PG declarations, never inferred from native SUPER.
+    attributes: Option<PgRoleAttributes>,
+}
+fn role_properties_key(oid: i64) -> kv::Key {
+    astersql_meta::transaction_meta_hash_key(
+        b"PgDatabaseRoleProperties",
+        oid.to_string().as_bytes(),
+    )
+}
+
 // Missing legacy facts remain unknown until an administrator explicitly sets them.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct DatabasePolicy {
@@ -143,6 +182,251 @@ impl ConcreteSession {
             })
             .map_err(|e| session_error("persist database role identity", e))?;
         Ok(result)
+    }
+
+    pub fn pg_role_administrator(&self) -> bool {
+        self.login_user.as_deref() == Some("root") && self.active_roles.borrow().is_empty()
+    }
+
+    /// Invoked only after the driver explicitly admits the development bootstrap identity.
+    pub fn pg_register_bootstrap_role(&self) -> SessionResult<()> {
+        self.pg_register_native_role("root", "%", true, false)
+    }
+
+    /// Record a native declaration, independently of temporary account locking.
+    /// Ambiguous host mappings remain unsupported, not collapsed into one PG role.
+    pub(super) fn pg_register_native_role(
+        &self,
+        name: &str,
+        host: &str,
+        can_login: bool,
+        postgres_defaults: bool,
+    ) -> SessionResult<()> {
+        if host != "%" {
+            return Ok(());
+        }
+        if name != "root"
+            && runtime_privilege_handle(&self.domain)
+                .Get()
+                .user
+                .iter()
+                .filter(|r| r.base.User == name)
+                .count()
+                != 1
+        {
+            return Ok(());
+        }
+        let oid = self.pg_database_role_id(name)?;
+        let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+                    let existing: Option<RoleProperties> =
+                        load(txn, &ctx, role_properties_key(oid))?;
+                    // Bootstrap authentication must not overwrite an explicit declaration.
+                    if existing.is_none() || postgres_defaults {
+                        txn.Set(
+                            role_properties_key(oid),
+                            serde_json::to_vec(&RoleProperties {
+                                can_login,
+                                attributes: if postgres_defaults {
+                                    Some(PgRoleAttributes::default())
+                                } else {
+                                    None
+                                },
+                            })
+                            .map_err(|e| kv::errors::New(e.to_string()))?,
+                        )?;
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("persist PostgreSQL role properties", e))
+    }
+
+    /// Public metadata never executes mysql.user SQL or exposes authentication records.
+    /// No identity allocation occurs on this read path.
+    pub fn pg_role_facts(&self) -> SessionResult<Vec<PgRoleFact>> {
+        let accounts = runtime_privilege_handle(&self.domain).Get();
+        let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        let mut facts = Vec::new();
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                    facts.clear();
+                    let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    let mut names = BTreeSet::new();
+                    for account in &accounts.user {
+                        if account.base.Host != "%" || !names.insert(account.base.User.clone()) {
+                            return Err(kv::errors::New(
+                                "PostgreSQL role host mapping is unavailable",
+                            ));
+                        }
+                    }
+                    // The explicit development bootstrap identity can exist without a native row.
+                    if roles.contains_key("root") {
+                        names.insert("root".into());
+                    }
+                    for name in names {
+                        if name.len() > 63 {
+                            return Err(kv::errors::New(
+                                "PostgreSQL role name mapping is unavailable",
+                            ));
+                        }
+                        let oid = *roles.get(&name).ok_or_else(|| {
+                            kv::errors::New("PostgreSQL role identity is unavailable")
+                        })?;
+                        if !(0x6000_0001..0x8000_0000).contains(&oid) {
+                            return Err(kv::errors::New("invalid PostgreSQL role identity"));
+                        }
+                        let props: Option<RoleProperties> =
+                            load(txn, &ctx, role_properties_key(oid))?;
+                        let expiry_changed = accounts
+                            .user
+                            .iter()
+                            .find(|r| r.base.User == name)
+                            .is_some_and(|r| r.PasswordExpired || r.PasswordLifeTime > 0);
+                        facts.push(PgRoleFact {
+                            oid,
+                            name,
+                            can_login: props.as_ref().map(|p| p.can_login),
+                            valid_until_known: props
+                                .as_ref()
+                                .is_some_and(|p| p.attributes.is_some())
+                                && !expiry_changed,
+                            attributes: props.and_then(|p| p.attributes),
+                        });
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(|e| {
+                if matches!(
+                    e.to_string().as_str(),
+                    "PostgreSQL role host mapping is unavailable"
+                        | "PostgreSQL role identity is unavailable"
+                        | "invalid PostgreSQL role identity"
+                        | "PostgreSQL role declaration is unavailable"
+                        | "PostgreSQL role name mapping is unavailable"
+                ) {
+                    namespace_error("0A000", "complete PostgreSQL role facts are unavailable")
+                } else {
+                    session_error("read PostgreSQL role facts", e)
+                }
+            })?;
+        Ok(facts)
+    }
+
+    /// NOCREATEDB is a real execution policy, not merely a displayed attribute.
+    pub(super) fn pg_check_database_creation(&self) -> SessionResult<()> {
+        let actor = self.pg_schema_identity();
+        if actor == "root" {
+            return Ok(());
+        }
+        let ctx = kv::Context::default();
+        let mut allowed = None;
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                    let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    let oid = roles
+                        .get(&actor)
+                        .ok_or_else(|| kv::errors::New("role identity unavailable"))?;
+                    let props: Option<RoleProperties> = load(txn, &ctx, role_properties_key(*oid))?;
+                    allowed = props.and_then(|p| p.attributes).map(|a| a.create_db);
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("read PostgreSQL database creation policy", e))?;
+        match allowed {
+            Some(true) => Ok(()),
+            Some(false) => Err(namespace_error(
+                "42501",
+                "permission denied to create database",
+            )),
+            None => Err(namespace_error(
+                "0A000",
+                "PostgreSQL database creation policy is unavailable",
+            )),
+        }
+    }
+
+    pub fn pg_role_command(&self, command: &PgRoleCommand) -> SessionResult<()> {
+        if self.state.borrow().transaction.is_some() {
+            return Err(namespace_error(
+                "0A000",
+                "role administration inside a transaction is unsupported",
+            ));
+        }
+        if self.login_user.as_deref().unwrap_or("root") != "root"
+            || !self.active_roles.borrow().is_empty()
+        {
+            return Err(namespace_error(
+                "42501",
+                "role administration requires an administrator",
+            ));
+        }
+        let (name, can_login) = match command {
+            PgRoleCommand::Create { name, can_login } => (name, Some(*can_login)),
+            PgRoleCommand::Drop { name } => (name, None),
+        };
+        if name.is_empty() {
+            return Err(namespace_error("42602", "role name must not be empty"));
+        }
+        if name.len() > 63 {
+            return Err(namespace_error(
+                "0A000",
+                "role names exceeding 63 bytes are unsupported",
+            ));
+        }
+        if name == "root" {
+            return Err(namespace_error(
+                "0A000",
+                "bootstrap role administration is unsupported",
+            ));
+        }
+        let quoted = name.replace('\\', "\\\\").replace('\'', "''");
+        if let Some(can_login) = can_login {
+            if runtime_privilege_handle(&self.domain)
+                .Get()
+                .user
+                .iter()
+                .any(|r| r.base.User == *name)
+            {
+                return Err(namespace_error("42710", "role already exists"));
+            }
+            let native = ConcreteSession::new(self.domain.clone());
+            native.execute(&format!(
+                "CREATE {} '{}'@'%'{}",
+                if can_login { "USER" } else { "ROLE" },
+                quoted,
+                if can_login {
+                    " IDENTIFIED WITH mysql_native_password BY ''"
+                } else {
+                    ""
+                }
+            ))?;
+            self.pg_register_native_role(name, "%", can_login, true)
+        } else {
+            let records = runtime_privilege_handle(&self.domain).Get();
+            let accounts = records
+                .user
+                .iter()
+                .filter(|r| r.base.User == *name)
+                .collect::<Vec<_>>();
+            if accounts.is_empty() {
+                return Err(namespace_error("42704", "role does not exist"));
+            }
+            if accounts.len() != 1 || accounts[0].base.Host != "%" {
+                return Err(namespace_error("0A000", "ambiguous role host mapping"));
+            }
+            ConcreteSession::new(self.domain.clone())
+                .execute(&format!("DROP USER '{}'@'%'", quoted))?;
+            Ok(())
+        }
     }
 
     /// Read one ownership/ACL snapshot without allocating identities. An absent
@@ -358,7 +642,8 @@ impl ConcreteSession {
                             }
                         }
                     }
-                    if remove && roles.remove(role).is_some() {
+                    if remove && let Some(oid) = roles.remove(role) {
+                        txn.Delete(role_properties_key(oid))?;
                         txn.Set(
                             role_key(),
                             serde_json::to_vec(&roles)
@@ -378,7 +663,7 @@ impl ConcreteSession {
         host: &str,
         auth: &[u8],
         salt: &[u8],
-    ) -> SessionResult<()> {
+    ) -> SessionResult<astersql_privilege_privileges::VerificationInfo> {
         if astersql_privilege_privileges::SkipWithGrant() {
             return Err(namespace_error(
                 "28P01",
@@ -388,7 +673,7 @@ impl ConcreteSession {
         let mut privileges = astersql_privilege_privileges::NewUserPrivileges(
             runtime_privilege_handle(&self.domain),
         );
-        privileges
+        let verified = privileges
             .ConnectionVerification(
                 &astersql_privilege_privileges::UserIdentity {
                     Username: user.into(),
@@ -401,6 +686,25 @@ impl ConcreteSession {
                 &Default::default(),
             )
             .map_err(|_| namespace_error("28P01", "password authentication failed"))?;
-        Ok(())
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            let ctx = kv::Context::default();
+            let permitted = self.domain.storage_handle().with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                    let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    if let Some(oid) = roles.get(&verified.authenticated_user) {
+                        let props: Option<RoleProperties> =
+                            load(txn, &ctx, role_properties_key(*oid))?;
+                        if props.is_some_and(|p| !p.can_login) {
+                            return Err(kv::errors::New("role cannot login"));
+                        }
+                    }
+                    Ok(())
+                })
+            });
+            if permitted.is_err() {
+                return Err(namespace_error("28P01", "password authentication failed"));
+            }
+        }
+        Ok(verified)
     }
 }

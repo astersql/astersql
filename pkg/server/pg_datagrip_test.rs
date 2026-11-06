@@ -978,37 +978,28 @@ fn pg_datagrip_ui_metadata_core() {
             Value::Null
         ]]
     );
-    let native = context
-        .execute_query(
-            "SELECT Super_priv FROM mysql.user WHERE User='root'",
-            false,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-    let Value::Text(privilege) = &native[0].rows[0][0] else {
-        panic!("native privilege");
-    };
-    assert_eq!(
-        execute(
-            context.as_ref(),
-            "SELECT usesuper FROM pg_user WHERE usename='root'"
-        ),
-        vec![vec![Value::Text((privilege == "Y").to_string())]]
-    );
-    context
-        .execute_query(
-            "UPDATE mysql.user SET Super_priv='Y' WHERE User='root'",
-            false,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-    assert_eq!(
-        execute(
-            context.as_ref(),
-            "SELECT usesuper FROM pg_user WHERE usename='root'"
-        ),
-        vec![vec![Value::Text("true".into())]]
-    );
+    // Legacy native SUPER has no trustworthy PG-superuser mapping. This is an
+    // intentional capability gate, including after changing the native bit.
+    for promote in [false, true] {
+        if promote {
+            context
+                .execute_query(
+                    "UPDATE mysql.user SET Super_priv='Y' WHERE User='root'",
+                    false,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+        }
+        let failure = CatalogQuery::parse("SELECT usesuper FROM pg_user WHERE usename='root'")
+            .unwrap()
+            .unwrap()
+            .execute(context.as_ref(), &CancellationToken::new())
+            .unwrap_err();
+        assert!(
+            matches!(failure, crate::conn::ConnError::PgFunction(ref e) if e.state=="0A000"),
+            "{failure:?}"
+        );
+    }
     for sql in [
         "SELECT 1 % 0 FROM pg_namespace",
         "SELECT 2147483648::int FROM pg_namespace",

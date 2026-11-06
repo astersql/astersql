@@ -906,6 +906,19 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    fn pg_role_administrator(&self) -> ConnResult<bool> {
+        Ok(false)
+    }
+    /// Sanitized, complete role facts; legacy contexts must reject, never return an empty list.
+    fn pg_role_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgRoleFact>> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
+    fn pg_role_command(
+        &self,
+        _command: astersql_session::runtime::PgRoleCommand,
+    ) -> ConnResult<()> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     fn pg_database_facts(
         &self,
         _command: Option<astersql_session::runtime::PgDatabaseCommand>,

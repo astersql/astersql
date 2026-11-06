@@ -164,12 +164,19 @@ struct Execution<'a> {
     database: String,
     database_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgDatabaseFact>>>,
     database_role_names: std::cell::RefCell<std::collections::BTreeMap<i64, String>>,
+    role_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgRoleFact>>>,
     providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
     ctes: std::cell::RefCell<std::collections::HashMap<usize, CatalogRows>>,
     materialized: std::cell::Cell<usize>,
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
+    fn role_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgRoleFact>> {
+        if self.role_facts.borrow().is_none() {
+            *self.role_facts.borrow_mut() = Some(self.context.pg_role_facts()?);
+        }
+        Ok(self.role_facts.borrow().as_ref().unwrap().clone())
+    }
     fn database_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>> {
         if self.database_facts.borrow().is_none() {
             let facts = self.context.pg_database_facts(None)?;
@@ -699,6 +706,8 @@ impl CatalogQuery {
                         | "information_schema.constraint_column_usage"
                         | "__pg_scalar"
                         | "pg_user"
+                        | "pg_roles"
+                        | "pg_shadow"
                         | "pg_authid"
                         | "pg_class"
                         | "pg_attribute"
@@ -1061,8 +1070,35 @@ impl CatalogQuery {
                     ("pg_authid", "rolname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
-                    ("pg_user", "usename") => Some((0, 253, 0)),
-                    ("pg_user", "usesuper") => Some((1, 1, boolean)),
+                    ("pg_user" | "pg_shadow", "usename") | ("pg_roles", "rolname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
+                    ("pg_user" | "pg_shadow", "usesysid") | ("pg_roles", "oid") => {
+                        Some((0, crate::pg_oid::OID_TYPE, 0))
+                    }
+                    ("pg_roles", "rolcanlogin") => Some((2, 1, boolean)),
+                    ("pg_user" | "pg_shadow", "usesuper") | ("pg_roles", "rolsuper") => {
+                        Some((3, 1, boolean))
+                    }
+                    ("pg_user" | "pg_shadow", "usecreatedb") | ("pg_roles", "rolcreatedb") => {
+                        Some((4, 1, boolean))
+                    }
+                    ("pg_user" | "pg_shadow", "userepl") | ("pg_roles", "rolreplication") => {
+                        Some((5, 1, boolean))
+                    }
+                    ("pg_user" | "pg_shadow", "usebypassrls") | ("pg_roles", "rolbypassrls") => {
+                        Some((6, 1, boolean))
+                    }
+                    ("pg_user" | "pg_shadow", "passwd") | ("pg_roles", "rolpassword") => {
+                        Some((7, 253, 0))
+                    }
+                    ("pg_user" | "pg_shadow", "valuntil") | ("pg_roles", "rolvaliduntil") => {
+                        Some((8, astersql_parser_mysql::r#type::TypePgTimestampTz, 0))
+                    }
+                    ("pg_user" | "pg_shadow", "useconfig") | ("pg_roles", "rolconfig") => {
+                        Some((9, crate::pg_result::CatalogColumnType::TextArray as u8, 0))
+                    }
+                    ("pg_authid", "rolpassword") => Some((2, 253, 0)),
                     ("pg_locks", "transactionid") => Some((0, 8, 0)),
                     ("pg_description" | "pg_shdescription", _) => {
                         description_column(&relation.name, name)
@@ -1543,7 +1579,11 @@ impl CatalogQuery {
                 } else {
                     64
                 },
-                decimal: 0,
+                decimal: if code == astersql_parser_mysql::r#type::TypePgTimestampTz {
+                    -1
+                } else {
+                    0
+                },
                 postgresql_text_oid: None,
                 postgresql_array_element: None,
                 postgresql_record_fields: None,
@@ -1787,6 +1827,7 @@ impl CatalogQuery {
             database,
             database_facts: Default::default(),
             database_role_names: Default::default(),
+            role_facts: Default::default(),
             providers: Default::default(),
             ctes: Default::default(),
             materialized: std::cell::Cell::new(0),
@@ -2850,7 +2891,7 @@ impl CatalogQuery {
             "pg_authid" => {
                 // This bounded provider exposes only registered PG identity facts,
                 // never native account credentials. Keep the catalog administrator-only.
-                if context.user_identity()?.split('@').next() != Some("root") {
+                if !context.pg_role_administrator()? {
                     return Err(ConnError::PgFunction(
                         astersql_session::runtime::PgFunctionError {
                             state: "42501",
@@ -2869,32 +2910,54 @@ impl CatalogQuery {
                     .map(|(oid, name)| vec![Value::Signed(*oid), Value::Text(name.clone())])
                     .collect()
             }
-            "pg_user" => {
-                let results = context.execute_query(
-                    "SELECT User, Super_priv FROM mysql.user",
-                    false,
-                    cancel,
-                )?;
-                let mut rows = Vec::new();
-                for result in results {
-                    for row in result.rows {
-                        check_catalog_cancel(cancel)?;
-                        if let [Value::Text(user), Value::Text(privilege)] = row.as_slice() {
-                            let candidate = vec![
-                                Value::Text(user.clone()),
-                                Value::Text((privilege == "Y").to_string()),
-                            ];
-                            if !rows.contains(&candidate) {
-                                rows.push(candidate);
-                            }
-                        } else {
-                            return Err(ConnError::Session(
-                                "invalid native user privilege metadata".into(),
-                            ));
-                        }
-                    }
+            "pg_shadow" => {
+                if context.pg_role_administrator()? {
+                    return Err(database_identity_unavailable(
+                        "raw authentication directory is not exposed",
+                    ));
                 }
-                rows
+                return Err(ConnError::PgFunction(
+                    astersql_session::runtime::PgFunctionError {
+                        state: "42501",
+                        message: "permission denied for table pg_shadow".into(),
+                        detail: None,
+                        hint: None,
+                        position: None,
+                    },
+                ));
+            }
+            "pg_user" | "pg_roles" => {
+                let facts = execution.role_facts()?;
+                if name == "pg_user" && facts.iter().any(|f| f.can_login.is_none()) {
+                    return Err(database_identity_unavailable(
+                        "complete LOGIN membership requires explicit role declarations",
+                    ));
+                }
+                facts
+                    .into_iter()
+                    .filter(|f| name == "pg_roles" || f.can_login == Some(true))
+                    .map(|f| {
+                        // Slots 3..6 are explicit PG defaults only for PG declarations.
+                        // The hidden availability flag makes unknown legacy projections refuse.
+                        let known = Value::Text(f.attributes.is_some().to_string());
+                        let attrs = f.attributes.unwrap_or_default();
+                        vec![
+                            Value::Signed(f.oid),
+                            Value::Text(f.name),
+                            f.can_login
+                                .map_or(Value::Null, |v| Value::Text(v.to_string())),
+                            Value::Text(attrs.superuser.to_string()),
+                            Value::Text(attrs.create_db.to_string()),
+                            Value::Text(attrs.replication.to_string()),
+                            Value::Text(attrs.bypass_rls.to_string()),
+                            Value::Text("********".into()),
+                            Value::Null,
+                            Value::Null,
+                            known,
+                            Value::Text(f.valid_until_known.to_string()),
+                        ]
+                    })
+                    .collect()
             }
             "pg_depend" => sequence_dependency_rows(
                 snapshot
@@ -3240,6 +3303,32 @@ impl CatalogQuery {
                 let slot = self.column(path).expect("validated column").0;
                 let local = slot % CATALOG_ROW_WIDTH;
                 let base = slot - local;
+                if let Some(relation) = self.relations().nth(slot / CATALOG_ROW_WIDTH) {
+                    if matches!(relation.name.as_str(), "pg_user" | "pg_roles")
+                        && row[base] != Value::Null
+                        && ((matches!(local, 3..=6 | 9)
+                            && row[base + 10] != Value::Text("true".into()))
+                            || (local == 8 && row[base + 11] != Value::Text("true".into())))
+                    {
+                        return Err(database_identity_unavailable(
+                            "PostgreSQL role attribute requires explicit policy",
+                        ));
+                    }
+                    if relation.name == "pg_roles"
+                        && local == 2
+                        && row[base] != Value::Null
+                        && row[slot] == Value::Null
+                    {
+                        return Err(database_identity_unavailable(
+                            "PostgreSQL LOGIN attribute requires explicit policy",
+                        ));
+                    }
+                    if relation.name == "pg_authid" && local == 2 {
+                        return Err(database_identity_unavailable(
+                            "raw authentication attributes are not exposed",
+                        ));
+                    }
+                }
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)

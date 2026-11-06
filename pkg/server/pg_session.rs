@@ -24,6 +24,7 @@ pub(crate) enum SessionQuery {
     DefaultPath,
     SchemaUtility(astersql_session::runtime::PgSchemaCommand),
     DatabaseUtility(astersql_session::runtime::PgDatabaseCommand),
+    RoleUtility(astersql_session::runtime::PgRoleCommand),
 }
 #[derive(Debug)]
 pub(crate) struct PgSession {
@@ -375,6 +376,10 @@ impl PgSession {
                 self.effective_explicit_path(context)?;
                 None
             }
+            SessionQuery::RoleUtility(command) => {
+                context.pg_role_command(command.clone())?;
+                None
+            }
             SessionQuery::DatabaseUtility(command) => {
                 if context.in_transaction() {
                     return Err(crate::conn::ConnError::PgFunction(
@@ -455,6 +460,10 @@ impl SessionQuery {
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
+            Self::RoleUtility(command) => match command {
+                astersql_session::runtime::PgRoleCommand::Create { .. } => "CREATE ROLE",
+                astersql_session::runtime::PgRoleCommand::Drop { .. } => "DROP ROLE",
+            },
             Self::DatabaseUtility(command) => match command {
                 astersql_session::runtime::PgDatabaseCommand::Owner { .. }
                 | astersql_session::runtime::PgDatabaseCommand::Policy { .. } => "ALTER DATABASE",
@@ -584,6 +593,50 @@ impl SessionQuery {
             Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
             _ => None,
         };
+        if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
+            && (word(tokens.get(1), "role") || word(tokens.get(1), "user"))
+        {
+            use astersql_session::runtime::PgRoleCommand;
+            let name = tokens
+                .get(2)
+                .and_then(identifier)
+                .ok_or_else(|| ("42601", "expected role name".into()))?;
+            let command = if word(tokens.first(), "drop") {
+                if tokens.len() != 3 {
+                    return Err(("0A000", "unsupported DROP ROLE form".into()));
+                }
+                PgRoleCommand::Drop { name }
+            } else {
+                if word(tokens.get(3), "with") && tokens.len() == 4 {
+                    return Err(("42601", "expected role option after WITH".into()));
+                }
+                let mut can_login = word(tokens.get(1), "user");
+                let mut login_seen = false;
+                for (index, token) in tokens.iter().enumerate().skip(3) {
+                    match token {
+                        Token::Word(v) if v == "with" && index == 3 => {}
+                        Token::Word(v) if v == "login" || v == "nologin" => {
+                            if login_seen {
+                                return Err((
+                                    "42601",
+                                    "conflicting or redundant role options".into(),
+                                ));
+                            }
+                            login_seen = true;
+                            can_login = v == "login";
+                        }
+                        Token::Word(v)
+                            if matches!(
+                                v.as_str(),
+                                "nosuperuser" | "nocreatedb" | "noreplication" | "nobypassrls"
+                            ) => {}
+                        _ => return Err(("0A000", "unsupported role attribute".into())),
+                    }
+                }
+                PgRoleCommand::Create { name, can_login }
+            };
+            return Ok(Some(Self::RoleUtility(command)));
+        }
         if word(tokens.first(), "alter") && word(tokens.get(1), "table") {
             let parsed =
                 if tokens.len() == 6 && word(tokens.get(3), "owner") && word(tokens.get(4), "to") {

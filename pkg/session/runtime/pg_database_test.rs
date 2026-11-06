@@ -168,3 +168,97 @@ fn database_policy_persists_without_changing_native_use_or_other_databases() {
         "pg13_002 model: persistence=3 isolation=1 native_health=1 current_db_reject=1 recreate=1 cleanup=2"
     );
 }
+
+#[test]
+fn cat14_07_role_reads_do_not_allocate_or_infer_login_from_locks() {
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.pg_register_bootstrap_role().unwrap();
+    native.execute("CREATE USER 'cat14_07_native_locked'@'%' IDENTIFIED WITH mysql_native_password BY '' ACCOUNT LOCK").unwrap();
+    native
+        .execute("CREATE ROLE 'cat14_07_native_group'@'%'")
+        .unwrap();
+    let next = || {
+        domain
+            .storage_handle()
+            .with_storage(|store| {
+                let mut txn = store.Begin(&[])?;
+                let value = txn.Get(
+                    &kv::Context::default(),
+                    astersql_meta::transaction_meta_string_key(b"NextGlobalID"),
+                    &[],
+                )?;
+                txn.Rollback()?;
+                Ok::<_, kv::errors::SharedError>(value.Value)
+            })
+            .unwrap()
+    };
+    let before = next();
+    let facts = native.pg_role_facts().unwrap();
+    let locked = facts
+        .iter()
+        .find(|f| f.name == "cat14_07_native_locked")
+        .unwrap();
+    let group = facts
+        .iter()
+        .find(|f| f.name == "cat14_07_native_group")
+        .unwrap();
+    assert!(
+        locked.can_login == Some(true),
+        "a locked LOGIN account remains a LOGIN role"
+    );
+    assert!(
+        group.can_login == Some(false),
+        "CREATE ROLE carries a separate NOLOGIN declaration"
+    );
+    assert!(
+        locked.attributes.is_none(),
+        "native privileges do not invent PG policies"
+    );
+    let stable = locked.oid;
+    for _ in 0..3 {
+        domain.force_full_reload_for_test().unwrap();
+        assert_eq!(
+            native
+                .pg_role_facts()
+                .unwrap()
+                .iter()
+                .find(|f| f.name == locked.name)
+                .unwrap()
+                .oid,
+            stable
+        );
+    }
+    assert_eq!(next(), before);
+    // Preserve a known identity while leaving a missing declaration unknown:
+    // no read-time OID allocation or guessing LOGIN from the account lock.
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&kv::Context::default(), store, true, |_, txn| {
+                txn.Delete(astersql_meta::transaction_meta_hash_key(
+                    b"PgDatabaseRoleProperties",
+                    stable.to_string().as_bytes(),
+                ))
+            })
+        })
+        .unwrap();
+    let legacy = native
+        .pg_role_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.oid == stable)
+        .unwrap();
+    assert_eq!(legacy.name, "cat14_07_native_locked");
+    assert_eq!(
+        legacy.can_login, None,
+        "unknown declaration must not be inferred from locking"
+    );
+    assert!(legacy.attributes.is_none());
+    assert_eq!(next(), before);
+    native
+        .execute("DROP USER 'cat14_07_native_locked'@'%'")
+        .unwrap();
+    native
+        .execute("DROP ROLE 'cat14_07_native_group'@'%'")
+        .unwrap();
+}

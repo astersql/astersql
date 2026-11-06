@@ -109,7 +109,9 @@ mod pg_jsonb_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
-pub use pg_database::{PgDatabaseCommand, PgDatabaseFact};
+pub use pg_database::{
+    PgDatabaseCommand, PgDatabaseFact, PgRoleAttributes, PgRoleCommand, PgRoleFact,
+};
 mod pg_schema;
 mod pg_sequence;
 pub use pg_sequence::PgSequenceCommand;

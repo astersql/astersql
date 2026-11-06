@@ -224,3 +224,33 @@ fn cat14_06_shared_comment_gate() {
             .is_none()
     );
 }
+
+#[test]
+fn cat14_07_role_parser_boundaries() {
+    use astersql_session::runtime::PgRoleCommand;
+    for (sql, name, login) in [
+        ("CREATE ROLE group_role", "group_role", false),
+        ("CREATE USER reader", "reader", true),
+        (
+            "CREATE ROLE \"A@b'c\" WITH LOGIN NOSUPERUSER NOCREATEDB NOREPLICATION NOBYPASSRLS",
+            "A@b'c",
+            true,
+        ),
+    ] {
+        assert!(
+            matches!(SessionQuery::parse(sql).unwrap(),Some(SessionQuery::RoleUtility(PgRoleCommand::Create {name:n,can_login})) if n==name && can_login==login)
+        );
+    }
+    for (sql, state) in [
+        ("CREATE ROLE r WITH", "42601"),
+        ("CREATE ROLE r LOGIN NOLOGIN", "42601"),
+        ("CREATE ROLE r SUPERUSER", "0A000"),
+        ("CREATE ROLE r PASSWORD 'cat14_07_secret'", "0A000"),
+        ("DROP ROLE r CASCADE", "0A000"),
+        ("CREATE ROLE r; CREATE ROLE other", "0A000"),
+    ] {
+        let error = SessionQuery::parse(sql).unwrap_err();
+        assert_eq!(error.0, state, "{sql}");
+        assert!(!error.1.contains("cat14_07_secret"));
+    }
+}

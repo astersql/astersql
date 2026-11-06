@@ -1227,3 +1227,26 @@ fn long_data_mem_quota_is_deferred_on_real_connection() {
     assert_eq!(context.long_data_memory_snapshot().unwrap(), (base, 1024));
     connection.Close().unwrap();
 }
+
+#[test]
+fn cat14_07_authenticated_host_is_preserved() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute(
+            "CREATE USER 'cat14_07@host'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY ''",
+        )
+        .unwrap();
+    let driver = ConcreteSessionDriver::new_for_test(
+        domain,
+        BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+    );
+    let context = driver.open_ctx(707, 0, 45, "", None).unwrap();
+    let mut request = auth("cat14_07@host", &[]);
+    request.identity.hostname = "127.0.0.1".into();
+    context.authenticate(&request).unwrap();
+    assert_eq!(context.user_identity().unwrap(), "cat14_07@host@127.0.0.1");
+    context.close().unwrap();
+    native
+        .execute("DROP USER 'cat14_07@host'@'127.0.0.1'")
+        .unwrap();
+}

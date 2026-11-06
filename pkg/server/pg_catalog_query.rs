@@ -1108,7 +1108,7 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
 }
 
 pub(crate) fn is_catalog_relation(name: &str) -> bool {
-    name == "pg_user"
+    matches!(name, "pg_user" | "pg_roles" | "pg_shadow")
         || name == "pg_opclass"
         || name == "pg_locks"
         || crate::pg_oid::SYSTEM_RELATIONS

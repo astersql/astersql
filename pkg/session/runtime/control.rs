@@ -5778,16 +5778,21 @@ impl ConcreteSession {
         }
         self.finish_transaction(true)?;
 
-        let account_locked = statement
-            .PasswordOrLockOptions
+        let declared_users = new_users
             .iter()
-            .rev()
-            .find_map(|option| match option.Type {
-                ast::PasswordOrLockOptionType::Lock => Some(true),
-                ast::PasswordOrLockOptionType::Unlock => Some(false),
-                _ => None,
-            })
-            .unwrap_or(false);
+            .map(|(host, user, _, _, _)| (host.clone(), user.clone()))
+            .collect::<Vec<_>>();
+        let account_locked = statement.IsCreateRole
+            || statement
+                .PasswordOrLockOptions
+                .iter()
+                .rev()
+                .find_map(|option| match option.Type {
+                    ast::PasswordOrLockOptionType::Lock => Some(true),
+                    ast::PasswordOrLockOptionType::Unlock => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(false);
         let attribute =
             statement
                 .CommentOrAttributeOption
@@ -5859,6 +5864,10 @@ impl ConcreteSession {
         }
         privileges.SortUserTable();
         handle.merge(privileges);
+        for (host, user) in declared_users {
+            // Do not reinterpret skipped IF NOT EXISTS accounts as new declarations.
+            self.pg_register_native_role(&user, &host, !statement.IsCreateRole, false)?;
+        }
         Ok(())
     }
 
@@ -6378,7 +6387,9 @@ impl ConcreteSession {
                     "Operation DROP USER failed for '{user}'@'{host}'"
                 )));
             }
-            self.pg_database_drop_role(user, false)?;
+            if host == "%" {
+                self.pg_database_drop_role(user, false)?;
+            }
             identities.push((host, user.clone()));
         }
 
@@ -6405,7 +6416,9 @@ impl ConcreteSession {
 
         for (host, user) in identities {
             privileges.DropAccount(&host, &user);
-            self.pg_database_drop_role(&user, true)?;
+            if host == "%" {
+                self.pg_database_drop_role(&user, true)?;
+            }
         }
         handle.merge(privileges);
         Ok(())

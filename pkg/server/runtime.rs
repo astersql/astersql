@@ -823,13 +823,23 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgRoleAdministrator {
+        response: mpsc::SyncSender<bool>,
+    },
+    PgRoleFacts {
+        response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgRoleFact>>>,
+    },
+    PgRoleCommand {
+        command: astersql_session::runtime::PgRoleCommand,
+        response: mpsc::SyncSender<ConnResult<()>>,
+    },
     PgDatabaseFacts {
         command: Option<astersql_session::runtime::PgDatabaseCommand>,
         response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgDatabaseFact>>>,
     },
     VerifyNativeAccount {
         request: AuthRequest,
-        response: mpsc::SyncSender<ConnResult<()>>,
+        response: mpsc::SyncSender<ConnResult<astersql_privilege_privileges::VerificationInfo>>,
     },
     CatalogSchemaSnapshot {
         response: mpsc::SyncSender<astersql_infoschema::SchemaRef>,
@@ -912,6 +922,8 @@ pub(crate) enum SessionRequest {
     },
     SetAuthenticatedUser {
         username: String,
+        login_host: String,
+        authenticated_host: String,
         has_process_privilege: bool,
         response: mpsc::SyncSender<ConnResult<()>>,
     },
@@ -1037,6 +1049,19 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgRoleAdministrator { response } => {
+                let _ = response.send(session.pg_role_administrator());
+            }
+            SessionRequest::PgRoleFacts { response } => {
+                let _ = response.send(session.pg_role_facts().map_err(session_protocol_error));
+            }
+            SessionRequest::PgRoleCommand { command, response } => {
+                let _ = response.send(
+                    session
+                        .pg_role_command(&command)
+                        .map_err(session_protocol_error),
+                );
+            }
             SessionRequest::PgDatabaseFacts { command, response } => {
                 let _ = response.send(
                     session
@@ -1264,11 +1289,25 @@ fn run_session_worker(
             }
             SessionRequest::SetAuthenticatedUser {
                 username,
+                login_host,
+                authenticated_host,
                 has_process_privilege,
                 response,
             } => {
-                session.SetAuthenticatedUser(username, has_process_privilege);
-                let _ = response.send(Ok(()));
+                session.SetAuthenticatedIdentity(
+                    username,
+                    login_host,
+                    authenticated_host,
+                    has_process_privilege,
+                );
+                let result = if has_process_privilege {
+                    session
+                        .pg_register_bootstrap_role()
+                        .map_err(session_protocol_error)
+                } else {
+                    Ok(())
+                };
+                let _ = response.send(result);
             }
             SessionRequest::Execute {
                 statements,
@@ -2052,6 +2091,24 @@ impl TiDBContext for ConcreteTiDBContext {
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
         rx.recv().map_err(packet_error)
     }
+    fn pg_role_administrator(&self) -> ConnResult<bool> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgRoleAdministrator { response: tx })?;
+        rx.recv().map_err(packet_error)
+    }
+    fn pg_role_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgRoleFact>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgRoleFacts { response: tx })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_role_command(&self, command: astersql_session::runtime::PgRoleCommand) -> ConnResult<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgRoleCommand {
+            command,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_database_facts(
         &self,
         command: Option<astersql_session::runtime::PgDatabaseCommand>,
@@ -2244,18 +2301,23 @@ impl TiDBContext for ConcreteTiDBContext {
             && request.identity.plugin == AUTH_NATIVE_PASSWORD;
         let native =
             self.auth_mode == BootstrapAuthMode::BootstrapRootAndNativeAccounts && !allowed;
-        if native {
+        let identity = if native {
             let (tx, rx) = mpsc::sync_channel(1);
             self.send_request(SessionRequest::VerifyNativeAccount {
                 request: request.clone(),
                 response: tx,
             })?;
-            rx.recv().map_err(packet_error)??;
-        }
+            let verified = rx.recv().map_err(packet_error)??;
+            (verified.authenticated_user, verified.authenticated_host)
+        } else {
+            (request.identity.username.clone(), "%".to_owned())
+        };
         if allowed || native {
             let (response_tx, response_rx) = mpsc::sync_channel(1);
             self.send_request(SessionRequest::SetAuthenticatedUser {
-                username: request.identity.username.clone(),
+                username: identity.0,
+                login_host: request.identity.hostname.clone(),
+                authenticated_host: identity.1,
                 // InsecureRootOnly admits only root, matching PROCESS privilege.
                 has_process_privilege: allowed,
                 response: response_tx,

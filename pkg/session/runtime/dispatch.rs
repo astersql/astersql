@@ -973,9 +973,21 @@ impl ConcreteSession {
 
     /// 鉴权完成后写入 Go `SessionVars.User` 及 PROCESS 权限判断结果。
     pub fn SetAuthenticatedUser(&mut self, username: String, has_process_privilege: bool) {
+        self.SetAuthenticatedIdentity(username, "%".into(), "%".into(), has_process_privilege);
+    }
+
+    /// Preserve the canonical account identity returned by shared authentication.
+    pub fn SetAuthenticatedIdentity(
+        &mut self,
+        username: String,
+        login_host: String,
+        authenticated_host: String,
+        has_process_privilege: bool,
+    ) {
+        self.active_roles.borrow_mut().clear();
         self.login_user = Some(username);
-        self.login_host = Some("%".to_owned());
-        self.authenticated_host = Some("%".to_owned());
+        self.login_host = Some(login_host);
+        self.authenticated_host = Some(authenticated_host);
         self.has_process_privilege = has_process_privilege;
     }
 
@@ -1866,6 +1878,9 @@ impl ConcreteSession {
         }
         if let Some(create_database) = statement.as_any().downcast_ref::<ast::CreateDatabaseStmt>()
         {
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                self.pg_check_database_creation()?;
+            }
             self.execute_create_database(create_database)?;
             return Ok(None);
         }
