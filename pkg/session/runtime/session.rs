@@ -1098,6 +1098,14 @@ impl CanonicalSessionFactory {
                     factory.domain.close();
                     session_error("register Domain server info", error)
                 })?;
+            super::system_session::create_table_resources::install_label_syncer(
+                &factory.domain,
+                id.clone(),
+            )
+            .map_err(|error| {
+                factory.domain.close();
+                session_error("initialize serving DDL label transport", error)
+            })?;
             let cancellation = astersql_owner::Context::new();
             let owner = astersql_owner::NewOwnerManager(
                 cancellation.clone(),
@@ -3684,6 +3692,7 @@ impl ConcreteSession {
         {
             return Err(unsupported());
         }
+        let mut range_name = None;
         let base = if let Some(from) = &select.From {
             let join = &from.TableRefs;
             if join.Right.is_some()
@@ -3698,7 +3707,6 @@ impl ConcreteSession {
             };
             if source.QuerySource.is_some()
                 || source.FunctionSource.is_some()
-                || !source.AsName.O.is_empty()
                 || source.TableSample.is_some()
                 || source.AsOf.is_some()
                 || source.Lateral
@@ -3722,6 +3730,14 @@ impl ConcreteSession {
                     "permission denied for view source",
                 ));
             }
+            // The name adapter injects the logical range name when a user
+            // schema relation has a different physical storage name. Explicit
+            // aliases have the same single-source scope and hide that name.
+            range_name = Some(if source.AsName.O.is_empty() {
+                base.Name.O.clone()
+            } else {
+                source.AsName.O.clone()
+            });
             Some(base)
         } else {
             None
@@ -3732,14 +3748,10 @@ impl ConcreteSession {
         // Normalize only this resolved source's column qualifiers before CHECK binding.
         let bind = |expression: &ast::ExprNode| {
             let mut expression = expression.clone();
-            fn normalize(
-                e: &mut ast::ExprNode,
-                table: &astersql_meta_model::TableInfo,
-                database: &str,
-            ) -> bool {
+            fn normalize(e: &mut ast::ExprNode, range_name: &str, database: &str) -> bool {
                 match &mut e.Kind {
                     ast::ExprKind::Column(c) => {
-                        if (!c.Table.O.is_empty() && c.Table.O != table.Name.O)
+                        if (!c.Table.O.is_empty() && c.Table.O != range_name)
                             || (!c.Schema.O.is_empty() && c.Schema.O != database)
                         {
                             return false;
@@ -3749,16 +3761,20 @@ impl ConcreteSession {
                         true
                     }
                     ast::ExprKind::Value(_) => true,
-                    ast::ExprKind::Parentheses(e) => normalize(e, table, database),
+                    ast::ExprKind::Parentheses(e) => normalize(e, range_name, database),
                     ast::ExprKind::Binary { L, R, .. } => {
-                        normalize(L, table, database) && normalize(R, table, database)
+                        normalize(L, range_name, database) && normalize(R, range_name, database)
                     }
-                    ast::ExprKind::Unary { V, .. } => normalize(V, table, database),
-                    ast::ExprKind::IsNull { Expr, .. } => normalize(Expr, table, database),
+                    ast::ExprKind::Unary { V, .. } => normalize(V, range_name, database),
+                    ast::ExprKind::IsNull { Expr, .. } => normalize(Expr, range_name, database),
                     _ => false,
                 }
             }
-            if !normalize(&mut expression, base_model, &self.current_database()) {
+            if !normalize(
+                &mut expression,
+                range_name.as_deref().unwrap_or(""),
+                &self.current_database(),
+            ) {
                 return Err(unsupported());
             }
             super::ddl::pg_bind_check_expression(&expression, base_model)

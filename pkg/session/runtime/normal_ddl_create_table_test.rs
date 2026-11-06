@@ -2208,3 +2208,87 @@ fn pg_dialect_15_durable_name_policy() {
         }
     }
 }
+
+#[test]
+fn pg13_041_serving_label_transport_uses_pd_rules_and_propagates_errors() {
+    use astersql_domain_infosync::{LabelRulePatch, PdHttpClient};
+    use std::io::{BufRead, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, response) in [
+            ("200 OK", "[]"),
+            ("200 OK", "null"),
+            ("503 Unavailable", "label service unavailable"),
+        ] {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut socket);
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            let mut size = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    if key.eq_ignore_ascii_case("content-length") {
+                        size = value.trim().parse().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0; size];
+            reader.read_exact(&mut body).unwrap();
+            requests.push((
+                header,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            ));
+            write!(
+                socket,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .unwrap();
+        }
+        requests
+    });
+    let client = super::system_session::create_table_resources::ServingLabelClient(
+        astersql_domain_affinity::http_client::HttpClient::new(vec![address.to_string()], None)
+            .unwrap(),
+    );
+    let ids = vec!["schema/test/old_table".to_owned()];
+    assert!(
+        client
+            .get_region_label_rules_by_ids(&ids)
+            .unwrap()
+            .is_empty()
+    );
+    let patch = LabelRulePatch {
+        DeleteRules: ids.clone(),
+        SetRules: Vec::new(),
+    };
+    client.patch_region_label_rules(&patch).unwrap();
+    assert!(
+        client
+            .get_region_label_rules_by_ids(&ids)
+            .unwrap_err()
+            .to_string()
+            .contains("503")
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(
+        requests[0].0,
+        "GET /pd/api/v1/config/region-label/rules/ids HTTP/1.1\r\n"
+    );
+    assert_eq!(requests[0].1, serde_json::json!(ids));
+    assert_eq!(
+        requests[1].0,
+        "PATCH /pd/api/v1/config/region-label/rules HTTP/1.1\r\n"
+    );
+    assert_eq!(requests[1].1, serde_json::json!({"deletes":ids,"sets":[]}));
+}

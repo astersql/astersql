@@ -2974,6 +2974,17 @@ impl CatalogQuery {
                     // gives all right-side fields NULL, regardless of its predicate.
                     schemas
                         .into_iter()
+                        // Serving DDL reloads register native memory-only system
+                        // schemas. They are not persistent PG database objects.
+                        // Keep invalid ordinary IDs on the checked rejection path.
+                        .filter(|schema| {
+                            !(schema.id > 0
+                                && astersql_infoschema::is_mem_schema_id(schema.id)
+                                && matches!(
+                                    schema.name.lower.as_str(),
+                                    "information_schema" | "performance_schema" | "metrics_schema"
+                                ))
+                        })
                         .map(|schema| {
                             // Both projections refer to the same native database object.
                             let oid = namespace_oid(schema.id).map_err(|_| {

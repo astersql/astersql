@@ -7053,6 +7053,21 @@ fn pg13_025_contract() {
     ] {
         ok(&mut socket, sql);
     }
+    // Task 41: a non-public source is rewritten to a storage name plus its
+    // logical range alias. Binding must keep that source's persistent identity.
+    for sql in [
+        "CREATE SCHEMA restart_view",
+        "CREATE TABLE restart_view.base (id integer,qty integer)",
+        "INSERT INTO restart_view.base VALUES (7,9)",
+        "CREATE VIEW restart_view.v AS SELECT id,qty FROM restart_view.base",
+        "CREATE VIEW restart_view.aliased AS SELECT p.id,p.qty FROM restart_view.base AS p",
+    ] {
+        ok(&mut socket, sql);
+    }
+    for name in ["v", "aliased"] {
+        let got = ok(&mut socket, &format!("SELECT * FROM restart_view.{name}"));
+        assert_eq!(got[1], (b'D', row(&[Some("7"), Some("9")])));
+    }
     let original = ok(&mut socket, "SELECT * FROM public.\"ViewAS\"");
     assert_eq!(
         columns(&original[0].1),
@@ -10183,4 +10198,53 @@ fn pg13_040_contract() {
     println!(
         "pg13_040_contract: scenarios=6 p fk check_deduplicated constant_zero zero_describe rename; shared domain TCP cleanup"
     );
+}
+
+#[test]
+fn pg13_041_virtual_system_schema_is_not_a_database() {
+    use crate::conn::{CancellationToken, SessionDriver};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver =
+        ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
+    let context = driver.open_ctx(98441, 0, 45, "test", None).unwrap();
+    let query = crate::pg_catalog::CatalogQuery::parse(
+        "SELECT oid,datname FROM pg_catalog.pg_database WHERE datname='test'",
+    )
+    .unwrap()
+    .unwrap();
+    let token = CancellationToken::new();
+    let before = query.execute(context.as_ref(), &token).unwrap();
+    assert_eq!(before.rows.len(), 1);
+    // Inject the actual registered virtual schema identity at the shared model
+    // boundary, as a serving InfoSchema reload does; do not mock provider rows.
+    let virtual_schema = astersql_infoschema::tables::information_schema_db();
+    domain
+        .ddl_drop_database("information_schema", true)
+        .unwrap();
+    domain
+        .ddl_create_database_with_id("information_schema", false, Some(virtual_schema.id))
+        .unwrap();
+    assert_eq!(
+        query.execute(context.as_ref(), &token).unwrap().rows,
+        before.rows
+    );
+    let virtual_query = crate::pg_catalog::CatalogQuery::parse(
+        "SELECT oid FROM pg_catalog.pg_database WHERE datname='information_schema'",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        virtual_query
+            .execute(context.as_ref(), &token)
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    domain
+        .ddl_create_database_with_id("invalid_native_id", false, Some(0))
+        .unwrap();
+    let error = query.execute(context.as_ref(), &token).unwrap_err();
+    assert_eq!(crate::pg_conn::sqlstate(&error), "0A000");
+    context.close().unwrap();
+    domain.close();
 }

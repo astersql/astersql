@@ -380,3 +380,32 @@ fn pg13_035_computed_view_keeps_bound_integer_projection() {
         "pg13_035 view: integer_projection=1 null_rows=1 unsupported_no_publication=1 cleanup=2"
     );
 }
+
+#[test]
+fn pg13_041_created_foreign_keys_use_current_durable_version() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg41_fk_parent (id integer PRIMARY KEY)")
+        .unwrap();
+    for (name, ddl) in [
+        (
+            "pg41_fk_child",
+            "CREATE TABLE pg41_fk_child (parent_id integer, CONSTRAINT pg41_fk FOREIGN KEY(parent_id) REFERENCES pg41_fk_parent(id))",
+        ),
+        (
+            "pg41_fk_inline",
+            "CREATE TABLE pg41_fk_inline (parent_id integer REFERENCES pg41_fk_parent(id))",
+        ),
+    ] {
+        pg.execute(ddl).unwrap();
+        let (_, table) = domain.stats_table("test", name).unwrap();
+        assert_eq!(table.ForeignKeys.len(), 1);
+        assert_eq!(
+            table.ForeignKeys[0].Version,
+            astersql_meta_model::FKVersion1
+        );
+        assert_eq!(table.ForeignKeys[0].RefTable.O, "pg41_fk_parent");
+        pg.execute(&format!("DROP TABLE {name}")).unwrap();
+    }
+    pg.execute("DROP TABLE pg41_fk_parent").unwrap();
+}

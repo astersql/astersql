@@ -3664,3 +3664,88 @@ fn identity_drop_table_removes_owned_sequence_in_final_job_transaction() {
     assert!(f.reader().get_table(f.db, f.table).unwrap().is_none());
     assert!(f.reader().get_table(f.db, sequence_id).unwrap().is_none());
 }
+
+#[test]
+fn pg13_041_persistent_rename_preserves_namespace_and_updates_logical_name() {
+    let _resources = LabelResources::new();
+    let f = Fixture::new();
+    let mut original = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    original.PostgreSQLNamespace = Some((41, "old_name".into()));
+    original.Name = astersql_meta_model::ast::NewCIStr("__astersql_pg_41_old_name");
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    astersql_meta::TransactionMutator::new(txn.as_mut())
+        .update_table(f.db, &mut original)
+        .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let mut job = Job {
+        id: 99641,
+        tp: 14,
+        schema_id: f.db,
+        table_id: f.table,
+        schema_name: "test".into(),
+        table_name: original.Name.L.clone(),
+        state: JobState::Queueing,
+        version: JobVersion::V2,
+        raw_args: serde_json::to_vec(&serde_json::json!({
+            "old_schema_id": f.db,
+            "old_schema_name": {"O":"test","L":"test"},
+            "new_table_name": {"O":"__astersql_pg_41_new_name","L":"__astersql_pg_41_new_name"}
+        }))
+        .unwrap(),
+        ..Default::default()
+    };
+    insert_job(&f, &mut job);
+    run(&f);
+    assert_eq!(f.queue(job.id).unwrap().schema_state, SchemaState::Public);
+    let renamed = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert_eq!(renamed.ID, original.ID);
+    assert_eq!(renamed.PostgreSQLNamespace, Some((41, "new_name".into())));
+    assert_eq!(
+        serde_json::to_value(&renamed.Columns).unwrap(),
+        serde_json::to_value(&original.Columns).unwrap()
+    );
+    assert_eq!(
+        renamed.PostgreSQLAttributeSlots,
+        original.PostgreSQLAttributeSlots
+    );
+}
+
+#[test]
+fn pg13_041_persistent_drop_removes_owned_sequence_but_keeps_unowned() {
+    let _resources = LabelResources::new();
+    let f = Fixture::new();
+    for name in ["pg41_owned", "pg41_unowned"] {
+        f.pool
+            .acquire()
+            .unwrap()
+            .query(&format!("CREATE SEQUENCE test.{name}"))
+            .unwrap();
+    }
+    let (_, owned) = f.domain.stats_table("test", "pg41_owned").unwrap();
+    let (_, unowned) = f.domain.stats_table("test", "pg41_unowned").unwrap();
+    let column = f
+        .reader()
+        .get_table(f.db, f.table)
+        .unwrap()
+        .unwrap()
+        .Columns[0]
+        .ID;
+    f.domain
+        .ddl_set_sequence_owner("test", owned.ID, Some((f.table, column)))
+        .unwrap();
+    let job = insert_drop(&f);
+    run(&f);
+    run(&f);
+    run(&f);
+    assert_eq!(f.queue(job.id).unwrap().state, JobState::Done);
+    assert!(f.reader().get_table(f.db, f.table).unwrap().is_none());
+    assert!(
+        f.reader().get_table(f.db, owned.ID).unwrap().is_none(),
+        "OWNED BY must drop in the owner transaction"
+    );
+    assert!(f.reader().get_table(f.db, unowned.ID).unwrap().is_some());
+}

@@ -1044,7 +1044,7 @@ impl jobsubmit::ServerState for JobSubmitServerState {
 }
 
 #[path = "create_table_resources.rs"]
-mod create_table_resources;
+pub(super) mod create_table_resources;
 
 struct ConcreteJobExecutionContext<'a>(
     &'a mut ConcreteSession,

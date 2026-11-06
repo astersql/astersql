@@ -224,6 +224,18 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
                 meta.drop_table_and_auto_ids(job.schema_id, identity.SequenceID)?;
                 affected.push(identity.SequenceID);
             }
+            // Ordinary OWNED BY is stored on the sequence, not the owner
+            // column. Publish its removal with the same owner transaction.
+            for sequence in meta.list_tables(job.schema_id)? {
+                if sequence.IsSequence()
+                    && sequence
+                        .PostgreSQLSequenceOwner
+                        .is_some_and(|(id, _)| id == t.ID)
+                {
+                    meta.drop_table_and_auto_ids(job.schema_id, sequence.ID)?;
+                    affected.push(sequence.ID);
+                }
+            }
             meta.drop_table_and_auto_ids(job.schema_id, job.table_id)?;
         }
         if affected.is_empty() {
@@ -478,6 +490,16 @@ pub fn rename_tables(context: &mut dyn JobExecutionContext, job: &mut Job) -> Re
                     O: info.NewTableName.O.clone(),
                     L: info.NewTableName.L.clone(),
                 };
+                // Match canonical rename publication: a PG namespace retains
+                // its durable ID while its logical relation name changes.
+                if let Some((namespace, logical)) = t.PostgreSQLNamespace.as_mut() {
+                    *logical = t
+                        .Name
+                        .O
+                        .strip_prefix(&format!("__astersql_pg_{namespace}_"))
+                        .ok_or("relation rename cannot change namespace")?
+                        .to_owned();
+                }
                 meta.create_table(info.NewSchemaID, &t)?;
                 if astersql_sessionctx_vardef::EnableForeignKey.Load()
                     && old_table_name != info.NewTableName.L

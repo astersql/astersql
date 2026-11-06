@@ -34,6 +34,8 @@ pub mod sieve;
 /// information_schema 虚拟表实现辅助。
 pub mod tables;
 
+/// Native reserved ID classification for memory-only schema consumers.
+pub use astersql_meta_autoid::is_mem_schema_id;
 pub use builder::{
     ActionType, AffectedOption, Builder, MetadataReader, NewBuilder, SchemaDiff, getKeptAllocators,
 };

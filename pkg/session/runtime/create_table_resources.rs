@@ -372,6 +372,69 @@ fn pd_client(domain: &Domain) -> Result<astersql_domain_affinity::http_client::H
     )
     .map_err(|e| e.to_string())
 }
+/// Reuse the serving store's PD transport for global DDL label operations.
+/// Server-info leases are registered separately by the canonical factory.
+pub(in crate::runtime) fn install_label_syncer(
+    domain: &Arc<Domain>,
+    id: String,
+) -> Result<(), String> {
+    let keyspace = domain
+        .storage_handle()
+        .with_storage(|s| s.DDLKeyspaceID())
+        .map_err(|e| e.to_string())?;
+    let weak = Arc::downgrade(domain);
+    astersql_domain_infosync::GlobalInfoSyncerInit(
+        id,
+        Arc::new(move || weak.upgrade().map_or(0, |d| d.server_id())),
+        None,
+        None,
+        Some(Arc::new(ServingLabelClient(pd_client(domain)?))),
+        astersql_domain_infosync::Codec {
+            keyspace_id: (keyspace != u32::MAX).then_some(keyspace),
+            keyspace_aware_rules: keyspace != u32::MAX,
+        },
+        true,
+        None,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub(in crate::runtime) struct ServingLabelClient(
+    pub(in crate::runtime) astersql_domain_affinity::http_client::HttpClient,
+);
+impl astersql_domain_infosync::PdHttpClient for ServingLabelClient {
+    fn get_region_label_rules_by_ids(
+        &self,
+        ids: &[String],
+    ) -> astersql_domain_infosync::Result<Vec<astersql_domain_infosync::label::Rule>> {
+        let value = self
+            .0
+            .request_json(
+                &astersql_domain_affinity::BackgroundContext,
+                reqwest::Method::GET,
+                "/pd/api/v1/config/region-label/rules/ids",
+                Some(serde_json::to_value(ids)?),
+            )
+            .map_err(|e| astersql_domain_infosync::Error::External(e.to_string()))?;
+        Ok(serde_json::from_value(value)?)
+    }
+    fn patch_region_label_rules(
+        &self,
+        patch: &astersql_domain_infosync::LabelRulePatch,
+    ) -> astersql_domain_infosync::Result<()> {
+        self.0
+            .request_json(
+                &astersql_domain_affinity::BackgroundContext,
+                reqwest::Method::PATCH,
+                "/pd/api/v1/config/region-label/rules",
+                Some(serde_json::to_value(patch)?),
+            )
+            .map(|_| ())
+            .map_err(|e| astersql_domain_infosync::Error::External(e.to_string()))
+    }
+}
+
 pub(super) fn put_bundles(
     domain: &Domain,
     bundles: &[astersql_ddl_placement::Bundle],

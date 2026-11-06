@@ -978,7 +978,10 @@ impl ConcreteSession {
                     .PostgreSQLImmediateConstraintValidation
                     .insert(format!("c:{}", check.ID), check.Enforced);
             }
-            for fk in &table.ForeignKeys {
+            for fk in &mut table.ForeignKeys {
+                // Newly declared PG foreign keys are enforced current-version
+                // facts; persistent rename must not treat them as legacy v0.
+                fk.Version = astersql_meta_model::FKVersion1;
                 table
                     .PostgreSQLImmediateConstraintValidation
                     .insert(format!("f:{}", fk.ID), true);
