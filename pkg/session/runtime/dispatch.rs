@@ -3639,7 +3639,7 @@ impl ConcreteSession {
         };
         // Parsing is the whole of PREPARE; syntax and multi-statement errors
         // must surface here instead of being deferred to EXECUTE.
-        let statements = parse_in_dialect(&sql, self.sql_dialect())?;
+        let statements = self.parse_with_pg_extensions(&sql)?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
@@ -4147,7 +4147,7 @@ impl ConcreteSession {
             self.record_statement_metric(parsed.as_ref());
         }
         if execution.is_ok() && record_set.is_none() {
-            let statements = parse_in_dialect(&sql, dialect)?;
+            let statements = self.parse_with_pg_extensions(&sql)?;
             for prepared_statement in &statements {
                 match self.execute_statement(prepared_statement.as_ref(), Some(&sql)) {
                     Ok(result) => {
@@ -4333,9 +4333,9 @@ impl ConcreteSession {
             );
         }
         drop(state);
-        let (mut statements, parser_warnings) =
-            parse_with_dialect_and_warnings(&normalized_sql, sql_mode, self.sql_dialect())
-                .map_err(|error| self.normalize_mysql_function_parse_error(error))?;
+        let (mut statements, parser_warnings) = self
+            .parse_registered_with_warnings(&normalized_sql, sql_mode)
+            .map_err(|error| self.normalize_mysql_function_parse_error(error))?;
         self.apply_pg_date_constants(&mut statements);
         self.apply_pg_float4_constants(&mut statements);
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
@@ -4966,6 +4966,12 @@ pub(crate) fn split_statement_sql(sql: &str) -> Vec<String> {
 impl Drop for super::session::ConcreteSessionInner {
     fn drop(&mut self) {
         self.transaction_mdl.clear();
+        for oid in self.state.get_mut().pg_extension_functions.keys() {
+            astersql_expression::remove_pg_extension(
+                super::pg_function::pg_extension_scope(&self.domain),
+                *oid,
+            );
+        }
         let state = self.state.get_mut();
         let prepared_count = state
             .prepared

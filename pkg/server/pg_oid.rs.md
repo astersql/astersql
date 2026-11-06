@@ -87,3 +87,7 @@ RustCodeGraph 对 `table_oid` 的下游边为 `signed_id`、`bounded`、`TABLE_B
 - 扩展反向文本表示时，修改 `display`、`native_name`、`quoted`，并保证输出能够由解析路径安全回读；尤其不能让 `public` 中与系统目录同名的表显示成无前缀名称。
 - 测试逻辑应继续放在独立文件 `pkg/server/pg_oid_test.rs`，端到端 cast/查询覆盖放在现有 `pkg/server/pg_catalog_query_test.rs`、`pkg/server/pg_catalog_test.rs` 或其他相应独立测试文件，不要把测试内嵌进生产源文件。
 - 当前解析和显示是线性扫描。若引入缓存，必须明确 snapshot/DDL 版本作为失效键，并保持同一快照内一致性；否则宁可保留现有无状态实现。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+系统目录关系OID清单移到shared runtime，server引用同一清单；身份值不变，真实回调与目录无两份清单。

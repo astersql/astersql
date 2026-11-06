@@ -196,3 +196,7 @@ PG视图创建登记默认表ACL；INSERT/UPDATE/DELETE在数据操作之前读�
 ## 2026-11-06 列授权事实与查询（任务20）
 
 新PG视图初始化持久列ACL来源。INSERT显式目标和UPDATE赋值目标经pg_require_column_write_access校验精确列权限；DELETE等无列权限语义继续表授权。RETURNING、WHERE、UPDATE引用表达式的SELECT逐引用列经同一共享guard检查；常量赋值不凭空要求读取权限。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+SQL worker会话销毁清理其临时声明的真实工厂；原认证与有效角色设置路径不改。

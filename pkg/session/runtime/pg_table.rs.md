@@ -23,3 +23,7 @@ pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical meta
 ## 类型授权（任务22）
 
 任务22：将既有table_name_parts仅扩至session runtime模块可见，供类型名称解析共享引号与限定名规则，避免第二套标识符解析。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+共享PG_SYSTEM_RELATIONS为既有目录和真实可见性工厂提供同一目录身份，原表/列ACL不变。

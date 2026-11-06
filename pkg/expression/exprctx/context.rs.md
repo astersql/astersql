@@ -91,3 +91,7 @@ EvalContext::SQLDialect 默认 MySQL，旧调用保留原语义；BuildContext �
 PgDatabasePrivilegeEvaluator是语句拥有的数据库权限回调，输入为SQL可空文本载体及OID身份标志，输出可空bool或带源错误。缺提供者保持显式不可用；context包装器完整转发。表达式层不持有具体Session或连接。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+PgTableVisibilityEvaluator携带调用语句的真实关系快照及有效路径；默认无来源，context包装器转发，不通过常量值构造身份。

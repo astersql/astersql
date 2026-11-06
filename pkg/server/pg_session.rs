@@ -1025,22 +1025,39 @@ impl SessionQuery {
                             (None, first, at + 1)
                         };
                     let function = word(tokens.get(on + 1), "function");
+                    let mut function_arguments = Vec::new();
                     if function {
                         if tokens.get(end) != Some(&Token::Symbol('(')) {
                             return Err(("42601", "expected function signature".into()));
                         }
                         end += 1;
-                        if word(tokens.get(end), "pg_catalog")
-                            && tokens.get(end + 1) == Some(&Token::Symbol('.'))
-                        {
-                            end += 2;
+                        while tokens.get(end) != Some(&Token::Symbol(')')) {
+                            if word(tokens.get(end), "pg_catalog")
+                                && tokens.get(end + 1) == Some(&Token::Symbol('.'))
+                            {
+                                end += 2;
+                            }
+                            function_arguments.push(match tokens.get(end) {
+                                Some(Token::Word(t)) => match t.as_str() {
+                                    "oid" => 26,
+                                    "integer" | "int4" | "int" => 23,
+                                    "bigint" | "int8" => 20,
+                                    "text" => 25,
+                                    _ => return Err(("42883", "function does not exist".into())),
+                                },
+                                _ => return Err(("42601", "expected function input type".into())),
+                            });
+                            end += 1;
+                            if tokens.get(end) == Some(&Token::Symbol(',')) {
+                                end += 1;
+                            } else if tokens.get(end) != Some(&Token::Symbol(')')) {
+                                return Err((
+                                    "42601",
+                                    "expected function signature delimiter".into(),
+                                ));
+                            }
                         }
-                        if !word(tokens.get(end), "oid")
-                            || tokens.get(end + 1) != Some(&Token::Symbol(')'))
-                        {
-                            return Err(("42883", "function does not exist".into()));
-                        }
-                        end += 2;
+                        end += 1;
                     }
                     if !word(tokens.get(end), if grant { "to" } else { "from" }) {
                         return Err(("0A000", "expected a single table grantee".into()));
@@ -1075,6 +1092,7 @@ impl SessionQuery {
                         }
                         return Ok(Some(Self::SchemaUtility(
                             PgSchemaCommand::FunctionPrivileges {
+                                arguments: function_arguments,
                                 schema,
                                 name: table,
                                 grantee,

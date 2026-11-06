@@ -233,3 +233,7 @@ WithSQLDialect 将连接方言保存为独立于系统变量的静态快照，�
 WithPgDatabasePrivilegeEvaluator为当前语句设置不可变事实回调，Clone及MakeEvalContextStatic保留同一语句快照。缺少回调时由正式builtin拒绝；不会生成默认授权结果。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+静态求值context捕获/克隆可选关系可见性消费者，供真实扩展原语调用；缺来源保持能力拒绝，callback不捕获会话可变引用。

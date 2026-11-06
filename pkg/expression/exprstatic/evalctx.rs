@@ -129,6 +129,7 @@ pub struct EvalCtxState {
     pg_current_schema: Option<String>,
     pg_backend_pid: Option<i32>,
     pg_database_privilege: Option<exprctx::PgDatabasePrivilegeEvaluator>,
+    pg_table_visibility: Option<exprctx::PgTableVisibilityEvaluator>,
     current_time: Arc<TimeOnce>,
     max_allowed_packet: u64,
     enable_redact_log: String,
@@ -156,6 +157,7 @@ impl Clone for EvalCtxState {
             pg_current_schema: self.pg_current_schema.clone(),
             pg_backend_pid: self.pg_backend_pid,
             pg_database_privilege: self.pg_database_privilege.clone(),
+            pg_table_visibility: self.pg_table_visibility.clone(),
             current_time: Arc::clone(&self.current_time),
             max_allowed_packet: self.max_allowed_packet,
             enable_redact_log: self.enable_redact_log.clone(),
@@ -345,6 +347,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
         pg_current_schema: None,
         pg_backend_pid: None,
         pg_database_privilege: None,
+        pg_table_visibility: None,
         current_time: Arc::new(TimeOnce::empty()),
         max_allowed_packet: vardef::DefMaxAllowedPacket,
         enable_redact_log: vardef::DefTiDBRedactLog.to_owned(),
@@ -659,6 +662,9 @@ impl exprctx::EvalContext for EvalContext {
     fn PgBackendPid(&self) -> Option<i32> {
         self.state.pg_backend_pid
     }
+    fn PgTableVisibilityEvaluator(&self) -> Option<exprctx::PgTableVisibilityEvaluator> {
+        self.state.pg_table_visibility.clone()
+    }
     fn PgDatabasePrivilegeEvaluator(&self) -> Option<exprctx::PgDatabasePrivilegeEvaluator> {
         self.state.pg_database_privilege.clone()
     }
@@ -738,6 +744,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithPgCurrentSchema(context.PgCurrentSchema()),
         WithPgBackendPid(context.PgBackendPid()),
         WithPgDatabasePrivilegeEvaluator(context.PgDatabasePrivilegeEvaluator()),
+        WithPgTableVisibilityEvaluator(context.PgTableVisibilityEvaluator()),
         WithCurrentTime(current_time_fn),
         WithMaxAllowedPacket(context.GetMaxAllowedPacket()),
         WithDefaultWeekFormatMode(context.GetDefaultWeekFormatMode()),
@@ -1003,4 +1010,10 @@ pub(crate) fn parse_system_vars(
     }
 
     Ok(parsed)
+}
+
+pub fn WithPgTableVisibilityEvaluator(
+    evaluator: Option<exprctx::PgTableVisibilityEvaluator>,
+) -> EvalCtxOption {
+    Box::new(move |state| state.pg_table_visibility = evaluator)
 }

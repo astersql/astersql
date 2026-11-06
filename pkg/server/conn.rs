@@ -984,6 +984,20 @@ pub trait TiDBContext: Send + Sync {
     ) -> ConnResult<bool> {
         Err(ConnError::UnsupportedCommand(0))
     }
+    /// Register/unregister a real PG extension callback using canonical namespace and object facts.
+    fn pg_register_extension_function(
+        &self,
+        _schema: String,
+        _arguments: Vec<u32>,
+        _result: u32,
+        _implementation: String,
+        _definition: std::sync::Arc<astersql_extension::FunctionDef>,
+    ) -> ConnResult<i64> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
+    fn pg_unregister_extension_function(&self, _oid: i64) -> ConnResult<()> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     /// All current-database namespace identities and USAGE facts for this actor.
     /// None preserves contexts without PostgreSQL namespace support.
     fn pg_namespace_facts(

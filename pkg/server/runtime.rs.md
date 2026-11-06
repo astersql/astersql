@@ -167,3 +167,11 @@ PG会话worker显式初始化标准schema时，把pg_catalog::builtin_type_ident
 ## 命名空间授权（目录任务18）
 
 PgSchemaPrivileges请求在连接自己的ConcreteSession worker执行，共享schema ACL持久事务及有效身份，向PgSession传回可选通知；不使用mock provider或root代替真实认证用户。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+具体连接生产安装原扩展hook；正式登记/卸载经SessionRequest原worker队列，保持真实认证身份、错误和会话私有状态。
+
+## 2026-11-07 正式函数解析接线
+
+无上下文的拆句检查遇到PG 42883时，转原SQL worker使用当前连接真实登记重验整条输入，成功前不执行任何语句；普通已知输入与MySQL拆句路径保持。

@@ -65,6 +65,8 @@ pub type PgDatabasePrivilegeEvaluator = Arc<
         + Sync,
 >;
 
+/// Statement-owned visibility facts; callbacks never infer object identities from values.
+pub type PgTableVisibilityEvaluator = Arc<dyn Fn(i64) -> Option<bool> + Send + Sync>;
 /// 对应 Go EvalContext：聚合一次表达式求值所需的稳定会话快照与可选属性。
 pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     /// Immutable SQL semantics captured by this evaluation context.
@@ -100,6 +102,9 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     }
     /// Positive BackendKeyData identity supplied by the connection owner.
     fn PgBackendPid(&self) -> Option<i32> {
+        None
+    }
+    fn PgTableVisibilityEvaluator(&self) -> Option<PgTableVisibilityEvaluator> {
         None
     }
     fn PgDatabasePrivilegeEvaluator(&self) -> Option<PgDatabasePrivilegeEvaluator> {
@@ -439,6 +444,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn PgBackendPid(&self) -> Option<i32> {
         self.inner.PgBackendPid()
+    }
+    fn PgTableVisibilityEvaluator(&self) -> Option<PgTableVisibilityEvaluator> {
+        self.inner.PgTableVisibilityEvaluator()
     }
     fn PgDatabasePrivilegeEvaluator(&self) -> Option<PgDatabasePrivilegeEvaluator> {
         self.inner.PgDatabasePrivilegeEvaluator()

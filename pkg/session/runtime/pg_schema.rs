@@ -53,6 +53,7 @@ pub enum PgSchemaCommand {
         owner: String,
     },
     FunctionPrivileges {
+        arguments: Vec<u32>,
         schema: Option<String>,
         name: String,
         grantee: String,
@@ -487,6 +488,24 @@ impl ConcreteSession {
                                 if actor != "root" && actor != schema.owner {
                                     return Err(kv::errors::New("must be owner of schema"));
                                 }
+                                let key =
+                                    astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                                match transaction.Get(&context, key, &[]) {
+                                    Ok(value) => {
+                                        let standard: PgStandardSchema =
+                                            serde_json::from_slice(&value.Value)
+                                                .map_err(|e| kv::errors::New(e.to_string()))?;
+                                        if standard.extension_functions.values().any(|f| {
+                                            f.database == database.id && f.namespace == schema.id
+                                        }) {
+                                            return Err(kv::errors::New(
+                                                "cannot drop schema because it is not empty",
+                                            ));
+                                        }
+                                    }
+                                    Err(error) if kv::IsErrNotFound(&error) => {}
+                                    Err(error) => return Err(error),
+                                }
                                 if self
                                     .domain
                                     .info_schema()
@@ -775,7 +794,7 @@ pub struct PgNamespaceFact {
     pub standard: Option<PgStandardSchema>,
 }
 
-fn allocate_namespace_id(
+pub(super) fn allocate_namespace_id(
     transaction: &mut dyn kv::Transaction,
     context: &kv::Context,
 ) -> Result<i64, kv::errors::SharedError> {
@@ -867,6 +886,17 @@ impl ConcreteSession {
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
+            standard
+                .extension_functions
+                .retain(|_, f| f.database == database.id);
+            standard.extension_functions.extend(
+                self.state
+                    .borrow()
+                    .pg_extension_functions
+                    .iter()
+                    .filter(|(_, f)| f.database == database.id)
+                    .map(|(id, f)| (*id, f.clone())),
+            );
             if let Some(acls) = standard.function_acl_overrides.get(&database.id) {
                 standard.function_acls.extend(acls.clone());
             }
@@ -1110,6 +1140,8 @@ pub(super) struct BuiltinTypeIdentity {
 /// server from these globally allocated IDs, never copied from a reference build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgStandardSchema {
+    #[serde(default)]
+    pub extension_functions: BTreeMap<i64, astersql_expression::PgExtensionDeclaration>,
     // Declarations register identities on upgrade, never unknown historical owners.
     #[serde(default)]
     pub(super) builtin_types: BTreeMap<String, BuiltinTypeIdentity>,
@@ -1184,7 +1216,10 @@ impl ConcreteSession {
         self.pg_standard_schema_with_types(true, types)?;
         Ok(())
     }
-    fn pg_standard_schema(&self, initialize: bool) -> SessionResult<Option<PgStandardSchema>> {
+    pub(super) fn pg_standard_schema(
+        &self,
+        initialize: bool,
+    ) -> SessionResult<Option<PgStandardSchema>> {
         self.pg_standard_schema_with_types(initialize, &[])
     }
     fn pg_standard_schema_with_types(
@@ -1213,6 +1248,7 @@ impl ConcreteSession {
                         Err(e) if kv::IsErrNotFound(&e) && initialize => {
                             created = true;
                             let standard = PgStandardSchema {
+                                extension_functions: BTreeMap::new(),
                                 builtin_types: BTreeMap::new(),
                                 function_acl_initialized: true,
                                 function_acls: BTreeMap::new(),

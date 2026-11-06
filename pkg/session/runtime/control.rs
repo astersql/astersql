@@ -1757,7 +1757,7 @@ impl ConcreteSession {
     ) -> SessionResult<(Vec<Box<dyn ast::Node>>, Vec<SessionWarning>)> {
         let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
             .map_err(|error| session_error("parse protocol sql_mode", error))?;
-        parse_with_dialect_and_warnings(sql, mode, self.sql_dialect())
+        self.parse_registered_with_warnings(sql, mode)
     }
 
     /// Resolve original engine result types without executing or registering a
@@ -1959,7 +1959,7 @@ impl ConcreteSession {
                 })
                 .collect::<Vec<_>>();
             let typed_sql = bind_parameter_markers(sql, &arguments)?;
-            for typed in parse_in_dialect(&typed_sql, self.sql_dialect())? {
+            for typed in self.parse_with_pg_extensions(&typed_sql)? {
                 self.validate_pg_boolean_statement(typed.as_ref())?;
             }
         }
@@ -1991,10 +1991,7 @@ impl ConcreteSession {
                     }
                 })
                 .collect::<Vec<_>>();
-            Some(parse_in_dialect(
-                &bind_parameter_markers(sql, &arguments)?,
-                self.sql_dialect(),
-            )?)
+            Some(self.parse_with_pg_extensions(&bind_parameter_markers(sql, &arguments)?)?)
         } else {
             None
         };

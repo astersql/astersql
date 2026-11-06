@@ -22098,12 +22098,13 @@ fn cat14_26() {
     native.execute("CREATE DATABASE cat14_26_db").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+    ));
     let service = PgService::start(
         listener,
-        Arc::new(ConcreteSessionDriver::new_for_test(
-            domain.clone(),
-            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
-        )),
+        driver.clone(),
         Arc::new(CanonicalConnectionDomain::new(domain.clone())),
         false,
     )
@@ -22122,7 +22123,7 @@ fn cat14_26() {
         native
             .execute("DROP DATABASE IF EXISTS cat14_26_work")
             .unwrap();
-        for name in ["cat14_26_reader"] {
+        for name in ["cat14_26_reader", "cat14_26_group"] {
             native
                 .execute(&format!(
                     "DROP USER IF EXISTS '{}'@'%'",
@@ -22187,6 +22188,10 @@ fn cat14_26() {
                     .windows(7)
                     .any(|w| w == format!("C{state}\0").as_bytes())),
             "{sql}: {r:?}"
+        );
+        assert!(
+            !r.iter().any(|m| m.0 == b'D'),
+            "denied queries cannot emit data"
         );
         assert_eq!(r.last(), Some(&(b'Z', vec![status])));
     }
@@ -22437,10 +22442,618 @@ fn cat14_26() {
     send(&mut reader, b'C', b"Sfunc_vis_stmt\0");
     send(&mut reader, b'S', b"");
     until_ready(&mut reader);
+
+    // Production registration, ordinary calls and pg_proc share these real callback identities.
+    use crate::conn::{AuthIdentity, AuthRequest, SessionDriver};
+    let api = driver
+        .open_ctx_with_dialect(
+            500026,
+            0,
+            45,
+            "cat14_26_work",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
+    api.authenticate(&AuthRequest {
+        identity: AuthIdentity {
+            username: "root".into(),
+            hostname: "127.0.0.1".into(),
+            plugin: crate::conn::AUTH_NATIVE_PASSWORD.into(),
+        },
+        auth_data: vec![],
+        salt: vec![],
+        tls_state: None,
+        attributes: Default::default(),
+    })
+    .unwrap();
+    let ids = std::cell::RefCell::new(Vec::new());
+    let _extensions = Cleanup(|| {
+        for id in ids.borrow().iter().rev() {
+            let _ = api.pg_unregister_extension_function(*id);
+        }
+        api.close().unwrap();
+    });
+    for ns in ["cat14_26_a", "cat14_26_b"] {
+        ok(&mut admin, &format!("CREATE SCHEMA {ns}"));
+        ok(
+            &mut admin,
+            &format!("GRANT USAGE ON SCHEMA {ns} TO cat14_26_reader"),
+        );
+    }
+    let register = |schema: &str, oid: u32, delta: i64| {
+        let definition = Arc::new(astersql_extension::FunctionDef {
+            Name: "cat14_26_f".into(),
+            EvalTp: astersql_extension::types::EvalType(0),
+            ArgTps: vec![astersql_extension::types::EvalType(0)],
+            EvalIntFunc: Some(Arc::new(move |context, row| {
+                assert_eq!(context.CurrentDB(), "cat14_26_work");
+                assert_eq!(context.User().unwrap().username, "cat14_26_reader");
+                let args = context.EvalArgs(row)?;
+                Ok((args[0].GetInt64() + delta, args[0].IsNull()))
+            })),
+            ..Default::default()
+        });
+        let id = api
+            .pg_register_extension_function(
+                schema.into(),
+                vec![oid],
+                oid,
+                format!("cat14_26::{schema}::{oid}"),
+                definition,
+            )
+            .unwrap();
+        ids.borrow_mut().push(id);
+        id
+    };
+    let a = register("cat14_26_a", 23, 100);
+    let b = register("cat14_26_b", 23, 200);
+    let b8 = register("cat14_26_b", 20, 300);
+    for (path, expected, number) in [
+        ("cat14_26_a,cat14_26_b", ["t", "f", "t"], "101"),
+        ("cat14_26_b,cat14_26_a", ["f", "t", "t"], "201"),
+    ] {
+        ok(&mut reader, &format!("SET search_path TO {path}"));
+        let r = check(
+            &mut reader,
+            "SELECT cat14_26_f(1::integer)",
+            &[Some(number)],
+        );
+        description(&r, &[(23, 4)], 0);
+        let r = check(&mut reader, "SELECT cat14_26_f(2::bigint)", &[Some("302")]);
+        description(&r, &[(20, 8)], 0);
+        for (id, visible) in [a, b, b8].into_iter().zip(expected) {
+            check(
+                &mut reader,
+                &format!("SELECT pg_function_is_visible({id}::oid)"),
+                &[Some(visible)],
+            );
+        }
+    }
+    check(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_f(3::integer)",
+        &[Some("103")],
+    );
+    let r = check(
+        &mut reader,
+        &format!("SELECT oid,proname,proargtypes,prorettype FROM pg_proc WHERE oid={b8}"),
+        &[
+            Some(&b8.to_string()),
+            Some("cat14_26_f"),
+            Some("20"),
+            Some("20"),
+        ],
+    );
+    assert_eq!(
+        columns(&r.iter().find(|m| m.0 == b'T').unwrap().1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![26, 19, 30, 26]
+    );
+    api.pg_unregister_extension_function(b).unwrap();
+    ids.borrow_mut().retain(|id| *id != b);
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({b}::oid)"),
+        &[None],
+    );
+    check(&mut reader, "SELECT cat14_26_f(1::integer)", &[Some("101")]);
+    let replacement = register("cat14_26_b", 23, 400);
+    assert_ne!(replacement, b);
+    check(&mut reader, "SELECT cat14_26_f(1::integer)", &[Some("401")]);
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({b}::oid)"),
+        &[None],
+    );
+
+    ok(
+        &mut admin,
+        "REVOKE EXECUTE ON FUNCTION cat14_26_b.cat14_26_f(integer) FROM PUBLIC",
+    );
+    check(
+        &mut reader,
+        "SELECT has_function_privilege('cat14_26_b.cat14_26_f(integer)','EXECUTE')",
+        &[Some("f")],
+    );
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({replacement}::oid)"),
+        &[Some("t")],
+    );
+    denied(&mut reader, "SELECT cat14_26_f(1::integer)", "42501", b'I');
+    check(&mut reader, "SELECT cat14_26_f(2::bigint)", &[Some("302")]);
+    ok(
+        &mut admin,
+        "GRANT EXECUTE ON FUNCTION cat14_26_b.cat14_26_f(integer) TO cat14_26_reader",
+    );
+    check(&mut reader, "SELECT cat14_26_f(1::integer)", &[Some("401")]);
+    check(&mut reader, "SELECT cat14_26_f(NULL::integer)", &[None]);
+    denied(&mut admin, "DROP SCHEMA cat14_26_a", "2BP01", b'I');
+    let native_visibility = api
+        .pg_register_extension_function(
+            "pg_catalog".into(),
+            vec![26],
+            16,
+            "astersql::pg_table_is_visible".into(),
+            astersql_expression::pg_table_visibility_definition(),
+        )
+        .unwrap();
+    ids.borrow_mut().push(native_visibility);
+    let r = check(
+        &mut reader,
+        "SELECT p.oid,pg_catalog.pg_function_is_visible(p.oid) FROM pg_catalog.pg_proc p WHERE p.proname='pg_table_is_visible'",
+        &[Some(&native_visibility.to_string()), Some("t")],
+    );
+    assert_eq!(
+        columns(&r.iter().find(|m| m.0 == b'T').unwrap().1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![26, 16]
+    );
+    ok(&mut admin, "CREATE TABLE public.cat14_26_call(v integer)");
+    ok(&mut admin, "INSERT INTO public.cat14_26_call VALUES(1)");
+    ok(
+        &mut admin,
+        "GRANT SELECT ON public.cat14_26_call TO cat14_26_reader",
+    );
+    check(
+        &mut reader,
+        "SELECT pg_table_is_visible(1259::integer) FROM public.cat14_26_call",
+        &[Some("t")],
+    );
+    ok(&mut admin, "DROP TABLE public.cat14_26_call");
+
+    ok(&mut admin, "CREATE ROLE cat14_26_group NOLOGIN");
+    ok(
+        &mut admin,
+        "GRANT cat14_26_group TO cat14_26_reader WITH INHERIT FALSE, SET TRUE",
+    );
+    for ns in ["cat14_26_a", "cat14_26_b"] {
+        ok(
+            &mut admin,
+            &format!("GRANT USAGE ON SCHEMA {ns} TO cat14_26_group"),
+        );
+    }
+    ok(&mut reader, "SET ROLE cat14_26_group");
+    check(
+        &mut reader,
+        "SELECT session_user,current_user,current_role",
+        &[
+            Some("cat14_26_reader"),
+            Some("cat14_26_group"),
+            Some("cat14_26_group"),
+        ],
+    );
+    denied(&mut reader, "SELECT cat14_26_f(1::integer)", "42501", b'I');
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({replacement}::oid)"),
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "GRANT EXECUTE ON FUNCTION cat14_26_b.cat14_26_f(integer) TO cat14_26_group",
+    );
+    check(&mut reader, "SELECT cat14_26_f(1::integer)", &[Some("401")]);
+    ok(&mut reader, "RESET ROLE");
+    check(
+        &mut reader,
+        "SELECT session_user,current_user",
+        &[Some("cat14_26_reader"), Some("cat14_26_reader")],
+    );
+    // The same Parse observes a new path and ACL snapshot on every new Bind.
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"typed_function_stmt\0SELECT cat14_26_f($1::integer) AS value\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+    let bound_call = |reader: &mut TcpStream,
+                      format: i16,
+                      input: Option<&str>,
+                      expected: Option<i32>,
+                      error: bool| {
+        let mut bind = b"typed_function_portal\0typed_function_stmt\0".to_vec();
+        bind.extend(0i16.to_be_bytes());
+        bind.extend(1i16.to_be_bytes());
+        match input {
+            Some(v) => {
+                bind.extend((v.len() as i32).to_be_bytes());
+                bind.extend(v.as_bytes());
+            }
+            None => bind.extend((-1i32).to_be_bytes()),
+        }
+        bind.extend(1i16.to_be_bytes());
+        bind.extend(format.to_be_bytes());
+        send(reader, b'B', &bind);
+        send(reader, b'D', b"Ptyped_function_portal\0");
+        send(
+            reader,
+            b'E',
+            &[b"typed_function_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(reader, b'S', b"");
+        let r = until_ready(reader);
+        if error {
+            assert!(
+                r.iter()
+                    .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42501\0")),
+                "{r:?}"
+            );
+            assert!(data(&r).is_empty());
+        } else {
+            assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+            description(&r, &[(23, 4)], format);
+            let expected = expected.map(|v| {
+                if format == 1 {
+                    v.to_be_bytes().to_vec()
+                } else {
+                    v.to_string().into_bytes()
+                }
+            });
+            assert_eq!(values(&data(&r)[0]), vec![expected]);
+        }
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        send(reader, b'C', b"Ptyped_function_portal\0");
+        send(reader, b'S', b"");
+        until_ready(reader);
+    };
+    for (path, value) in [
+        ("cat14_26_a,cat14_26_b", 99),
+        ("cat14_26_b,cat14_26_a", 399),
+    ] {
+        ok(&mut reader, &format!("SET search_path TO {path}"));
+        for format in [0i16, 1] {
+            bound_call(&mut reader, format, Some("-1"), Some(value), false);
+            bound_call(&mut reader, format, None, None, false);
+        }
+    }
+    ok(
+        &mut admin,
+        "REVOKE EXECUTE ON FUNCTION cat14_26_b.cat14_26_f(integer) FROM cat14_26_reader",
+    );
+    bound_call(&mut reader, 0, Some("-1"), None, true);
+    ok(
+        &mut admin,
+        "GRANT EXECUTE ON FUNCTION cat14_26_b.cat14_26_f(integer) TO cat14_26_reader",
+    );
+    bound_call(&mut reader, 1, Some("-1"), Some(399), false);
+
+    api.pg_unregister_extension_function(replacement).unwrap();
+    ids.borrow_mut().retain(|id| *id != replacement);
+    bound_call(&mut reader, 0, Some("-1"), Some(99), false);
+    let old_replacement = replacement;
+    let replacement = register("cat14_26_b", 23, 600);
+    assert_ne!(replacement, old_replacement);
+    // Rebind on the changed path before returning to b, invalidating the PG plan.
+    ok(&mut reader, "SET search_path TO cat14_26_a,cat14_26_b");
+    bound_call(&mut reader, 0, Some("-1"), Some(99), false);
+    ok(&mut reader, "SET search_path TO cat14_26_b,cat14_26_a");
+    bound_call(&mut reader, 1, Some("-1"), Some(599), false);
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({old_replacement}::oid)"),
+        &[None],
+    );
+    send(&mut reader, b'C', b"Styped_function_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    // A real second authenticated worker owns its temporary namespace and callbacks.
+    let temporary = driver
+        .open_ctx_with_dialect(
+            500027,
+            0,
+            45,
+            "cat14_26_work",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
+    temporary
+        .authenticate(&AuthRequest {
+            identity: AuthIdentity {
+                username: "cat14_26_reader".into(),
+                hostname: "127.0.0.1".into(),
+                plugin: crate::conn::AUTH_NATIVE_PASSWORD.into(),
+            },
+            auth_data: vec![],
+            salt: vec![],
+            tls_state: None,
+            attributes: Default::default(),
+        })
+        .unwrap();
+    let temporary_closed = std::cell::Cell::new(false);
+    let _temporary = Cleanup(|| {
+        if !temporary_closed.get() {
+            temporary.close().unwrap();
+        }
+    });
+    let cancel = crate::conn::CancellationToken::new();
+    temporary
+        .execute_query(
+            "CREATE TEMPORARY TABLE cat14_26_temp(v integer)",
+            false,
+            &cancel,
+        )
+        .unwrap();
+    let definition = Arc::new(astersql_extension::FunctionDef {
+        Name: "cat14_26_f".into(),
+        EvalTp: astersql_extension::types::EvalType(0),
+        ArgTps: vec![astersql_extension::types::EvalType(0)],
+        EvalIntFunc: Some(Arc::new(|context, row| {
+            assert_eq!(context.User().unwrap().username, "cat14_26_reader");
+            let args = context.EvalArgs(row)?;
+            Ok((args[0].GetInt64() + 500, args[0].IsNull()))
+        })),
+        ..Default::default()
+    });
+    let temp_oid = temporary
+        .pg_register_extension_function(
+            "pg_temp".into(),
+            vec![23],
+            23,
+            "cat14_26::temporary".into(),
+            definition,
+        )
+        .unwrap();
+    temporary
+        .pg_schema_path(
+            vec!["pg_temp".into(), "cat14_26_b".into(), "cat14_26_a".into()],
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let r = temporary
+        .execute_query("SELECT pg_temp.cat14_26_f(1::integer)", false, &cancel)
+        .unwrap();
+    assert_eq!(
+        r[0].rows,
+        vec![vec![crate::conn::Value::Text("501".into())]]
+    );
+    let r = temporary
+        .execute_query("SELECT cat14_26_f(1::integer)", false, &cancel)
+        .unwrap();
+    assert_eq!(
+        r[0].rows,
+        vec![vec![crate::conn::Value::Text("601".into())]]
+    );
+    let session =
+        crate::pg_session::PgSession::from_startup(Some("pg_temp,cat14_26_b,cat14_26_a")).unwrap();
+    let r = crate::pg_catalog::CatalogQuery::parse_session(
+        &format!("SELECT pg_function_is_visible({temp_oid}::oid)"),
+        temporary.as_ref(),
+        &session,
+    )
+    .unwrap()
+    .unwrap()
+    .execute(temporary.as_ref(), &cancel)
+    .unwrap();
+    assert_eq!(r.rows, vec![vec![crate::conn::Value::Text("f".into())]]);
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({temp_oid}::oid)"),
+        &[None],
+    );
+    temporary
+        .pg_unregister_extension_function(temp_oid)
+        .unwrap();
+    let r = temporary
+        .execute_query("SELECT cat14_26_f(1::integer)", false, &cancel)
+        .unwrap();
+    assert_eq!(
+        r[0].rows,
+        vec![vec![crate::conn::Value::Text("601".into())]]
+    );
+
+    // Dynamic callback privileges use the real shared checker, independently of PG EXECUTE.
+    let dynamic_roles = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+    let observed_roles = dynamic_roles.clone();
+    let dynamic_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = dynamic_calls.clone();
+    let dynamic = Arc::new(astersql_extension::FunctionDef {
+        Name: "cat14_26_dynamic".into(),
+        EvalTp: astersql_extension::types::EvalType(0),
+        ArgTps: vec![],
+        EvalIntFunc: Some(Arc::new(move |context, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            observed_roles.lock().unwrap().push(
+                context
+                    .ActiveRoles()
+                    .iter()
+                    .map(|r| r.username.clone())
+                    .collect(),
+            );
+            let user = context.User().ok_or_else(|| {
+                astersql_extension::ExtensionError::new("authenticated identity unavailable")
+            })?;
+            Ok((user.username.len() as i64, false))
+        })),
+        RequireDynamicPrivileges: Some(Arc::new(|_| vec!["RESTRICTED_TABLES_ADMIN".into()])),
+        ..Default::default()
+    });
+    let id = api
+        .pg_register_extension_function(
+            "cat14_26_a".into(),
+            vec![],
+            23,
+            "cat14_26::dynamic".into(),
+            dynamic,
+        )
+        .unwrap();
+    ids.borrow_mut().push(id);
+    denied(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        "42501",
+        b'I',
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    native
+        .execute("GRANT RESTRICTED_TABLES_ADMIN ON *.* TO 'cat14_26_reader'@'%'")
+        .unwrap();
+    check(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        &[Some("15")],
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    ok(&mut reader, "SET ROLE cat14_26_group");
+    denied(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        "42501",
+        b'I',
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    native
+        .execute("GRANT RESTRICTED_TABLES_ADMIN ON *.* TO 'cat14_26_group'@'%'")
+        .unwrap();
+    check(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        &[Some("15")],
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        *dynamic_roles.lock().unwrap(),
+        vec![vec![], vec!["cat14_26_group".to_string()]]
+    );
+
+    ok(&mut reader, "RESET ROLE");
+    native
+        .execute("REVOKE RESTRICTED_TABLES_ADMIN ON *.* FROM 'cat14_26_reader'@'%'")
+        .unwrap();
+    denied(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        "42501",
+        b'I',
+    );
+    assert_eq!(
+        dynamic_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "INHERIT FALSE must not borrow group grants"
+    );
+    ok(&mut reader, "SET ROLE cat14_26_group");
+    check(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        &[Some("15")],
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    native
+        .execute("REVOKE RESTRICTED_TABLES_ADMIN ON *.* FROM 'cat14_26_group'@'%'")
+        .unwrap();
+    denied(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        "42501",
+        b'I',
+    );
+    ok(&mut reader, "RESET ROLE");
+    native
+        .execute("GRANT RESTRICTED_TABLES_ADMIN ON *.* TO 'cat14_26_reader'@'%'")
+        .unwrap();
+    check(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        &[Some("15")],
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    native
+        .execute("REVOKE RESTRICTED_TABLES_ADMIN ON *.* FROM 'cat14_26_reader'@'%'")
+        .unwrap();
+    denied(
+        &mut reader,
+        "SELECT cat14_26_a.cat14_26_dynamic()",
+        "42501",
+        b'I',
+    );
+    assert_eq!(dynamic_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+
+    check(&mut reader, "SELECT 1", &[Some("1")]);
+    let definition = Arc::new(astersql_extension::FunctionDef {
+        Name: "cat14_26_f".into(),
+        EvalTp: astersql_extension::types::EvalType(0),
+        ArgTps: vec![astersql_extension::types::EvalType(0)],
+        EvalIntFunc: Some(Arc::new(|context, row| {
+            let args = context.EvalArgs(row)?;
+            Ok((args[0].GetInt64() + 500, args[0].IsNull()))
+        })),
+        ..Default::default()
+    });
+    let lifetime = Arc::downgrade(&definition);
+    let rebuilt = temporary
+        .pg_register_extension_function(
+            "pg_temp".into(),
+            vec![23],
+            23,
+            "cat14_26::temporary".into(),
+            definition,
+        )
+        .unwrap();
+    assert_ne!(rebuilt, temp_oid);
+    let r = temporary
+        .execute_query("SELECT pg_temp.cat14_26_f(1::integer)", false, &cancel)
+        .unwrap();
+    assert_eq!(
+        r[0].rows,
+        vec![vec![crate::conn::Value::Text("501".into())]]
+    );
+    assert!(lifetime.upgrade().is_some());
+    temporary.close().unwrap();
+    temporary_closed.set(true);
+    assert!(
+        lifetime.upgrade().is_none(),
+        "worker close must remove the actual temporary factory"
+    );
+    check(
+        &mut reader,
+        &format!("SELECT pg_function_is_visible({rebuilt}::oid)"),
+        &[None],
+    );
+    eprintln!(
+        "cat14_26 identities: a={a} b_old={b} b8={b8} replacement_old={old_replacement} replacement={replacement} visibility={native_visibility} temp_old={temp_oid} temp_new={rebuilt}"
+    );
+    eprintln!(
+        "cat14_26 typed: namespaces=2 signatures=3 real_callbacks=1 target_acl_independent=1 actual_visibility_factory=1 temp_excluded=1 lifecycle=1 ordinary_binds=13 effective_role_restore=1 dynamic_grant_revoke=1 temp_worker_close=1"
+    );
     for s in [&mut reader, &mut admin] {
         send(s, b'X', b"");
     }
     eprintln!(
-        "cat14_26: nonroot_connections=1 binds=24 registered_function=1 path_refresh=1 execute_independent=1 unsupported_ddl=2 recovery=1 cleanup=1"
+        "cat14_26: nonroot_authenticated_workers=2 visibility_binds=24 registered_function=1 path_refresh=1 execute_independent=1 unsupported_ddl=2 recovery=1 cleanup=1"
     );
 }

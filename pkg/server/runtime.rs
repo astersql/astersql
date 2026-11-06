@@ -718,6 +718,7 @@ impl SessionDriver for ConcreteSessionDriver {
         _tls_state: Option<&TlsState>,
         dialect: astersql_parser_ast::SqlDialect,
     ) -> ConnResult<Arc<dyn TiDBContext>> {
+        astersql_expression::install_extension_function_hooks();
         let (request_tx, request_rx) = mpsc::channel();
         let request_tx = Arc::new(request_tx);
         let (init_tx, init_rx) = mpsc::sync_channel(1);
@@ -823,6 +824,22 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    SplitRegisteredSQL {
+        sql: String,
+        response: mpsc::SyncSender<ConnResult<Vec<String>>>,
+    },
+    PgRegisterExtension {
+        schema: String,
+        arguments: Vec<u32>,
+        result: u32,
+        implementation: String,
+        definition: Arc<astersql_extension::FunctionDef>,
+        response: mpsc::SyncSender<ConnResult<i64>>,
+    },
+    PgUnregisterExtension {
+        oid: i64,
+        response: mpsc::SyncSender<ConnResult<()>>,
+    },
     PgSessionIdentity {
         response: mpsc::SyncSender<ConnResult<(String, String)>>,
     },
@@ -1143,6 +1160,40 @@ fn run_session_worker(
                         session.pg_standard_table_visible(&database, &table)
                     })
                     .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::SplitRegisteredSQL { sql, response } => {
+                let _ = response.send(
+                    session
+                        .split_sql_with_pg_extensions(&sql)
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::PgRegisterExtension {
+                schema,
+                arguments,
+                result,
+                implementation,
+                definition,
+                response,
+            } => {
+                let _ = response.send(
+                    session
+                        .pg_register_extension_function(
+                            &schema,
+                            arguments,
+                            result,
+                            &implementation,
+                            definition,
+                        )
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::PgUnregisterExtension { oid, response } => {
+                let _ = response.send(
+                    session
+                        .pg_unregister_extension_function(oid)
+                        .map_err(session_protocol_error),
                 );
             }
             SessionRequest::PgNamespaceFacts { response } => {
@@ -1987,6 +2038,28 @@ pub(crate) fn protocol_value(value: String) -> Value {
 }
 
 impl ConcreteTiDBContext {
+    fn split_registered_sql(&self, sql: &str) -> ConnResult<Vec<String>> {
+        match SplitSQLStatementsWithDialect(sql, self.dialect) {
+            Ok(statements) => Ok(statements),
+            Err(error)
+                if self.dialect == astersql_parser_ast::SqlDialect::PostgreSQL
+                    && error
+                        .pg_function_error()
+                        .is_some_and(|e| e.state == "42883")
+                    || self.dialect == astersql_parser_ast::SqlDialect::PostgreSQL
+                        && error.pg_array_error().is_some_and(|e| e.state == "42883") =>
+            {
+                let (tx, rx) = mpsc::sync_channel(1);
+                self.send_request(SessionRequest::SplitRegisteredSQL {
+                    sql: sql.into(),
+                    response: tx,
+                })?;
+                rx.recv().map_err(packet_error)?
+            }
+            Err(error) => Err(session_protocol_error(error)),
+        }
+    }
+
     fn send_request(&self, request: SessionRequest) -> ConnResult<()> {
         self.requests
             .lock()
@@ -2244,6 +2317,30 @@ impl TiDBContext for ConcreteTiDBContext {
         })?;
         rx.recv().map_err(packet_error)?
     }
+    fn pg_register_extension_function(
+        &self,
+        schema: String,
+        arguments: Vec<u32>,
+        result: u32,
+        implementation: String,
+        definition: Arc<astersql_extension::FunctionDef>,
+    ) -> ConnResult<i64> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgRegisterExtension {
+            schema,
+            arguments,
+            result,
+            implementation,
+            definition,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_unregister_extension_function(&self, oid: i64) -> ConnResult<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgUnregisterExtension { oid, response: tx })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_namespace_facts(
         &self,
     ) -> Option<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>> {
@@ -2440,8 +2537,7 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements =
-            SplitSQLStatementsWithDialect(sql, self.dialect).map_err(session_protocol_error)?;
+        let statements = self.split_registered_sql(sql)?;
         if !allow_multi_statements && statements.len() > 1 {
             return Err(ConnError::Session(
                 "multi-statement execution is disabled".to_owned(),
@@ -2525,8 +2621,7 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements =
-            SplitSQLStatementsWithDialect(sql, self.dialect).map_err(session_protocol_error)?;
+        let statements = self.split_registered_sql(sql)?;
         self.in_multi_statements
             .store(statements.len() > 1, Ordering::Release);
         if !allow_multi_statements && statements.len() > 1 {

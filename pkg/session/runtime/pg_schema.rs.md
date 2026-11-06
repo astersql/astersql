@@ -39,3 +39,7 @@ TablePrivileges.columns将列ACL接入原SchemaUtility worker；标准column/tab
 任务22：同一PgStandardSchema记录新增type_acl_initialized及按数据库ID/类型OID保存的type_acl_overrides。新建标准记录显式初始化默认类型USAGE来源；serde历史缺字段为false，不在重连或读取时回填。owner事实与ACL独立。
 
 任务23：同一 PgStandardSchema KV 记录新增函数 ACL 初始化来源标志、初始及数据库覆盖映射，只有新初始化设置默认来源；历史缺字段不回填。命名空间事实应用当前库函数 owner/ACL 覆盖。FunctionPrivileges 分派到共享 pg_function，ALTER FUNCTION OWNER 同事务改写显式 ACL，保持身份和库隔离。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+标准记录新增serde缺省扩展声明，旧记录不伪造对象；查询快照仅合并本库和本连接临时对象。原schema DROP事务拒绝真实函数依赖，rename沿稳定namespace ID读取当前名。

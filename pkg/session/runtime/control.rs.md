@@ -294,3 +294,7 @@ execute_grant 先解析永久元数据并复用 executor 白名单校验；规�
 
 
 任务10的INHERIT消费者位于`pg_database.rs::pg_inherited_privileges/pg_declared_inherited_roles`及`pg_schema.rs`。它们在查询局部的原生权限视图过滤显式INHERIT FALSE，并把显式INHERIT TRUE成员闭包加入namespace有效身份；不修改原生会话活动角色，也不把未知legacy选项变成PG默认值。标准view/table/column目录可见性继续复用现有owner及RequestVerification流程，避免新增的PG边绕过其INHERIT限制。
+
+## 2026-11-07 正式函数解析接线
+
+协议Parse/Describe沿原解析器并提供当前数据库/连接正式登记名，支持真实零参数扩展，保留未知函数拒绝和不执行回调的元数据分析。

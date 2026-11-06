@@ -1611,7 +1611,7 @@ pub(super) fn negative_unsigned_equality_parameter(
     {
         return Ok(false);
     }
-    let statements = parse_in_dialect(sql, session.sql_dialect())?;
+    let statements = session.parse_with_pg_extensions(sql)?;
     let Some(select) = statements
         .first()
         .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
@@ -1747,7 +1747,7 @@ impl ConcreteSession {
     pub fn OptimizeRootPlanIDForTest(&self, sql: &str) -> SessionResult<i32> {
         let current_database = self.current_database();
         let info_schema = self.domain.info_schema();
-        let mut statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let mut statements = self.parse_with_pg_extensions(sql)?;
         if statements.len() != 1 || !statements[0].as_any().is::<ast::SelectStmt>() {
             return Err(SessionError::new(
                 "plan-ID observation requires exactly one SELECT",
@@ -2158,7 +2158,7 @@ impl ConcreteSession {
         sql: &str,
         info_schema: Arc<dyn astersql_infoschema::infoschema::InfoSchema>,
     ) -> SessionResult<u64> {
-        let mut statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let mut statements = self.parse_with_pg_extensions(sql)?;
         if statements.len() != 1 || !statements[0].as_any().is::<ast::SelectStmt>() {
             return Err(SessionError::new(
                 "prepared planned KV execution requires exactly one SELECT",
@@ -3122,7 +3122,7 @@ impl ConcreteSession {
                 (input.clone(), true)
             }
         }
-        let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let statements = self.parse_with_pg_extensions(sql)?;
         let (_, array_oids) = super::pg_array::analyze(sql, &statements, Some(supplied))?;
         let (_, record_oids) =
             super::pg_record::analyze_in_session(self, &statements, Some(supplied))?;
@@ -3286,8 +3286,10 @@ impl ConcreteSession {
 pub(super) fn validate_function_visibility(
     statements: &[Box<dyn ast::Node>],
     dialect: ast::SqlDialect,
+    registered: &[String],
 ) -> SessionResult<()> {
     struct Visibility {
+        registered: HashSet<String>,
         dialect: ast::SqlDialect,
         hidden: Option<String>,
         validation_error: Option<SessionError>,
@@ -3383,6 +3385,7 @@ pub(super) fn validate_function_visibility(
                 // Session-owned PostgreSQL kernels remain outside the MySQL table.
                 let unknown_zero_argument = self.dialect == ast::SqlDialect::PostgreSQL
                     && Args.is_empty()
+                    && !self.registered.contains(&FnName.O)
                     && !astersql_expression::formal_registry::funcs.contains_key(&FnName.L)
                     && !astersql_expression::formal_registry::extensionFuncs
                         .contains_key(&FnName.L)
@@ -3453,6 +3456,7 @@ pub(super) fn validate_function_visibility(
         }
     }
     let mut visitor = Visibility {
+        registered: registered.iter().cloned().collect(),
         dialect,
         hidden: None,
         validation_error: None,

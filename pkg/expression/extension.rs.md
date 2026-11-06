@@ -122,3 +122,7 @@ Rust 独立测试目前直接覆盖空定义、缺回调、内建冲突、成功
 若补齐生产安装接线，应在明确的 crate/进程初始化位置调用并暴露 `extension_kernel::init`，添加独立集成测试证明 `extension::Setup` 能从启动路径到达 `extensionFuncs`，而不只是直接在 crate 内测试私有函数。还应验证 teardown/Reset 的删除回调、部分注册回滚和再次 setup 行为。
 
 主要兼容风险是 Go/Rust 初始化时机差异、精确删除键遗留、权限错误消息差异、可选参数与 cast 类型漂移、Arc 指针相等语义和扩展回调错误类型被字符串化。性能风险集中在每次求值的权限/会话属性读取、参数逐项 Eval 与扩展回调自身；扩展签名明确非向量化且禁用计划缓存，不能在没有行为证明时放宽。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+新增PgExtensionDeclaration与existing extensionFuncs typed登记/卸载/构建接口，复用原extensionFuncClass/getFunction和真实回调；声明参数OID与结果OID受检，保留int4/int8身份。PG回调要求SessionVars、权限和CurrentUser真实属性；后者按当前Execute快照读取，不原地修改共享SessionVars；旧Go扩展仍消费原属性语义。pg_table_visibility_definition是真实语句快照工厂。

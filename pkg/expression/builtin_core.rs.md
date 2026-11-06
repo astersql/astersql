@@ -89,3 +89,7 @@ Rust 将这些接口合并为一个 trait，并增加 `as_any`、`getArgsMut`、
 若新增的核心函数进入 `crate::funcs`，它会自动进入快照白名单；若属于像 Cast/GetVar 一样由构造器特殊处理且不在注册表中，必须审查是否将其加入 `is_core_cache_snapshot_builtin` 的显式列表，并确认 `NewFunctionBase` 能规范重建。同步扩展 `cache_snapshot_test.rs::every_core_snapshot_builtin_has_a_stable_id` 或增加拒绝/往返用例。扩展函数不要加入核心快照白名单，除非同时设计稳定身份、无运行时捕获状态的重建协议。
 
 修改默认列式适配器时，应为所有受影响类型补充独立回归测试，至少覆盖空 Chunk、普通值、NULL、首行/中途错误、结果列预存内容和输出顺序。修改 `isChildrenVectorized` 或共享判定时，还要验证参数重写后的结果与跨会话隔离，避免引入 Go `sync.Once` 式缓存却未处理 `getArgsMut()` 带来的失效问题。
+
+## 2026-11-07 目录任务26局部接线
+
+builtinFunc的可选PostgreSQLFunctionIdentity给正式PG扩展返回稳定数据库/对象OID，默认None保留原Go/MySQL语义；表达式比较与哈希可区分不同namespace内同名同参对象。

@@ -3206,8 +3206,37 @@ impl CatalogQuery {
                         owners
                     })
                     .unwrap_or_default();
-                function_rows()
-                    .into_iter()
+                let mut rows = function_rows();
+                let namespaces = execution.type_namespaces()?;
+                for function in astersql_session::runtime::pg_extension_declarations(&namespaces) {
+                    if rows.len() >= MAX_CATALOG_ROWS {
+                        return Err(catalog_row_limit());
+                    }
+                    let mut row = function_rows().remove(0);
+                    row[0] = Value::Signed(function.oid);
+                    row[1] = Value::Text(function.name.clone());
+                    row[2] = Value::Signed(if function.namespace_name == "pg_catalog" {
+                        11
+                    } else {
+                        i64::from(crate::pg_oid::namespace_oid(function.namespace)?)
+                    });
+                    row[5] = Value::Text(function.implementation);
+                    row[6] = Value::Null;
+                    row[8] = Value::Text(
+                        function
+                            .arguments
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    );
+                    row[12] = Value::Signed(function.result.into());
+                    row[14] = Value::Text("v".into());
+                    row[19] = Value::Signed(function.owner);
+                    row[25] = Value::Signed(function.arguments.len() as i64);
+                    rows.push(row);
+                }
+                rows.into_iter()
                     .map(|mut row| {
                         if let Value::Signed(oid) = row[0] {
                             if let Some(owner) = owners.get(&oid) {
@@ -4579,6 +4608,39 @@ impl CatalogQuery {
                 }
                 name
                 @ ("pg_table_is_visible" | "pg_type_is_visible" | "pg_function_is_visible") => {
+                    if let Some(function) = astersql_session::runtime::pg_extension_declarations(
+                        &execution.type_namespaces()?,
+                    )
+                    .into_iter()
+                    .find(|f| {
+                        f.namespace_name == "pg_catalog" && f.name == name && f.arguments == [26]
+                    }) {
+                        let namespaces = execution.type_namespaces()?;
+                        let roles = execution.role_facts()?;
+                        let functions =
+                            astersql_session::runtime::pg_function_facts(&namespaces, &roles);
+                        let allowed = astersql_session::runtime::pg_has_function_privilege(
+                            &functions,
+                            &self.relation_path,
+                            &namespaces,
+                            &roles,
+                            &execution.session_identity()?.1,
+                            &[Some(function.oid.to_string()), Some("EXECUTE".into())],
+                            &[true, false],
+                        )
+                        .map_err(crate::runtime::session_protocol_error)?;
+                        if allowed != Some(true) {
+                            return Err(ConnError::PgFunction(
+                                astersql_session::runtime::PgFunctionError {
+                                    state: "42501",
+                                    message: "permission denied for function".into(),
+                                    detail: None,
+                                    hint: None,
+                                    position: None,
+                                },
+                            ));
+                        }
+                    }
                     match evaluate(&args[0])? {
                         Value::Null => Value::Null,
                         Value::Signed(oid) => {

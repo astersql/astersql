@@ -30,6 +30,11 @@ use crate::{
 /// 内置函数签名的公共接口（对齐 Go `builtinFunc`）。
 /// 各具体函数只实现其返回类型对应的 `eval*`/`vecEval*`，其余默认返回未实现错误。
 pub trait builtinFunc: CollationInfo {
+    /// Stable database/object identity for a formally registered PG function.
+    fn PostgreSQLFunctionIdentity(&self) -> Option<(i64, i64)> {
+        None
+    }
+
     /// 向下转型为具体签名类型。
     fn as_any(&self) -> &dyn Any;
 

@@ -425,3 +425,7 @@ has_column_privilege/has_any_column_privilege复用statement-owned PgDatabasePri
 任务22：has_type_privilege通过正式表达式工厂，并将当前类型、角色及namespace事实注入既有PgDatabasePrivilegeEvaluator；支持有原生FROM的普通SQL与目录路径一致的授权。
 
 任务23：普通 FROM 表达式中的 has_function_privilege 沿正式 typed 工厂注入当前会话共享 pg_function_facts 消费者，复用角色/有效路径/namespace事实，保持严格NULL和当前授权更新。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+PG普通SELECT及描述通过现有relational递归处理已登记函数，输入OID走原select_pg_declared_candidate，直接选原工厂，保留结果OID/bool标志；每个Execute重新消费路径/权限。

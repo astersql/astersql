@@ -133,3 +133,7 @@ TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受�
 ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由共享层拒绝0LP01，避免修改元素权限之外的数组自身ACL。
 
 任务23：现有对象授权解析器新增 ON FUNCTION，完整限定/未限定函数名后要求唯一 oid 或 pg_catalog.oid 输入；不同重载返回42883。GRANT/REVOKE、PUBLIC、WITH GRANT OPTION、RESTRICT/CASCADE 经 FunctionPrivileges 交原共享 worker，保留 notice 与命令标签。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+函数GRANT/REVOKE携带完整有界输入OID序列（oid/int4/int8/text），共享ACL消费者按真实对象签名匹配，不能误授另一重载。

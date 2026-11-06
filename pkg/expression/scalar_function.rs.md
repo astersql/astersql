@@ -133,3 +133,7 @@ PG无约束numeric CAST的通用Eval保留经验证的十进制载荷与numeric 
 ### PG numeric 特殊值（任务10）
 
 PG numeric CAST 的规范路径适用于无约束和有 typmod 的目标：复用 PgNumeric 解析、特殊值标签和 apply_modifier；NaN 可进入受限类型，无穷返回22003。正式 Eval 保留规范文本载荷，不经 MyDecimal 的有限值 API，MySQL 分支保持原状。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+NewFunctionFromClass构造由真实对象解析选中的同一class，保留SQL名称和精确返回类型；扩展原有不可折叠及跳过缓存策略继续生效，不造别名。

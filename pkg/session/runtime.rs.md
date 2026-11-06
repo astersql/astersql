@@ -180,3 +180,7 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 任务22：pg_type模块对外导出共享类型ACL事实、USAGE解析与has_type_privilege消费者，沿原ConcreteSession/Domain/KV边界。
 
 任务23：注册 pg_function 模块并导出函数 ACL、事实、权限解析与查询消费者，供 server/runtime 共用。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+导出共享正式扩展声明与原系统目录OID清单，不新增第二套目录执行器或权限系统。

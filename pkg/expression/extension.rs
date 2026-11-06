@@ -74,6 +74,7 @@ struct extensionFuncClass {
     privilege_reader: PrivilegeCheckerPropReader,
     definition: Arc<extension::FunctionDef>,
     flen: isize,
+    pg: Option<PgExtensionDeclaration>,
 }
 
 /// 按求值类型构造对应 MySQL FieldType。
@@ -130,6 +131,7 @@ fn newExtensionFuncClass(
         privilege_reader: PrivilegeCheckerPropReader,
         definition,
         flen,
+        pg: None,
     })
 }
 
@@ -144,7 +146,13 @@ impl functionClass for extensionFuncClass {
             .privilege_reader
             .get_privilege_checker(ctx.GetEvalCtx())
             .map_err(|error| errors::New(error.to_string()))?;
-        checkPrivileges(checker.as_ref(), &self.definition)?;
+        checkPrivileges(checker.as_ref(), &self.definition).map_err(|e| {
+            if self.pg.is_some() {
+                PgExtensionError::error("42501", e.to_string())
+            } else {
+                e
+            }
+        })?;
         self.base.verifyArgs(&args)?;
 
         let argument_refs: Vec<&dyn Expression> =
@@ -155,7 +163,12 @@ impl functionClass for extensionFuncClass {
             self.definition.EvalTp,
             &argument_refs,
         )?;
-        let mut return_type = fieldTypeForEval(self.definition.EvalTp);
+        let mut return_type = self
+            .pg
+            .as_ref()
+            .map(|p| pg_extension_type(p.result))
+            .transpose()?
+            .unwrap_or_else(|| fieldTypeForEval(self.definition.EvalTp));
         return_type.SetCharset(collation.Charset.clone());
         return_type.SetCollate(collation.Collation.clone());
         return_type.SetFlen(self.flen);
@@ -163,8 +176,15 @@ impl functionClass for extensionFuncClass {
         let cast_args = args
             .into_iter()
             .zip(&self.definition.ArgTps)
-            .map(|(argument, eval_type)| {
-                let mut target = fieldTypeForEval(*eval_type);
+            .enumerate()
+            .map(|(index, (argument, eval_type))| {
+                let mut target = self
+                    .pg
+                    .as_ref()
+                    .map(|p| {
+                        pg_extension_type(p.arguments[index]).expect("validated PG extension type")
+                    })
+                    .unwrap_or_else(|| fieldTypeForEval(*eval_type));
                 target.SetCharset(collation.Charset.clone());
                 target.SetCollate(collation.Collation.clone());
                 BuildCastFunction(ctx, &argument, &target)
@@ -178,6 +198,8 @@ impl functionClass for extensionFuncClass {
             session_vars_reader: SessionVarsPropReader,
             privilege_reader: PrivilegeCheckerPropReader,
             definition: self.definition.clone(),
+            require_identity: self.pg.is_some(),
+            pg_identity: self.pg.as_ref().map(|p| (p.database, p.oid)),
         }))
     }
 
@@ -216,6 +238,8 @@ fn checkPrivileges(
 
 /// 扩展函数运行时签名：求值前再检权限并组装 `extensionFnContext`。
 struct extensionFuncSig {
+    require_identity: bool,
+    pg_identity: Option<(i64, i64)>,
     base: RegistryBuiltinBase,
     session_vars_reader: SessionVarsPropReader,
     privilege_reader: PrivilegeCheckerPropReader,
@@ -232,14 +256,39 @@ impl extensionFuncSig {
             .privilege_reader
             .get_privilege_checker(ctx)
             .map_err(|error| errors::New(error.to_string()))?;
-        checkPrivileges(checker.as_ref(), &self.definition)?;
+        checkPrivileges(checker.as_ref(), &self.definition).map_err(|e| {
+            if self.require_identity {
+                PgExtensionError::error("42501", e.to_string())
+            } else {
+                e
+            }
+        })?;
         let vars = self
             .session_vars_reader
             .get_session_vars(ctx)
             .map_err(|error| errors::New(error.to_string()))?;
+        let (user, roles) = if self.require_identity {
+            (
+                Some(
+                    expropt::CurrentUserPropReader
+                        .current_user(ctx)
+                        .map_err(|e| errors::New(e.to_string()))?,
+                ),
+                expropt::CurrentUserPropReader
+                    .active_roles(ctx)
+                    .map_err(|e| errors::New(e.to_string()))?,
+            )
+        } else {
+            (
+                vars.User.clone().map(Arc::new),
+                vars.ActiveRoles.iter().cloned().map(Arc::new).collect(),
+            )
+        };
         Ok(extensionFnContext {
             ctx,
             vars,
+            user,
+            roles,
             signature: self,
         })
     }
@@ -276,6 +325,10 @@ impl CollationInfo for extensionFuncSig {
 }
 
 impl builtinFunc for extensionFuncSig {
+    fn PostgreSQLFunctionIdentity(&self) -> Option<(i64, i64)> {
+        self.pg_identity
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -283,7 +336,14 @@ impl builtinFunc for extensionFuncSig {
     fn RequiredOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
         OptionalEvalPropKeySet(
             self.session_vars_reader.required_optional_eval_props().0
-                | self.privilege_reader.required_optional_eval_props().0,
+                | self.privilege_reader.required_optional_eval_props().0
+                | if self.require_identity {
+                    expropt::CurrentUserPropReader
+                        .required_optional_eval_props()
+                        .0
+                } else {
+                    0
+                },
         )
     }
 
@@ -329,7 +389,9 @@ impl builtinFunc for extensionFuncSig {
 
     fn equal(&self, ctx: &dyn EvalContext, other: &dyn builtinFunc) -> bool {
         other.as_any().downcast_ref::<Self>().is_some_and(|other| {
-            Arc::ptr_eq(&self.definition, &other.definition) && self.base.equal(ctx, &other.base)
+            self.pg_identity == other.pg_identity
+                && Arc::ptr_eq(&self.definition, &other.definition)
+                && self.base.equal(ctx, &other.base)
         })
     }
 
@@ -359,6 +421,8 @@ impl builtinFunc for extensionFuncSig {
             session_vars_reader: SessionVarsPropReader,
             privilege_reader: PrivilegeCheckerPropReader,
             definition: self.definition.clone(),
+            require_identity: self.require_identity,
+            pg_identity: self.pg_identity,
         })
     }
 
@@ -373,6 +437,8 @@ impl builtinFunc for extensionFuncSig {
 
 /// 传给扩展 Eval 回调的上下文：会话用户/角色、当前库、连接信息与参数求值。
 struct extensionFnContext<'a> {
+    user: Option<Arc<extension::auth_identity::UserIdentity>>,
+    roles: Vec<Arc<extension::auth_identity::RoleIdentity>>,
     ctx: &'a dyn EvalContext,
     vars: &'a expropt::variable::SessionVars,
     signature: &'a extensionFuncSig,
@@ -381,12 +447,24 @@ struct extensionFnContext<'a> {
 impl extension::ExtensionContext for extensionFnContext<'_> {}
 
 impl extension::FunctionContext for extensionFnContext<'_> {
+    fn PostgreSQLTableIsVisible(
+        &self,
+        oid: i64,
+    ) -> Result<Option<bool>, extension::ExtensionError> {
+        self.ctx
+            .PgTableVisibilityEvaluator()
+            .map(|evaluate| evaluate(oid))
+            .ok_or_else(|| {
+                extension::ExtensionError::new("PostgreSQL visibility context is unavailable")
+            })
+    }
+
     fn User(&self) -> Option<&extension::auth_identity::UserIdentity> {
-        self.vars.User.as_ref()
+        self.user.as_deref()
     }
 
     fn ActiveRoles(&self) -> Vec<&extension::auth_identity::RoleIdentity> {
-        self.vars.ActiveRoles.iter().collect()
+        self.roles.iter().map(Arc::as_ref).collect()
     }
 
     fn CurrentDB(&self) -> String {
@@ -421,4 +499,172 @@ pub fn init() {
             Arc::new(removeExtensionFunc),
         );
     });
+}
+
+/// A declaration belongs to a real registered callback object. Durable IDs are allocated by the metadata owner.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PgExtensionDeclaration {
+    pub oid: i64,
+    pub database: i64,
+    pub namespace: i64,
+    pub namespace_name: String,
+    pub name: String,
+    pub arguments: Vec<u32>,
+    pub result: u32,
+    pub owner: i64,
+    pub implementation: String,
+    pub temporary: bool,
+}
+pub fn pg_extension_type(oid: u32) -> Result<types::FieldType, Error> {
+    let mut field = *types::NewFieldType(match oid {
+        16 => mysql::TypeTiny,
+        26 => mysql::TypeLonglong,
+        23 => mysql::TypeLong,
+        20 => mysql::TypeLonglong,
+        25 => mysql::TypeVarString,
+        _ => return Err(errors::New("unsupported PG extension type")),
+    });
+    if oid == 16 {
+        field.AddFlag(mysql::IsBooleanFlag);
+    }
+    Ok(field)
+}
+pub fn validate_pg_extension(
+    declaration: &PgExtensionDeclaration,
+    definition: Arc<extension::FunctionDef>,
+) -> Result<Arc<dyn functionClass>, Error> {
+    definition
+        .Validate()
+        .map_err(|e| errors::New(e.to_string()))?;
+    if definition.Name != declaration.name
+        || definition.OptionalArgsLen != 0
+        || definition.ArgTps.len() != declaration.arguments.len()
+    {
+        return Err(errors::New(
+            "extension declaration does not match its implementation",
+        ));
+    }
+    for (oid, eval) in declaration.arguments.iter().zip(&definition.ArgTps) {
+        if pg_extension_type(*oid)?.EvalType() != *eval {
+            return Err(errors::New("extension argument type mismatch"));
+        }
+    }
+    if pg_extension_type(declaration.result)?.EvalType() != definition.EvalTp {
+        return Err(errors::New("extension result type mismatch"));
+    }
+    let mut class = newExtensionFuncClass(definition).map_err(|e| errors::New(e.to_string()))?;
+    class.pg = Some(declaration.clone());
+    Ok(Arc::new(class))
+}
+pub fn register_pg_extension(
+    scope: usize,
+    declaration: PgExtensionDeclaration,
+    definition: Arc<extension::FunctionDef>,
+) -> Result<(), Error> {
+    init();
+    let class = validate_pg_extension(&declaration, definition)?;
+    let mut entries = extensionFuncs
+        .pg_entries
+        .write()
+        .map_err(|_| errors::New("extension registry poisoned"))?;
+    if let Some((old, _)) = entries.get(&(scope, declaration.oid)) {
+        if old != &declaration {
+            return Err(errors::New("extension object identity conflict"));
+        }
+    }
+    entries.insert((scope, declaration.oid), (declaration, class));
+    Ok(())
+}
+pub fn remove_pg_extension(scope: usize, oid: i64) {
+    extensionFuncs
+        .pg_entries
+        .write()
+        .expect("extension registry poisoned")
+        .remove(&(scope, oid));
+}
+pub fn build_pg_extension(
+    scope: usize,
+    declaration: &PgExtensionDeclaration,
+    ctx: &dyn BuildContext,
+    args: Vec<ExprBox>,
+) -> Result<ExprBox, Error> {
+    if ctx.GetEvalCtx().SQLDialect() != crate::ast::SqlDialect::PostgreSQL {
+        return Err(PgExtensionError::error(
+            "0A000",
+            "PG extension construction requires PostgreSQL dialect",
+        ));
+    }
+    let entry = extensionFuncs
+        .pg_entries
+        .read()
+        .map_err(|_| errors::New("extension registry poisoned"))?
+        .get(&(scope, declaration.oid))
+        .cloned()
+        .ok_or_else(|| {
+            PgExtensionError::error("0A000", "PG extension implementation is not linked")
+        })?;
+    let mut registered = entry.0.clone();
+    registered.namespace_name = declaration.namespace_name.clone();
+    if registered != *declaration {
+        return Err(PgExtensionError::error(
+            "0A000",
+            "PG extension object generation changed",
+        ));
+    }
+    crate::NewFunctionFromClass(ctx, &declaration.name, entry.1.as_ref(), args)
+}
+
+/// A real factory backed by statement-owned relation identities, not a catalog-only declaration.
+pub fn pg_table_visibility_definition() -> Arc<extension::FunctionDef> {
+    Arc::new(extension::FunctionDef {
+        Name: "pg_table_is_visible".into(),
+        EvalTp: types::ETInt,
+        ArgTps: vec![types::ETInt],
+        EvalIntFunc: Some(Arc::new(|context, row| {
+            let arguments = context.EvalArgs(row)?;
+            if arguments[0].IsNull() {
+                return Ok((0, true));
+            }
+            let visible = context.PostgreSQLTableIsVisible(arguments[0].GetInt64())?;
+            Ok((i64::from(visible.unwrap_or(false)), visible.is_none()))
+        })),
+        ..Default::default()
+    })
+}
+
+pub fn pg_extension_is_linked(scope: usize, oid: i64) -> bool {
+    extensionFuncs
+        .pg_entries
+        .read()
+        .expect("extension registry poisoned")
+        .contains_key(&(scope, oid))
+}
+pub fn remove_pg_extension_scope(scope: usize) {
+    extensionFuncs
+        .pg_entries
+        .write()
+        .expect("extension registry poisoned")
+        .retain(|(owner, _), _| *owner != scope);
+}
+
+/// Typed errors retain authorization/capability identity across the existing factory boundary.
+#[derive(Clone, Debug)]
+pub struct PgExtensionError {
+    pub state: &'static str,
+    pub message: String,
+}
+impl std::fmt::Display for PgExtensionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for PgExtensionError {}
+impl PgExtensionError {
+    fn error(state: &'static str, message: impl Into<String>) -> Error {
+        crate::contextutil::errors::SharedError::new(Self {
+            state,
+            message: message.into(),
+        })
+        .into()
+    }
 }

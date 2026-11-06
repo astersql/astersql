@@ -358,6 +358,16 @@ mod expression_schema;
 mod expression_simple_rewriter;
 #[path = "extension.rs"]
 mod extension_kernel;
+pub use expropt::{
+    CurrentUserPropProvider, CurrentUserPropReader, PrivilegeChecker, PrivilegeCheckerProvider,
+    SessionVarsPropProvider,
+};
+pub use extension_kernel::{
+    PgExtensionDeclaration, PgExtensionError, build_pg_extension,
+    init as install_extension_function_hooks, pg_extension_is_linked,
+    pg_table_visibility_definition, register_pg_extension, remove_pg_extension,
+    remove_pg_extension_scope, validate_pg_extension,
+};
 #[path = "fts_helper.rs"]
 mod fts_helper_kernel;
 #[path = "fts_to_like.rs"]

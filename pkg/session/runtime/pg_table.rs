@@ -1026,3 +1026,36 @@ impl ConcreteSession {
         Ok(())
     }
 }
+
+pub const PG_SYSTEM_RELATIONS: &[(&str, u32)] = &[
+    ("pg_type", 1247),
+    ("pg_attribute", 1249),
+    ("pg_proc", 1255),
+    ("pg_operator", 2617),
+    ("pg_aggregate", 2600),
+    ("pg_class", 1259),
+    ("pg_constraint", 2606),
+    ("pg_attrdef", 2604),
+    ("pg_index", 2610),
+    ("pg_language", 2612),
+    ("pg_namespace", 2615),
+    ("pg_description", 2609),
+    ("pg_depend", 2608),
+    ("pg_database", 1262),
+    ("pg_authid", 1260),
+    ("pg_auth_members", 1261),
+    ("pg_tablespace", 1213),
+    ("pg_shdescription", 2396),
+    ("pg_sequence", 2224),
+    ("pg_inherits", 2611),
+    ("pg_opclass", 2616),
+    ("pg_opfamily", 2753),
+    ("pg_amop", 2602),
+    ("pg_amproc", 2603),
+    ("pg_collation", 3456),
+    ("pg_policy", 3256),
+    ("pg_trigger", 2620),
+    ("pg_rewrite", 2618),
+    ("pg_foreign_table", 3118),
+    ("pg_foreign_server", 1417),
+];

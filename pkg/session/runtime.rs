@@ -116,7 +116,8 @@ pub use pg_database::{
 mod pg_function;
 mod pg_schema;
 pub use pg_function::{
-    pg_function_acl_text, pg_function_facts, pg_function_privileges, pg_has_function_privilege,
+    pg_extension_declarations, pg_function_acl_text, pg_function_facts, pg_function_privileges,
+    pg_has_function_privilege,
 };
 mod pg_type;
 pub use pg_type::{pg_has_type_privilege, pg_type_acl_text, pg_type_facts, pg_type_privileges};
@@ -124,9 +125,9 @@ mod pg_table;
 #[cfg(test)]
 mod pg_table_test;
 pub use pg_table::{
-    pg_column_acl_fact, pg_column_acl_text, pg_has_column_privilege, pg_has_sequence_privilege,
-    pg_has_table_privilege, pg_sequence_privileges, pg_table_acl_fact, pg_table_acl_text,
-    pg_table_privileges,
+    PG_SYSTEM_RELATIONS, pg_column_acl_fact, pg_column_acl_text, pg_has_column_privilege,
+    pg_has_sequence_privilege, pg_has_table_privilege, pg_sequence_privileges, pg_table_acl_fact,
+    pg_table_acl_text, pg_table_privileges,
 };
 mod pg_sequence;
 pub use pg_sequence::PgSequenceCommand;
@@ -1382,6 +1383,14 @@ fn parse_with_dialect_and_warnings(
     mode: astersql_parser_mysql::r#const::SQLMode,
     dialect: ast::SqlDialect,
 ) -> SessionResult<(Vec<Box<dyn ast::Node>>, Vec<SessionWarning>)> {
+    parse_with_registered_declarations(sql, mode, dialect, &[])
+}
+fn parse_with_registered_declarations(
+    sql: &str,
+    mode: astersql_parser_mysql::r#const::SQLMode,
+    dialect: ast::SqlDialect,
+    registered: &[String],
+) -> SessionResult<(Vec<Box<dyn ast::Node>>, Vec<SessionWarning>)> {
     let normalized = sql.trim_start().to_ascii_lowercase();
     if normalized.starts_with("declare ") && normalized.contains(" cursor ") {
         return Err(SessionError::new("unsupported SQL cursor statement"));
@@ -1418,7 +1427,7 @@ fn parse_with_dialect_and_warnings(
                     bind_postgresql_column_names(statement.as_mut());
                 }
             }
-            planning::validate_function_visibility(&statements, dialect)?;
+            planning::validate_function_visibility(&statements, dialect, registered)?;
             Ok((
                 statements,
                 warnings.iter().map(SessionWarning::from_error).collect(),

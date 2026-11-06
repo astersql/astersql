@@ -319,3 +319,7 @@ validate_function_visibility 对 PostgreSQL 调用 pg_groups_window_spec，在�
 ## 集合返回真实客户端差分（任务30）
 
 `protocol_parameter_types` 在 Parse 时也遍历 FROM 函数及 JOIN 两侧的函数参数，复用显式转换约束；`unnest(?::int4[])` 无需 Bind 值即可固定参数 OID 1007。
+
+## 2026-11-07 目录任务26局部接线
+
+解析期零参数可见名检查接收当前数据库/连接正式登记名称；真实namespace、签名与权限仍在普通绑定阶段验证，不读取其他Domain注册表或硬编码测试函数名。

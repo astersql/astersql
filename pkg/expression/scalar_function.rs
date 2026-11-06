@@ -486,6 +486,11 @@ impl ScalarFunction {
     pub fn Hash64(&self, h: &mut dyn base::Hasher) {
         h.HashByte(scalarFunctionFlag);
         h.HashString(&self.FuncName.L);
+        if let Some((database, oid)) = self.Function.PostgreSQLFunctionIdentity() {
+            h.HashByte(0xf0);
+            h.HashInt64(database);
+            h.HashInt64(oid);
+        }
         match &self.RetType {
             None => h.HashByte(base::NilFlag),
             Some(tp) => {
@@ -504,6 +509,8 @@ impl ScalarFunction {
             return false;
         };
         if self.FuncName.L != sf2.FuncName.L
+            || self.Function.PostgreSQLFunctionIdentity()
+                != sf2.Function.PostgreSQLFunctionIdentity()
             || self.RetType != sf2.RetType
             || self.GetArgs().len() != sf2.GetArgs().len()
         {
@@ -939,6 +946,12 @@ pub fn simpleCanonicalizedHashCode(sf: &mut ScalarFunction) {
             )
         }
     }
+    if let Some((database, oid)) = sf.Function.PostgreSQLFunctionIdentity() {
+        sf.canonicalhashcode.push(0xf0);
+        sf.canonicalhashcode =
+            codec::EncodeInt(std::mem::take(&mut sf.canonicalhashcode), database);
+        sf.canonicalhashcode = codec::EncodeInt(std::mem::take(&mut sf.canonicalhashcode), oid);
+    }
     for code in args {
         sf.canonicalhashcode.extend(code);
     }
@@ -955,6 +968,11 @@ pub fn ReHashCode(sf: &mut ScalarFunction) {
     sf.hashcode.push(scalarFunctionFlag);
     sf.hashcode =
         codec::EncodeCompactBytes(std::mem::take(&mut sf.hashcode), sf.FuncName.L.as_bytes());
+    if let Some((database, oid)) = sf.Function.PostgreSQLFunctionIdentity() {
+        sf.hashcode.push(0xf0);
+        sf.hashcode = codec::EncodeInt(std::mem::take(&mut sf.hashcode), database);
+        sf.hashcode = codec::EncodeInt(std::mem::take(&mut sf.hashcode), oid);
+    }
     let argument_hashes = sf
         .GetArgs()
         .iter()
@@ -1020,4 +1038,21 @@ fn single_column_from_binary(
         }
     }
     (None, false)
+}
+
+/// Construct a resolved object directly; its SQL name is never a synthetic registry alias.
+pub fn NewFunctionFromClass(
+    ctx: &dyn BuildContext,
+    name: &str,
+    class: &dyn functionClass,
+    args: Vec<Box<dyn Expression>>,
+) -> Result<Box<dyn Expression>, Error> {
+    let function = class.getFunction(ctx, args)?;
+    Ok(Box::new(ScalarFunction {
+        FuncName: ast::NewCIStr(name),
+        RetType: Some(function.getRetTp().clone()),
+        Function: function,
+        hashcode: Vec::new(),
+        canonicalhashcode: Vec::new(),
+    }))
 }

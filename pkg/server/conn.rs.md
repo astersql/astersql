@@ -149,3 +149,7 @@ NativeType 传递可选 postgresql_text_oid，独立于 MySQL code/flags/length/
 ## 命名空间授权（目录任务18）
 
 TiDBContext新增pg_schema_privileges命令桥接，返回共享层瞬时ACL通知，不将授权答案置于协议层。默认未提供实现时沿现有不支持错误。
+
+## 2026-11-07 目录任务26：真实函数签名可见性
+
+TiDBContext正式PG登记/卸载API默认不支持；实际上下文必须转canonical worker核验真实namespace、owner、持久身份，不提供SQL UDF或HTTP接口。

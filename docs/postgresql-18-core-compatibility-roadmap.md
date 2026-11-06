@@ -6499,3 +6499,10 @@ PgNamespaces现有KV记录新增真实grantor/grantee稳定OID及USAGE/CREATE gr
 ### 2026-11-06 任务21序列授权增量
 
 序列relacl与has_sequence_privilege已接同一TableInfo.PostgreSQLAcl持久事实，USAGE/SELECT/UPDATE、grantor/grantee/PUBLIC、grant option及成员继承复用既有共享权限层；nextval/currval/setval消费同一事实。新显式/identity序列在创建事务保存owner默认ACL，旧私有SequenceAcl不再作为完整PG来源，旧记录须显式迁移。正式表达式与目录Q/扩展入口均有独立真实非root回归cat14_21；精确验证及PG18.4/18.6采样记录在本轮接口与证据任务21。
+
+
+### 2026-11-07 VIS-FUNC正式扩展来源
+
+本端重载夹具使用生产PG扩展登记/卸载API，复用原extensionFuncs、真实callback functionClass及PgStandardSchema稳定namespace/对象身份和ACL；不使用静态假用户函数或编码别名。普通SQL、pg_proc和pg_function_is_visible消费同一声明及当前有效路径，输入int4/int8分别保留OID23/20。CREATE FUNCTION SQL语言门禁仍保留，未声明SQL UDF子系统或完整内建目录开放；正式扩展生命周期是任务26明确授权的等效来源。测试入口pg_catalog_test::cat14_26，完整实测证据按编号任务交接。
+
+任务26参考边界：PG18.4/18.6在prepared语句因DROP退到后续schema后，前置schema新建同名函数不会单独使该计划重绑定；夹具通过切换路径并实际Bind一次触发路径失效后验证重建。当前正式扩展调用每次执行重新解析，此通用prepared计划依赖失效时机差异作为范围外兼容性建议保留。

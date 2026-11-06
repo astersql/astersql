@@ -27,6 +27,13 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 /// 扩展函数求值时可见的会话与行上下文。
 pub trait FunctionContext: ExtensionContext {
+    /// Evaluate relation visibility from the calling statement's genuine session snapshot.
+    fn PostgreSQLTableIsVisible(&self, _oid: i64) -> Result<Option<bool>, ExtensionError> {
+        Err(ExtensionError::new(
+            "PostgreSQL visibility context is unavailable",
+        ))
+    }
+
     /// 当前登录用户身份。
     fn User(&self) -> Option<&auth_identity::UserIdentity>;
     /// 当前激活角色列表。

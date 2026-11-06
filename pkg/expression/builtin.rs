@@ -9417,6 +9417,8 @@ pub mod formal_registry {
     pub struct FunctionClassRegistry {
         entries: RwLock<HashMap<String, Arc<dyn functionClass>>>,
         factories: Option<HashMap<String, BuiltinFactory>>,
+        pub(crate) pg_entries:
+            RwLock<HashMap<(usize, i64), (crate::PgExtensionDeclaration, Arc<dyn functionClass>)>>,
     }
 
     impl FunctionClassRegistry {
@@ -9438,6 +9440,12 @@ pub mod formal_registry {
             Self {
                 entries: RwLock::new(entries),
                 factories: Some(factories),
+                pg_entries: RwLock::new(
+                    self.pg_entries
+                        .read()
+                        .expect("function registry poisoned")
+                        .clone(),
+                ),
             }
         }
 
@@ -9482,6 +9490,7 @@ pub mod formal_registry {
             Self {
                 entries: RwLock::new(entries),
                 factories: None,
+                pg_entries: RwLock::default(),
             }
         }
 

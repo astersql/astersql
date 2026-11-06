@@ -1692,6 +1692,18 @@ impl ConcreteSession {
         row: &HashMap<String, Option<String>>,
         group_rows: Option<&[HashMap<String, Option<String>>]>,
     ) -> SessionResult<Option<String>> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let Some(declaration) = self.pg_resolve_extension(expression, &[])? {
+                let ast::ExprKind::Function { Args, .. } = &expression.Kind else {
+                    unreachable!()
+                };
+                let values = Args
+                    .iter()
+                    .map(|arg| self.relational_query_expression_value(arg, row, group_rows))
+                    .collect::<SessionResult<Vec<_>>>()?;
+                return self.pg_evaluate_extension(&declaration, values);
+            }
+        }
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
@@ -3702,6 +3714,13 @@ impl ConcreteSession {
     }
 
     pub(crate) fn relational_select_requires_full_query(&self, select: &ast::SelectStmt) -> bool {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && self
+                .pg_namespace_facts()
+                .is_ok_and(|n| !super::pg_function::pg_extension_declarations(&n).is_empty())
+        {
+            return true;
+        }
         fn has_pg_query_expression(expression: &ast::ExprNode) -> bool {
             struct Calls(bool);
             impl ast::ExprNodeVisitor for Calls {
@@ -6695,6 +6714,20 @@ impl ConcreteSession {
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let Ok(Some(declaration)) = self.pg_resolve_extension(expression, source_fields) {
+                let mut field = astersql_parser_types::NewFieldType(match declaration.result {
+                    23 => astersql_parser_mysql::r#type::TypeLong,
+                    20 => astersql_parser_mysql::r#type::TypeLonglong,
+                    16 => astersql_parser_mysql::r#type::TypeTiny,
+                    _ => astersql_parser_mysql::r#type::TypeVarString,
+                });
+                if declaration.result == 16 {
+                    field.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                }
+                return field;
+            }
+        }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             if let Some(call) = pg_projection_srf(expression)
                 && let Ok(field) = self.pg_integer_series_field(
