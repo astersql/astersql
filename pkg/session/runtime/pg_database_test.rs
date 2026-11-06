@@ -262,3 +262,64 @@ fn cat14_07_role_reads_do_not_allocate_or_infer_login_from_locks() {
         .execute("DROP ROLE 'cat14_07_native_group'@'%'")
         .unwrap();
 }
+
+#[test]
+fn cat14_08_role_defaults_persist_and_old_fields_remain_unknown() {
+    use super::pg_database::{PgRoleAttributes, PgRoleCommand};
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.pg_register_bootstrap_role().unwrap();
+    native
+        .pg_role_command(&PgRoleCommand::Create {
+            name: "cat14_08_model".into(),
+            can_login: true,
+        })
+        .unwrap();
+    let oid = native.pg_database_role_id("cat14_08_model").unwrap();
+    domain.force_full_reload_for_test().unwrap();
+    let observer = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let fact = observer
+        .pg_role_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.oid == oid)
+        .unwrap();
+    let attrs = fact.attributes.unwrap();
+    assert_eq!(
+        (attrs.inherit, attrs.create_role, attrs.connection_limit),
+        (Some(true), Some(false), Some(-1))
+    );
+    let mut serialized = serde_json::to_value(&attrs).unwrap();
+    for field in ["inherit", "create_role", "connection_limit"] {
+        let saved = serialized.as_object_mut().unwrap().remove(field).unwrap();
+        let old: PgRoleAttributes = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(
+            old.inherit,
+            if field == "inherit" { None } else { Some(true) }
+        );
+        assert_eq!(
+            old.create_role,
+            if field == "create_role" {
+                None
+            } else {
+                Some(false)
+            }
+        );
+        assert_eq!(
+            old.connection_limit,
+            if field == "connection_limit" {
+                None
+            } else {
+                Some(-1)
+            }
+        );
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .insert(field.into(), saved);
+    }
+    native
+        .pg_role_command(&PgRoleCommand::Drop {
+            name: "cat14_08_model".into(),
+        })
+        .unwrap();
+}

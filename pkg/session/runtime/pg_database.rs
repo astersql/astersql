@@ -46,12 +46,40 @@ pub struct PgRoleFact {
 }
 
 /// Explicit PG declaration defaults, not a conversion of native global privileges.
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgRoleAttributes {
     pub superuser: bool,
     pub create_db: bool,
     pub replication: bool,
     pub bypass_rls: bool,
+    // Missing fields in older declarations stay unknown; only a new explicit
+    // declaration may assign the PG18 defaults below.
+    #[serde(default)]
+    pub inherit: Option<bool>,
+    #[serde(default)]
+    pub create_role: Option<bool>,
+    #[serde(default)]
+    pub connection_limit: Option<i32>,
+}
+
+impl Default for PgRoleAttributes {
+    fn default() -> Self {
+        Self {
+            superuser: false,
+            create_db: false,
+            replication: false,
+            bypass_rls: false,
+            // PG16+ uses this as the default for newly granted membership
+            // edges, not as a runtime switch over existing native active roles.
+            inherit: Some(true),
+            // The PG role utility requires the administrator; no native SUPER
+            // or CREATE ROLE grant can promote this declaration.
+            create_role: Some(false),
+            // PG declarations currently expose only the unlimited policy.
+            // Native MySQL global/user quotas are a separate execution policy.
+            connection_limit: Some(-1),
+        }
+    }
 }
 
 /// Bounded PG declarations use native accounts and the existing persistent OID map.

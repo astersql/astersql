@@ -1077,6 +1077,9 @@ impl CatalogQuery {
                         Some((0, crate::pg_oid::OID_TYPE, 0))
                     }
                     ("pg_roles", "rolcanlogin") => Some((2, 1, boolean)),
+                    ("pg_roles", "rolinherit") => Some((12, 1, boolean)),
+                    ("pg_roles", "rolcreaterole") => Some((13, 1, boolean)),
+                    ("pg_roles", "rolconnlimit") => Some((14, 3, 0)),
                     ("pg_user" | "pg_shadow", "usesuper") | ("pg_roles", "rolsuper") => {
                         Some((3, 1, boolean))
                     }
@@ -2955,6 +2958,15 @@ impl CatalogQuery {
                             Value::Null,
                             known,
                             Value::Text(f.valid_until_known.to_string()),
+                            attrs
+                                .inherit
+                                .map_or(Value::Null, |v| Value::Text(v.to_string())),
+                            attrs
+                                .create_role
+                                .map_or(Value::Null, |v| Value::Text(v.to_string())),
+                            attrs
+                                .connection_limit
+                                .map_or(Value::Null, |v| Value::Signed(v.into())),
                         ]
                     })
                     .collect()
@@ -3306,9 +3318,10 @@ impl CatalogQuery {
                 if let Some(relation) = self.relations().nth(slot / CATALOG_ROW_WIDTH) {
                     if matches!(relation.name.as_str(), "pg_user" | "pg_roles")
                         && row[base] != Value::Null
-                        && ((matches!(local, 3..=6 | 9)
+                        && ((matches!(local, 3..=6 | 9 | 12..=14)
                             && row[base + 10] != Value::Text("true".into()))
-                            || (local == 8 && row[base + 11] != Value::Text("true".into())))
+                            || (local == 8 && row[base + 11] != Value::Text("true".into()))
+                            || (matches!(local, 12..=14) && row[slot] == Value::Null))
                     {
                         return Err(database_identity_unavailable(
                             "PostgreSQL role attribute requires explicit policy",
