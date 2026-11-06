@@ -108,3 +108,8 @@ has_database_privilege加入unFoldableFunctions；常量实参也必须在执行
 ## 命名空间授权（目录任务18）
 
 核心正式函数名单加入has_schema_privilege，支持真实普通关系查询消费正式工厂。
+
+
+## 表授权（目录任务19）
+
+正式核心函数注册增加has_table_privilege，普通FROM查询通过同一工厂求值。

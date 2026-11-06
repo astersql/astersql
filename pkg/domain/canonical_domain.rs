@@ -1331,6 +1331,33 @@ impl DdlMetadataService {
         })
     }
 
+    /// Update relation ACL through the same atomic metadata publication as its owner.
+    pub fn update_postgresql_acl(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table_id: i64,
+        update: impl FnOnce(&mut TableInfo) -> Result<(), kv::errors::SharedError>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, |catalog| {
+            let (key, old) = catalog
+                .tables
+                .iter()
+                .find(|((db, _), table)| db == database && table.ID == table_id)
+                .map(|(key, table)| (key.clone(), table.clone()))
+                .ok_or_else(|| kv::errors::New("relation no longer exists"))?;
+            let mut new = old.clone();
+            update(&mut new)?;
+            catalog.tables.insert(key, new.clone());
+            Ok(DdlMetadataChange {
+                changed: true,
+                old_tables: vec![(database.to_owned(), old)],
+                new_tables: vec![(database.to_owned(), new)],
+                ..DdlMetadataChange::default()
+            })
+        })
+    }
+
     /// Change only persistent PG ownership, preserving relation and index identity.
     pub fn set_postgresql_owner(
         &self,
@@ -1348,6 +1375,31 @@ impl DdlMetadataService {
                 .map(|(key, table)| (key.clone(), table.clone()))
                 .ok_or_else(|| kv::errors::New("relation no longer exists"))?;
             let mut updated = old.clone();
+            if let (Some(old_owner), Some(acl)) =
+                (old.PostgreSQLOwner, updated.PostgreSQLAcl.as_mut())
+            {
+                for grant in &mut acl.grants {
+                    if grant.grantor == old_owner {
+                        grant.grantor = owner;
+                    }
+                    if grant.grantee == old_owner {
+                        grant.grantee = owner;
+                    }
+                }
+                let mut merged: Vec<astersql_meta_model::PostgreSQLAclGrant> = Vec::new();
+                for grant in acl.grants.drain(..) {
+                    if let Some(item) = merged
+                        .iter_mut()
+                        .find(|e| e.grantor == grant.grantor && e.grantee == grant.grantee)
+                    {
+                        item.privileges |= grant.privileges;
+                        item.grant_options |= grant.grant_options;
+                    } else {
+                        merged.push(grant);
+                    }
+                }
+                acl.grants = merged;
+            }
             updated.PostgreSQLOwner = Some(owner);
             catalog.tables.insert(key, updated.clone());
             Ok(DdlMetadataChange {

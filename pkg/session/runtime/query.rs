@@ -2098,6 +2098,7 @@ impl ConcreteSession {
                     | "pg_backend_pid"
                     | "has_database_privilege"
                     | "has_schema_privilege"
+                    | "has_table_privilege"
                     | "version"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -2129,7 +2130,7 @@ impl ConcreteSession {
             for (argument, mut input) in Args.iter().zip(inputs) {
                 if matches!(
                     FnName.L.as_str(),
-                    "has_database_privilege" | "has_schema_privilege"
+                    "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
                 ) && input.GetType() == astersql_parser_mysql::r#type::TypeNull
                 {
                     // Unknown literals take the selected text/name input type; an actual NULL Datum remains NULL.
@@ -2147,16 +2148,27 @@ impl ConcreteSession {
             }
             let database_privilege = if matches!(
                 FnName.L.as_str(),
-                "has_database_privilege" | "has_schema_privilege"
+                "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
             ) && !strict_database_null
             {
                 let schema_acl = FnName.L == "has_schema_privilege";
-                let namespaces = if schema_acl {
+                let table_acl = FnName.L == "has_table_privilege";
+                let tables = if table_acl {
+                    self.pg_table_models()?
+                } else {
+                    Vec::new()
+                };
+                let path = if table_acl {
+                    self.pg_effective_path()?
+                } else {
+                    Vec::new()
+                };
+                let namespaces = if schema_acl || table_acl {
                     self.pg_namespace_facts()?
                 } else {
                     Vec::new()
                 };
-                let facts = if schema_acl {
+                let facts = if schema_acl || table_acl {
                     Vec::new()
                 } else {
                     self.pg_database_facts(None)?
@@ -2175,7 +2187,17 @@ impl ConcreteSession {
                 let roles = self.pg_role_facts()?;
                 let actor = self.pg_schema_identity();
                 Some(Arc::new(move |values: &[Option<String>], oids: &[bool]| {
-                    (if schema_acl {
+                    (if table_acl {
+                        pg_table::pg_has_table_privilege(
+                            &tables,
+                            &path,
+                            &namespaces,
+                            &roles,
+                            &actor,
+                            values,
+                            oids,
+                        )
+                    } else if schema_acl {
                         pg_schema::pg_has_schema_privilege(
                             &namespaces,
                             &roles,
@@ -2270,7 +2292,10 @@ impl ConcreteSession {
             return Ok((!null).then(|| {
                 if matches!(
                     FnName.L.as_str(),
-                    "isempty" | "has_database_privilege" | "has_schema_privilege"
+                    "isempty"
+                        | "has_database_privilege"
+                        | "has_schema_privilege"
+                        | "has_table_privilege"
                 ) {
                     if value == 0 {
                         "f".to_owned()
@@ -3635,6 +3660,7 @@ impl ConcreteSession {
                                 | "pg_backend_pid"
                                 | "has_database_privilege"
                                 | "has_schema_privilege"
+                                | "has_table_privilege"
                                 | "version"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -4950,6 +4976,7 @@ impl ConcreteSession {
                             | "pg_backend_pid"
                             | "has_database_privilege"
                             | "has_schema_privilege"
+                            | "has_table_privilege"
                             | "version"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -5864,7 +5891,10 @@ impl ConcreteSession {
             ast::ExprKind::Function { FnName, Schema, .. }
                 if matches!(
                     FnName.L.as_str(),
-                    "current_schema" | "has_database_privilege" | "has_schema_privilege"
+                    "current_schema"
+                        | "has_database_privilege"
+                        | "has_schema_privilege"
+                        | "has_table_privilege"
                 ) && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
             {
                 Some(FnName.L.clone())
@@ -6640,6 +6670,7 @@ impl ConcreteSession {
                         | "pg_backend_pid"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_table_privilege"
                         | "version"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
@@ -6662,7 +6693,10 @@ impl ConcreteSession {
                     }
                     if matches!(
                         FnName.L.as_str(),
-                        "isempty" | "has_database_privilege" | "has_schema_privilege"
+                        "isempty"
+                            | "has_database_privilege"
+                            | "has_schema_privilege"
+                            | "has_table_privilege"
                     ) {
                         result.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
                     }
@@ -8353,12 +8387,24 @@ impl ConcreteSession {
                                 super::pg_schema::namespace_error("42704", "role does not exist")
                             })?
                             .oid;
-                        if actor == "root"
-                            || pg_database::pg_role_reachable(&facts, member, owner, "USAGE")?
+                        if model.PostgreSQLAcl.is_none()
+                            && (actor == "root"
+                                || pg_database::pg_role_reachable(&facts, member, owner, "USAGE")?)
                         {
                             continue;
                         }
                     }
+                }
+                if let Some(allowed) =
+                    self.pg_table_access(table_database, relation_name(&table_source.Source), 2)?
+                {
+                    if allowed {
+                        continue;
+                    }
+                    return Err(super::pg_schema::namespace_error(
+                        "42501",
+                        "permission denied for table",
+                    ));
                 }
                 if !privileges.RequestVerification(
                     &active_roles,

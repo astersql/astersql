@@ -211,14 +211,7 @@ impl Default for Access {
     }
 }
 
-/// One persistent database ACL item; 0 is PUBLIC, never a native login role.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PgDatabaseGrant {
-    pub grantor: i64,
-    pub grantee: i64,
-    pub privileges: u8,
-    pub grant_options: u8,
-}
+pub use astersql_meta_model::PostgreSQLAclGrant as PgDatabaseGrant;
 
 fn default_database_acl(owner: i64) -> Vec<PgDatabaseGrant> {
     vec![
@@ -265,12 +258,13 @@ pub fn pg_database_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
 fn validate_database_acl(
     acl: &[PgDatabaseGrant],
     exists: impl Fn(i64) -> bool,
+    mask: u8,
 ) -> SessionResult<()> {
     if acl.iter().any(|e| {
         e.grantor == 0
             || !exists(e.grantor)
             || e.grantee != 0 && !exists(e.grantee)
-            || e.privileges & !7 != 0
+            || e.privileges & !mask != 0
             || e.grant_options & !e.privileges != 0
             || e.grantee == 0 && e.grant_options != 0
     }) {
@@ -284,11 +278,14 @@ fn validate_database_acl(
 
 impl PgDatabaseFact {
     pub(super) fn validate_acl(&self) -> SessionResult<&Vec<PgDatabaseGrant>> {
+        self.validate_acl_mask(7)
+    }
+    pub(super) fn validate_acl_mask(&self, mask: u8) -> SessionResult<&Vec<PgDatabaseGrant>> {
         let acl = self
             .acl
             .as_ref()
             .ok_or_else(|| namespace_error("0A000", "database ACL requires explicit migration"))?;
-        validate_database_acl(acl, |id| self.roles.contains_key(&id))?;
+        validate_database_acl(acl, |id| self.roles.contains_key(&id), mask)?;
         Ok(acl)
     }
     pub fn has_privilege(
@@ -298,7 +295,17 @@ impl PgDatabaseFact {
         bit: u8,
         option: bool,
     ) -> SessionResult<bool> {
-        let acl = self.validate_acl()?;
+        self.has_privilege_mask(facts, actor, bit, option, 7)
+    }
+    pub(super) fn has_privilege_mask(
+        &self,
+        facts: &[PgRoleFact],
+        actor: i64,
+        bit: u8,
+        option: bool,
+        mask: u8,
+    ) -> SessionResult<bool> {
+        let acl = self.validate_acl_mask(mask)?;
         let owner = self
             .owner
             .as_ref()
@@ -342,7 +349,7 @@ impl PgDatabaseFact {
         &self,
         modes: &[(u8, char)],
     ) -> SessionResult<Option<String>> {
-        let acl = self.validate_acl()?;
+        let acl = self.validate_acl_mask(modes.iter().fold(0, |mask, (bit, _)| mask | bit))?;
         if self.acl_default {
             return Ok(None);
         }
@@ -1319,9 +1326,11 @@ impl ConcreteSession {
                                     access.roles.remove(&connect_role.unwrap());
                                 }
                             } else {
-                                validate_database_acl(access.acl.as_ref().unwrap(), |id| {
-                                    roles.values().any(|value| *value == id)
-                                })
+                                validate_database_acl(
+                                    access.acl.as_ref().unwrap(),
+                                    |id| roles.values().any(|value| *value == id),
+                                    7,
+                                )
                                 .map_err(|e| kv::errors::New(e.to_string()))?;
                                 let owner = owner.ok_or_else(|| {
                                     kv::errors::New("database ACL requires explicit migration")
@@ -1563,11 +1572,16 @@ impl ConcreteSession {
                                 .SchemaTableInfos(&schema.name)
                                 .map_err(|e| kv::errors::New(e.to_string()))?;
                             if tables.iter().any(|t| {
-                                t.model_meta
-                                    .as_ref()
-                                    .is_some_and(|m| m.PostgreSQLOwner == Some(*oid))
+                                t.model_meta.as_ref().is_some_and(|m| {
+                                    m.PostgreSQLOwner == Some(*oid)
+                                        || m.PostgreSQLAcl.as_ref().is_some_and(|acl| {
+                                            acl.grants
+                                                .iter()
+                                                .any(|g| g.grantor == *oid || g.grantee == *oid)
+                                        })
+                                })
                             }) {
-                                return Err(kv::errors::New("role owns a relation"));
+                                return Err(kv::errors::New("role has relation dependencies"));
                             }
                             let owner: Option<i64> = load(txn, &ctx, owner_key(schema.id))?;
                             if owner == Some(*oid) {
@@ -1613,6 +1627,7 @@ impl ConcreteSession {
             .map_err(|e| {
                 if e.to_string() == "role has database privileges"
                     || e.to_string() == "role has schema dependencies"
+                    || e.to_string() == "role has relation dependencies"
                 {
                     namespace_error("2BP01", &e.to_string())
                 } else {
@@ -1696,7 +1711,7 @@ pub(super) fn update_object_acl(
         || pg_role_reachable(role_facts, actor_id, owner, "USAGE")
             .map_err(|_| kv::errors::New("database ACL membership unknown"))?;
     let (grantor, available) = if owner_actor {
-        (owner, 7)
+        (owner, u8::MAX)
     } else {
         // Select one actual inherited grantor, maximizing requested grant authority (PG select_best_grantor).
         let mut best = (actor_id, 0u8);
@@ -1781,7 +1796,7 @@ pub(super) fn update_object_acl(
             }
         }
         // An option revoke may invalidate grants made using it; preserve RESTRICT and CASCADE.
-        for bit in [1, 2, 4] {
+        for bit in [1, 2, 4, 8, 16, 32, 64, 128] {
             let mut authorized = BTreeSet::from([owner]);
             loop {
                 let old = authorized.len();

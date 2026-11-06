@@ -65,6 +65,22 @@ pub const VirtualColVecSearchDistanceID: i64 = -2000;
 /// 全文检索得分虚拟列 ID。
 pub const VirtualColFTSScoreID: i64 = -2050;
 
+/// Persistent ACL identities shared by PostgreSQL object kinds; zero grantee is PUBLIC.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PostgreSQLAclGrant {
+    pub grantor: i64,
+    pub grantee: i64,
+    pub privileges: u8,
+    pub grant_options: u8,
+}
+
+/// Known default ACL and explicit empty ACL are different durable states.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PostgreSQLRelationAcl {
+    pub default_acl: bool,
+    pub grants: Vec<PostgreSQLAclGrant>,
+}
+
 /// TableInfo 对应 Go 的表级元数据；字段顺序与 JSON 结构保持一致。
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -91,6 +107,9 @@ pub struct TableInfo {
     /// Persistent PG role identity. Legacy native relations require explicit adoption.
     #[serde(rename = "postgresql_owner", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLOwner: Option<i64>,
+    /// Absent on historical native records; reading must never invent provenance.
+    #[serde(rename = "postgresql_acl", skip_serializing_if = "Option::is_none")]
+    pub PostgreSQLAcl: Option<PostgreSQLRelationAcl>,
     /// PG namespace identity and logical relation name; Name remains the storage key.
     #[serde(
         rename = "postgresql_namespace",

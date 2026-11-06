@@ -109,3 +109,8 @@ pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通
 ## 命名空间授权（目录任务18）
 
 将无FROM的has_schema_privilege识别为既有身份/权限scalar查询，使Q与扩展参数进入CatalogQuery；普通FROM仍由正式表达式执行链处理。
+
+
+## 表授权（目录任务19）
+
+无FROM的has_table_privilege归CatalogQuery，存在普通关系FROM时保留共享关系执行器；Q与扩展Parse使用同一入口选择。

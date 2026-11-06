@@ -2282,6 +2282,9 @@ impl ConcreteSession {
             let mut table = build_bootstrap_view_table(sql, resolved_columns)?;
             if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
                 table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
+                table.PostgreSQLAcl = Some(super::pg_table::default_table_acl(
+                    table.PostgreSQLOwner.unwrap(),
+                ));
                 table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
                 table.ExactName = true;
                 self.bind_postgresql_view(create, &mut table)?;
@@ -3168,6 +3171,10 @@ impl ConcreteSession {
             }
         }
         if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
+            self.pg_require_write_access(insert.Table.as_ref(), 1)?;
+            if !insert.Returning.is_empty() {
+                self.pg_require_write_access(insert.Table.as_ref(), 2)?;
+            }
             if self.state.borrow().transaction_stale_read_ts.is_some() {
                 return Err(SessionError::new(
                     "cannot execute write statement in a read-only staleness transaction",
@@ -3199,6 +3206,14 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(update) = statement.as_any().downcast_ref::<ast::UpdateStmt>() {
+            self.pg_require_write_access(update.TableRefs.as_ref(), 4)?;
+            let mut referenced = HashSet::new();
+            for assignment in &update.List {
+                collect_expression_column_names(&assignment.Expr, &mut referenced);
+            }
+            if update.Where.is_some() || !update.Returning.is_empty() || !referenced.is_empty() {
+                self.pg_require_write_access(update.TableRefs.as_ref(), 2)?;
+            }
             if self.state.borrow().transaction_stale_read_ts.is_some() {
                 return Err(SessionError::new(
                     "cannot execute write statement in a read-only staleness transaction",
@@ -3216,6 +3231,10 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(delete) = statement.as_any().downcast_ref::<ast::DeleteStmt>() {
+            self.pg_require_write_access(delete.TableRefs.as_ref(), 8)?;
+            if delete.Where.is_some() || !delete.Returning.is_empty() {
+                self.pg_require_write_access(delete.TableRefs.as_ref(), 2)?;
+            }
             if self.state.borrow().transaction_stale_read_ts.is_some() {
                 return Err(SessionError::new(
                     "cannot execute write statement in a read-only staleness transaction",

@@ -2878,7 +2878,10 @@ pub mod formal_registry {
             // TEXT columns and text casts have different physical storage codes.
             return resolve_pg_signature(name, &[mysql::TypeVarString; 2]);
         }
-        if matches!(name, "has_database_privilege" | "has_schema_privilege") {
+        if matches!(
+            name,
+            "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
+        ) {
             if !matches!(inputs.len(), 2 | 3) {
                 return Err("42883");
             }
@@ -7187,7 +7190,7 @@ pub mod formal_registry {
                     "builtinConcatSig",
                 )
             }
-            "has_database_privilege" | "has_schema_privilege"
+            "has_database_privilege" | "has_schema_privilege" | "has_table_privilege"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
             {
                 let inputs = args
@@ -9094,6 +9097,7 @@ pub mod formal_registry {
     core_factory!(pg_backend_pid_factory, "pg_backend_pid");
     core_factory!(pg_database_privilege_factory, "has_database_privilege");
     core_factory!(pg_schema_privilege_factory, "has_schema_privilege");
+    core_factory!(pg_table_privilege_factory, "has_table_privilege");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -9207,6 +9211,7 @@ pub mod formal_registry {
         ("pg_backend_pid", pg_backend_pid_factory),
         ("has_database_privilege", pg_database_privilege_factory),
         ("has_schema_privilege", pg_schema_privilege_factory),
+        ("has_table_privilege", pg_table_privilege_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -9606,6 +9611,7 @@ pub mod formal_registry {
         ("pg_backend_pid", 0, 0),
         ("has_database_privilege", 2, 3),
         ("has_schema_privilege", 2, 3),
+        ("has_table_privilege", 2, 3),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -9919,6 +9925,7 @@ pub mod formal_registry {
                     | "pg_backend_pid"
                     | "has_database_privilege"
                     | "has_schema_privilege"
+                    | "has_table_privilege"
                     | "numeric_abs"
                     | "float4abs"
                     | "float8abs"

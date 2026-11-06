@@ -694,9 +694,13 @@ impl ConcreteSession {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
             table.PostgreSQLOwner = Some(self.pg_database_role_id(&self.pg_schema_identity())?);
+            table.PostgreSQLAcl = Some(super::pg_table::default_table_acl(
+                table.PostgreSQLOwner.unwrap(),
+            ));
         } else {
             // CREATE LIKE must not copy a PG owner's authority to a native relation.
             table.PostgreSQLOwner = None;
+            table.PostgreSQLAcl = None;
         }
         astersql_ddl::storage_class::CheckStorageClassAdmission(
             &table.EngineAttribute,
@@ -4788,6 +4792,12 @@ impl ConcreteSession {
         } else {
             statement.Table.Schema.L.as_str()
         };
+        if self.pg_table_access(database, relation_name(&statement.Table), 16)? == Some(false) {
+            return Err(super::pg_schema::namespace_error(
+                "42501",
+                "permission denied for table",
+            ));
+        }
         if self.persistent_actions_enabled() {
             let info = self
                 .domain

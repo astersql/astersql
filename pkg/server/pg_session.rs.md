@@ -114,3 +114,8 @@ PUBLIC受让者保存显式角色规格标志，与引号中的真实角色名"P
 ## 命名空间授权（目录任务18）
 
 有界数据库GRANT/REVOKE解析器同时接收ON SCHEMA的USAGE/CREATE/ALL、真实引号PUBLIC、WITH GRANT OPTION与选项撤销RESTRICT/CASCADE。SchemaUtility::Privileges通过共享session worker返回01007/01006通知，命令标签GRANT/REVOKE；其他schema操作保持原入口。
+
+
+## 表授权（目录任务19）
+
+TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受让者语法支持ALL/逗号权限、WITH GRANT OPTION、REVOKE GRANT OPTION FOR及RESTRICT/CASCADE，PUBLIC规格与引号角色区分。原列授权适配器保留，完整列ACL归后续任务。

@@ -427,6 +427,7 @@ impl PgSession {
                 if matches!(
                     command,
                     astersql_session::runtime::PgSchemaCommand::Privileges { .. }
+                        | astersql_session::runtime::PgSchemaCommand::TablePrivileges { .. }
                 ) {
                     if let Some((state, message)) = context.pg_schema_privileges(command.clone())? {
                         self.database_notices.push((
@@ -552,9 +553,16 @@ impl SessionQuery {
                     grant: false,
                     ..
                 } => "REVOKE",
-                astersql_session::runtime::PgSchemaCommand::Privileges { grant: true, .. }
+                astersql_session::runtime::PgSchemaCommand::TablePrivileges {
+                    grant: true, ..
+                }
+                | astersql_session::runtime::PgSchemaCommand::Privileges { grant: true, .. }
                 | astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
-                astersql_session::runtime::PgSchemaCommand::Privileges { grant: false, .. }
+                astersql_session::runtime::PgSchemaCommand::TablePrivileges {
+                    grant: false,
+                    ..
+                }
+                | astersql_session::runtime::PgSchemaCommand::Privileges { grant: false, .. }
                 | astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => {
                     "REVOKE"
                 }
@@ -893,6 +901,101 @@ impl SessionQuery {
                     database,
                     role,
                 })));
+            }
+        }
+        // Table ACLs share namespace/database parsing boundaries, retaining the old column adapter.
+        if word(tokens.first(), "grant") || word(tokens.first(), "revoke") {
+            if let Some(on) = tokens.iter().position(|t| word(Some(t), "on")) {
+                if !word(tokens.get(on + 1), "schema")
+                    && !word(tokens.get(on + 1), "database")
+                    && !word(tokens.get(on + 1), "sequence")
+                    && !tokens[1..on].contains(&Token::Symbol('('))
+                {
+                    let grant = word(tokens.first(), "grant");
+                    let only_option = !grant
+                        && word(tokens.get(1), "grant")
+                        && word(tokens.get(2), "option")
+                        && word(tokens.get(3), "for");
+                    let start = if only_option { 4 } else { 1 };
+                    let mut modes = Vec::new();
+                    for (i, t) in tokens[start..on].iter().enumerate() {
+                        if i % 2 == 1 {
+                            if word(Some(t), "privileges")
+                                && modes == ["ALL"]
+                                && start + i + 1 == on
+                            {
+                                continue;
+                            }
+                            if *t != Token::Symbol(',') {
+                                return Err(("42601", "expected privilege separator".into()));
+                            }
+                        } else {
+                            modes.push(
+                                identifier(t)
+                                    .ok_or_else(|| ("42601", "expected privilege".into()))?
+                                    .to_ascii_uppercase(),
+                            );
+                        }
+                    }
+                    let privileges = modes.join(",");
+                    if privileges != "ALL" {
+                        astersql_session::runtime::pg_table_privileges(&privileges)
+                            .map_err(|_| ("42601", "invalid table privilege".into()))?;
+                    }
+                    let at = on + 1 + usize::from(word(tokens.get(on + 1), "table"));
+                    let first = tokens
+                        .get(at)
+                        .and_then(identifier)
+                        .ok_or_else(|| ("42601", "expected relation".into()))?;
+                    let (schema, table, end) = if tokens.get(at + 1) == Some(&Token::Symbol('.')) {
+                        (
+                            Some(first),
+                            tokens
+                                .get(at + 2)
+                                .and_then(identifier)
+                                .ok_or_else(|| ("42601", "expected relation".into()))?,
+                            at + 3,
+                        )
+                    } else {
+                        (None, first, at + 1)
+                    };
+                    if !word(tokens.get(end), if grant { "to" } else { "from" }) {
+                        return Err(("0A000", "expected a single table grantee".into()));
+                    }
+                    let grantee = tokens
+                        .get(end + 1)
+                        .and_then(identifier)
+                        .ok_or_else(|| ("42601", "expected grantee".into()))?;
+                    let public = word(tokens.get(end + 1), "public");
+                    let suffix = &tokens[end + 2..];
+                    let option = only_option
+                        || grant
+                            && suffix.len() == 3
+                            && word(suffix.first(), "with")
+                            && word(suffix.get(1), "grant")
+                            && word(suffix.get(2), "option");
+                    let cascade = !grant && suffix.len() == 1 && word(suffix.first(), "cascade");
+                    if !suffix.is_empty()
+                        && !(grant && option
+                            || !grant
+                                && suffix.len() == 1
+                                && (cascade || word(suffix.first(), "restrict")))
+                    {
+                        return Err(("0A000", "unsupported table grant syntax".into()));
+                    }
+                    return Ok(Some(Self::SchemaUtility(
+                        PgSchemaCommand::TablePrivileges {
+                            schema,
+                            table,
+                            grantee,
+                            public,
+                            privileges,
+                            grant,
+                            grant_option: option,
+                            cascade,
+                        },
+                    )));
+                }
             }
         }
         // Object ACL syntax dispatches to the existing database/namespace persistent records.

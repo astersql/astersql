@@ -406,3 +406,10 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 ## 命名空间授权（目录任务18）
 
 has_schema_privilege与has_database_privilege复用正式签名/工厂和既有statement-owned权限回调槽。每次真实普通关系求值捕获namespace事实、角色及有效actor，不持有活Session；schema调用不读取无关数据库ACL。严格NULL先于事实读取，bool类型及列描述保持正式结果。
+
+
+## 表授权（目录任务19）
+
+has_table_privilege复用正式typed工厂与statement-owned回调；NULL先处理，每次求值捕获实际表模型/有效search_path/角色。SELECT对有来源PG ACL按同一事实授权，PUBLIC、继承及SET ROLE与查询函数一致；有来源临时表也不绕过已撤销的普通SELECT。
+
+表名重载显式schema解析检查调用者的真实namespace USAGE，缺schema为3F000、无USAGE为42501；OID重载仍只查询目标表授权，与PG18 convert_table_name/LookupExplicitNamespace及双参考端采样一致。该namespace门禁不隐藏公开relacl目录行。

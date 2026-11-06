@@ -63,6 +63,16 @@ pub enum PgSchemaCommand {
         table: String,
         owner: String,
     },
+    TablePrivileges {
+        schema: Option<String>,
+        table: String,
+        grantee: String,
+        public: bool,
+        privileges: String,
+        grant: bool,
+        grant_option: bool,
+        cascade: bool,
+    },
     RelationPrivilege {
         privilege: PgTablePrivilege,
         schema: String,
@@ -253,7 +263,8 @@ impl ConcreteSession {
                     }
                     if let Some(command) = command {
                         match command {
-                            PgSchemaCommand::RelationPrivilege { .. }
+                            PgSchemaCommand::TablePrivileges { .. }
+                            | PgSchemaCommand::RelationPrivilege { .. }
                             | PgSchemaCommand::RelationOwner { .. }
                             | PgSchemaCommand::TypeOwner { .. }
                             | PgSchemaCommand::FunctionOwner { .. } => {
@@ -607,6 +618,19 @@ impl ConcreteSession {
             grant,
         } = command
         {
+            if column.is_none() {
+                self.pg_table_privilege_command(&PgSchemaCommand::TablePrivileges {
+                    schema: Some(schema.clone()),
+                    table: table.clone(),
+                    grantee: grantee.clone(),
+                    public: grantee == "PUBLIC",
+                    privileges: privilege.sql().into(),
+                    grant: *grant,
+                    grant_option: false,
+                    cascade: false,
+                })?;
+                return Ok(());
+            }
             if self.pg_schema_identity() != "root" {
                 return Err(namespace_error(
                     "42501",
@@ -652,6 +676,9 @@ impl ConcreteSession {
         &self,
         command: &PgSchemaCommand,
     ) -> SessionResult<Option<(&'static str, String)>> {
+        if matches!(command, PgSchemaCommand::TablePrivileges { .. }) {
+            return self.pg_table_privilege_command(command);
+        }
         let _guard = PG_NAMESPACE_DDL_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -788,7 +815,9 @@ impl ConcreteSession {
         enabled.extend(self.pg_declared_inherited_roles()?);
         Ok(enabled)
     }
-    fn pg_namespace_role_identities(&self) -> SessionResult<Vec<super::pg_database::PgRoleFact>> {
+    pub(super) fn pg_namespace_role_identities(
+        &self,
+    ) -> SessionResult<Vec<super::pg_database::PgRoleFact>> {
         let names = self
             .pg_database_facts(None)?
             .first()
@@ -1409,6 +1438,23 @@ impl ConcreteSession {
         if owner.is_some_and(|name| name == user || inherited.iter().any(|r| &r.Username == name)) {
             return Ok(true);
         }
+        if let Some(allowed) =
+            self.pg_table_model_access(table, super::pg_table::TABLE_LISTING_PRIVILEGES)?
+        {
+            if allowed {
+                return Ok(true);
+            }
+            for column in table
+                .Columns
+                .iter()
+                .filter(|c| c.State == astersql_meta_model::StatePublic && !c.Hidden)
+            {
+                if self.pg_standard_column_access(database, table, &column.Name.O, false)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
         let mask = astersql_parser_mysql::privs::AllPrivMask.0;
         Ok(
             privileges.RequestVerification(&active, user, host, database, &table.Name.O, "", mask)
@@ -1511,15 +1557,26 @@ impl ConcreteSession {
         };
         // tables_priv.ColumnPriv summarizes grants on any column. It cannot
         // establish permission on this particular column; consult its exact key.
-        let table_grant = privileges.RequestVerification(
-            &active,
-            user,
-            host,
-            database,
-            &table.Name.O,
-            "",
-            table_mask,
-        );
+        let table_grant = if let Some(allowed) = self.pg_table_model_access(
+            table,
+            if write_only {
+                super::pg_table::CONSTRAINT_VISIBLE_TABLE_PRIVILEGES
+            } else {
+                super::pg_table::COLUMN_VISIBLE_TABLE_PRIVILEGES
+            },
+        )? {
+            allowed
+        } else {
+            privileges.RequestVerification(
+                &active,
+                user,
+                host,
+                database,
+                &table.Name.O,
+                "",
+                table_mask,
+            )
+        };
         let identities =
             std::iter::once(astersql_privilege_privileges::RoleIdentity::new(user, host))
                 .chain(privileges.FindAllUserEffectiveRoles(user, host, &active));

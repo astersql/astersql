@@ -183,3 +183,8 @@ has_database_privilege沿正式签名解析和core工厂注册2/3参数重载，
 ## 命名空间授权（目录任务18）
 
 has_schema_privilege复用数据库权限函数的2/3参typed签名、statement-owned ACL回调及bool工厂。身份仅允许name/text/OID，最后权限参数为text；严格NULL不读取事实。该共享signature复用已有线程安全方法，不新增伪函数结果。
+
+
+## 表授权（目录任务19）
+
+has_table_privilege复用现有PG权限函数的2/3参正式typed签名、bool工厂和statement-owned回调；identity为name/text/OID，权限为text，严格NULL不读取事实。

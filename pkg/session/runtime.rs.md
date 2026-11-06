@@ -165,3 +165,8 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 ## 命名空间授权（目录任务18）
 
 公开pg_schema_privileges与pg_has_schema_privilege，供目录和普通SQL执行器复用同一namespace持久ACL与成员图判断。
+
+
+## 表授权（目录任务19）
+
+装配pg_table与独立pg_table_test，导出表ACL事实/文本/权限求值函数供server及正式函数消费者复用。

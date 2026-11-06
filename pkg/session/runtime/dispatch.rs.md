@@ -187,3 +187,8 @@ SELECT结果的sql_select_limit经truncate_rows约束缓冲/活SRF两个形态�
 ## 写入公共表搬移接线
 
 PG 写入CTE只在 INSERT 分支、既有写入检查和 MDL登记后交给 execute_pg_move_insert；其他主语句保留 0A000 门禁。该分派不拆分SQL或另建执行器。
+
+
+## 表授权（目录任务19）
+
+PG视图创建登记默认表ACL；INSERT/UPDATE/DELETE在数据操作之前读取本表真实ACL，RETURNING、WHERE及UPDATE引用表达式另检查SELECT。旧原生记录保持原native路径；完整列授权和所有SQL语法不在本批次扩建。

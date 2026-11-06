@@ -135,3 +135,8 @@ PG 空表创建的索引在原子创建中登记 PostgreSQLBuildComplete；PG AD
 ## PostgreSQL CHECK / NOT NULL metadata
 
 PG CREATE TABLE binds supported CHECK syntax to persistent column IDs before publication and captures NOT NULL names/generations. ALTER COLUMN preserves the last generation while nullable and advances it when reasserting NOT NULL after validating stored rows.
+
+
+## 表授权（目录任务19）
+
+PG普通表创建把owner和默认表ACL存入同一TableInfo；原生CREATE LIKE清除PG ACL。已支持TRUNCATE路径读取共享表TRUNCATE权限后执行，未另建DDL worker或backfill。

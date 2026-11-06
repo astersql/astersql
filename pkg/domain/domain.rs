@@ -4146,6 +4146,25 @@ impl Domain {
         self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
+    /// Apply an ACL edit in the canonical relation metadata transaction.
+    pub fn ddl_update_postgresql_acl(
+        &self,
+        database: &str,
+        table_id: i64,
+        update: impl FnOnce(
+            &mut astersql_meta_model::TableInfo,
+        ) -> Result<(), astersql_kv::errors::SharedError>,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .update_postgresql_acl(store, database, table_id, update)
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
     /// Publish a metadata-only PG ownership change through the canonical DDL path.
     pub fn ddl_set_postgresql_owner(
         &self,

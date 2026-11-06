@@ -114,6 +114,12 @@ pub use pg_database::{
     pg_database_privileges, pg_has_database_privilege, pg_role_reachable,
 };
 mod pg_schema;
+mod pg_table;
+#[cfg(test)]
+mod pg_table_test;
+pub use pg_table::{
+    pg_has_table_privilege, pg_table_acl_fact, pg_table_acl_text, pg_table_privileges,
+};
 mod pg_sequence;
 pub use pg_sequence::PgSequenceCommand;
 #[cfg(test)]

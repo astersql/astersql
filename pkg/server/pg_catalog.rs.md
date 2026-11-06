@@ -145,3 +145,12 @@ pg_proc.proowner按oid/26、来源1255/4投影；三条原语的name/OID与共�
 ## 命名空间授权（目录任务18）
 
 目录has_schema_privilege支持省略用户、name/text/OID用户及text/OID对象，严格NULL、未知对象OID NULL、缺名称3F000、缺角色42704、完整逗号列表和22023校验。消费pg_namespace_facts的同一持久ACL/成员来源，nspacl既有1034与2615/4属性不变；不按root或展示常量构造授权答案。cat14_18通过真实Domain和非owner wire连接验证。
+
+
+## 表授权（目录任务19）
+
+relacl绑定为aclitem[]/1034、来源1259/32；按已筛选关系OID惰性取当前Execute模型与角色事实，真实默认NULL与显式{}区分，未知来源0A000，外连接空侧仍NULL。has_table_privilege省略用户及name/OID用户、text/OID对象沿共享表ACL判定，普通FROM与目录入口不构造静态权限答案。
+
+表名重载显式schema解析检查调用者的真实namespace USAGE，缺schema为3F000、无USAGE为42501；OID重载仍只查询目标表授权，与PG18 convert_table_name/LookupExplicitNamespace及双参考端采样一致。该namespace门禁不隐藏公开relacl目录行。
+
+Execution惰性缓存本次schema快照对应的表模型和namespace事实，relacl及权限函数复用同一个缓存；避免逐ACL单元重复深拷贝整个模型集合或重复扫描KV。缓存不跨Execute/portal，新查询仍可看到已提交GRANT/REVOKE。角色事实继续用现有单次执行缓存；跨来源并发同代际一致性仍归后续快照专项。

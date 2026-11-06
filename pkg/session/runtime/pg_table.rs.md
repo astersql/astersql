@@ -1,0 +1,13 @@
+# `pkg/session/runtime/pg_table.rs`
+
+TableInfo表授权事实的共享消费者。复用PgDatabaseFact的校验、成员继承、ACL编码以及update_object_acl委派/撤权算法；没有第二套账户、角色OID或ACL持久系统。
+
+权限位依次为INSERT/SELECT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER/MAINTAIN，aclitem文本按arwdDxtm顺序。default_acl只在完整owner默认事实一致时输出SQL NULL；显式空数组输出{}，缺源、损坏身份、选项超出权限及缺owner均0A000。owner固有grant authority不会变成不可撤销的普通权限。
+
+pg_has_table_privilege对用户省略/name/OID与对象text/OID共六种组合统一求值；严格NULL先于来源读取，缺名称42P01、无目标OID为NULL、无效权限22023，逗号权限全部校验后按任一判定。名称解析保留引号、大小写和双引号转义，未限定对象采用有效search_path。对象OID与pg_class稳定身份映射一致。
+
+pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical metadata事务读取最新ACL并原子写回。GRANT/REVOKE保存真实有效grantor/grantee、PUBLIC及grant option，RESTRICT失败不提交，CASCADE按共享权限位撤销委派。pg_table_access接实际SELECT及写入权限；未知legacy记录保留原native执行路径，但目录和PG权限查询不声称其ACL可用。
+
+测试：server pg_catalog_test::cat14_19使用真实非root连接、Q/扩展协议和实际GRANT/REVOKE/DML；runtime独立pg_table_test::cat14_19_table_acl_provenance_atomicity_and_lifecycle验证真实持久模型损坏、失败原子性和生命周期。列ACL、完整用户sequence授权、跨事实并发快照及所有客户端UI仍归后续专项。
+
+表名重载显式schema解析检查调用者的真实namespace USAGE，缺schema为3F000、无USAGE为42501；OID重载仍只查询目标表授权，与PG18 convert_table_name/LookupExplicitNamespace及双参考端采样一致。该namespace门禁不隐藏公开relacl目录行。

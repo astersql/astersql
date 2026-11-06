@@ -139,3 +139,8 @@ complete_postgresql_index 按数据库与持久表/索引 ID 定位，在 StateP
 PG新建数据库在身份/owner同一KV事务中向既有PgDatabaseConnect记录写入明确的默认ACL标志；原生/历史库不自动迁移，DROP仍沿原有键清理。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+
+## 表授权（目录任务19）
+
+update_postgresql_acl沿现有metadata-only事务编辑TableInfo并发布schema version；失败不发布部分ACL。set_postgresql_owner在同一变更重写并合并grantor/grantee，关系及索引身份不变。无需reorg/backfill，drop/rename复用原关系生命周期。

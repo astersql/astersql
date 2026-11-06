@@ -157,6 +157,11 @@ type CatalogRows = std::sync::Arc<Vec<Vec<Value>>>;
 
 // Shared across every CTE and subquery in one Execute. Provider rows, native
 // identity resolution and regclass conversions all use this single snapshot.
+struct TablePrivilegeSnapshot {
+    models: Vec<(String, String, astersql_meta_model::TableInfo)>,
+    namespaces: Vec<astersql_session::runtime::PgNamespaceFact>,
+}
+
 struct Execution<'a> {
     context: &'a dyn TiDBContext,
     cancel: &'a CancellationToken,
@@ -164,6 +169,7 @@ struct Execution<'a> {
     database: String,
     database_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgDatabaseFact>>>,
     database_role_names: std::cell::RefCell<std::collections::BTreeMap<i64, String>>,
+    table_privileges: std::cell::RefCell<Option<TablePrivilegeSnapshot>>,
     role_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgRoleFact>>>,
     session_identity: std::cell::RefCell<Option<(String, String)>>,
     providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
@@ -172,6 +178,23 @@ struct Execution<'a> {
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
+    fn table_privileges(&self) -> ConnResult<std::cell::Ref<'_, TablePrivilegeSnapshot>> {
+        if self.table_privileges.borrow().is_none() {
+            let snapshot = self
+                .snapshot
+                .as_deref()
+                .ok_or_else(|| database_identity_unavailable("relation snapshot unavailable"))?;
+            *self.table_privileges.borrow_mut() = Some(table_privilege_models(
+                self.context,
+                snapshot,
+                &self.database,
+            )?);
+        }
+        Ok(std::cell::Ref::map(
+            self.table_privileges.borrow(),
+            |facts| facts.as_ref().unwrap(),
+        ))
+    }
     fn session_identity(&self) -> ConnResult<(String, String)> {
         if self.session_identity.borrow().is_none() {
             *self.session_identity.borrow_mut() = Some(self.context.pg_session_identity()?);
@@ -1341,14 +1364,19 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
-                    ("pg_has_role" | "has_database_privilege" | "has_schema_privilege", values)
-                        if matches!(values.len(), 2 | 3)
-                            && values.iter().all(|v| {
-                                matches!(v, Expr::Null)
-                                    || self
-                                        .expr_type(v)
-                                        .is_ok_and(|(t, _)| textual_type(t) || numeric_type(t))
-                            }) =>
+                    (
+                        "pg_has_role"
+                        | "has_database_privilege"
+                        | "has_schema_privilege"
+                        | "has_table_privilege",
+                        values,
+                    ) if matches!(values.len(), 2 | 3)
+                        && values.iter().all(|v| {
+                            matches!(v, Expr::Null)
+                                || self
+                                    .expr_type(v)
+                                    .is_ok_and(|(t, _)| textual_type(t) || numeric_type(t))
+                        }) =>
                     {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
@@ -1802,6 +1830,7 @@ impl CatalogQuery {
                         ("pg_class", 2) => 3,
                         ("pg_class", 3) => 18,
                         ("pg_class", 11) => 6,
+                        ("pg_class", 13) => 32,
                         _ => return None,
                     };
                     let oid = crate::pg_oid::SYSTEM_RELATIONS
@@ -1887,6 +1916,7 @@ impl CatalogQuery {
             database,
             database_facts: Default::default(),
             database_role_names: Default::default(),
+            table_privileges: Default::default(),
             role_facts: Default::default(),
             session_identity: Default::default(),
             providers: Default::default(),
@@ -3792,6 +3822,26 @@ impl CatalogQuery {
                             "native physical partition is not a PostgreSQL partitioned relation",
                         ));
                     }
+                    if local == 13 && row[slot - local] != Value::Null {
+                        let oid = &row[slot - local];
+                        let facts = execution.table_privileges()?;
+                        let model = facts
+                            .models
+                            .iter()
+                            .find(|(_, _, m)| {
+                                crate::pg_oid::table_oid(m.ID)
+                                    .is_ok_and(|id| *oid == Value::Signed(i64::from(id)))
+                            })
+                            .ok_or_else(|| {
+                                database_identity_unavailable("relation ACL source unavailable")
+                            })?;
+                        return astersql_session::runtime::pg_table_acl_text(
+                            &model.2,
+                            &execution.role_facts()?,
+                        )
+                        .map(|acl| acl.map_or(Value::Null, Value::Text))
+                        .map_err(crate::runtime::session_protocol_error);
+                    }
                     if local == 11 && row[slot - local] != Value::Null {
                         match row[slot] {
                             Value::Signed(oid)
@@ -4113,6 +4163,41 @@ impl CatalogQuery {
                         })?;
                     let result = astersql_session::runtime::pg_has_schema_privilege(
                         &namespaces,
+                        &execution.role_facts()?,
+                        &execution.session_identity()?.1,
+                        &values,
+                        &oids,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    result.map_or(Value::Null, |v| {
+                        Value::Text(if v { "t" } else { "f" }.into())
+                    })
+                }
+                "has_table_privilege" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.iter().any(|v| *v == Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    let oids = values
+                        .iter()
+                        .map(|v| matches!(v, Value::Signed(_)))
+                        .collect::<Vec<_>>();
+                    let values = values
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Null => Ok(None),
+                            Value::Text(s) => Ok(Some(s)),
+                            Value::Signed(n) => Ok(Some(n.to_string())),
+                            _ => Err(database_identity_unavailable(
+                                "invalid table privilege argument",
+                            )),
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?;
+                    let facts = execution.table_privileges()?;
+                    let result = astersql_session::runtime::pg_has_table_privilege(
+                        &facts.models,
+                        &self.relation_path,
+                        &facts.namespaces,
                         &execution.role_facts()?,
                         &execution.session_identity()?.1,
                         &values,
@@ -5885,9 +5970,10 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         (
             "pg_class",
             "xmin" | "reltablespace" | "reloptions" | "relpersistence" | "relispartition"
-            | "relpartbound" | "relam" | "relacl",
+            | "relpartbound" | "relam",
         ) => return None,
         ("pg_class", "relowner") => (11, oid),
+        ("pg_class", "relacl") => (13, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_depend", "classid") => (0, oid),
         ("pg_depend", "objid") => (1, oid),
         ("pg_depend", "refclassid") => (2, oid),
@@ -8799,4 +8885,42 @@ fn invalid_role_privilege() -> ConnError {
         hint: None,
         position: None,
     })
+}
+
+fn table_privilege_models(
+    context: &dyn TiDBContext,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+) -> ConnResult<TablePrivilegeSnapshot> {
+    let namespaces = context
+        .pg_namespace_facts()
+        .transpose()?
+        .unwrap_or_default();
+    let mut models = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|e| ConnError::Session(e.to_string()))?
+        .into_iter()
+        .filter_map(|t| t.model_meta.as_ref().map(|m| (**m).clone()))
+        .collect::<Vec<_>>();
+    models.extend(context.pg_local_temporary_models()?);
+    let models = models
+        .into_iter()
+        .map(|m| {
+            let (schema, name) = m.PostgreSQLNamespace.as_ref().map_or_else(
+                || ("public".to_string(), m.Name.O.clone()),
+                |(id, name)| {
+                    (
+                        namespaces
+                            .iter()
+                            .find(|f| f.id == *id)
+                            .map(|f| f.name.clone())
+                            .unwrap_or_default(),
+                        name.clone(),
+                    )
+                },
+            );
+            (schema, name, m)
+        })
+        .collect();
+    Ok(TablePrivilegeSnapshot { models, namespaces })
 }

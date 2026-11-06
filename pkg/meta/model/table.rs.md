@@ -95,3 +95,8 @@ PostgreSQLPrimaryConstraint 保存 PG 显式主键约束名称，覆盖 PKIsHand
 ## PostgreSQL CHECK / NOT NULL metadata
 
 PostgreSQLChecks persists CHECK syntax captured from the DDL AST, with column leaves bound to persistent IDs. Rendering resolves current column names and returns dependency IDs; it does not parse ExprString or produce pg_node_tree.
+
+
+## 表授权（目录任务19）
+
+TableInfo.PostgreSQLAcl可空，缺失表示历史来源未知。PostgreSQLRelationAcl分别保存default_acl与逐项稳定grantor/grantee、8位权限及grant option；PostgreSQLAclGrant同时由数据库/命名空间复用，序列化键和原有数据库ACL数据保持兼容。新PG普通表/视图在创建时登记owner默认ACL，原生CREATE LIKE不复制PG ACL。
