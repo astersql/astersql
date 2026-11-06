@@ -118,3 +118,7 @@ pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通
 ## 2026-11-06 列授权事实与查询（任务20）
 
 has_column_privilege/has_any_column_privilege无FROM标量查询接既有CatalogQuery；Smallint/int2 cast支持列属性号重载并推导参数OID21。
+
+## 类型授权（任务22）
+
+任务22：无FROM的has_type_privilege请求沿既有目录函数词法分类，保留name/OID cast与扩展参数语义。

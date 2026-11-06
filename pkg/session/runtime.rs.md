@@ -174,3 +174,7 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 ## 2026-11-06 列授权事实与查询（任务20）
 
 公开pg_column_acl_fact、pg_column_acl_text、pg_has_column_privilege，服务目录与普通执行器复用同一权限来源。
+
+## 类型授权（任务22）
+
+任务22：pg_type模块对外导出共享类型ACL事实、USAGE解析与has_type_privilege消费者，沿原ConcreteSession/Domain/KV边界。

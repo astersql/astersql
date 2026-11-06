@@ -2882,6 +2882,7 @@ pub mod formal_registry {
             name,
             "has_database_privilege"
                 | "has_schema_privilege"
+                | "has_type_privilege"
                 | "has_sequence_privilege"
                 | "has_table_privilege"
                 | "has_column_privilege"
@@ -7207,6 +7208,7 @@ pub mod formal_registry {
             }
             "has_database_privilege"
             | "has_schema_privilege"
+            | "has_type_privilege"
             | "has_sequence_privilege"
             | "has_table_privilege"
             | "has_column_privilege"
@@ -9117,6 +9119,7 @@ pub mod formal_registry {
     core_factory!(pg_backend_pid_factory, "pg_backend_pid");
     core_factory!(pg_database_privilege_factory, "has_database_privilege");
     core_factory!(pg_schema_privilege_factory, "has_schema_privilege");
+    core_factory!(pg_type_privilege_factory, "has_type_privilege");
     core_factory!(pg_sequence_privilege_factory, "has_sequence_privilege");
     core_factory!(pg_table_privilege_factory, "has_table_privilege");
     core_factory!(pg_column_privilege_factory, "has_column_privilege");
@@ -9234,6 +9237,7 @@ pub mod formal_registry {
         ("pg_backend_pid", pg_backend_pid_factory),
         ("has_database_privilege", pg_database_privilege_factory),
         ("has_schema_privilege", pg_schema_privilege_factory),
+        ("has_type_privilege", pg_type_privilege_factory),
         ("has_sequence_privilege", pg_sequence_privilege_factory),
         ("has_table_privilege", pg_table_privilege_factory),
         ("has_column_privilege", pg_column_privilege_factory),
@@ -9637,6 +9641,7 @@ pub mod formal_registry {
         ("pg_backend_pid", 0, 0),
         ("has_database_privilege", 2, 3),
         ("has_schema_privilege", 2, 3),
+        ("has_type_privilege", 2, 3),
         ("has_sequence_privilege", 2, 3),
         ("has_table_privilege", 2, 3),
         ("has_column_privilege", 3, 4),
@@ -9954,6 +9959,7 @@ pub mod formal_registry {
                     | "pg_backend_pid"
                     | "has_database_privilege"
                     | "has_schema_privilege"
+                    | "has_type_privilege"
                     | "has_sequence_privilege"
                     | "has_table_privilege"
                     | "has_column_privilege"

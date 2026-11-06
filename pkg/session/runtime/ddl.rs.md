@@ -144,3 +144,7 @@ PG普通表创建把owner和默认表ACL存入同一TableInfo；原生CREATE LIK
 ## 2026-11-06 列授权事实与查询（任务20）
 
 新PG表初始化PostgreSQLColumnAcls为空map，native CREATE LIKE清除该PG来源。列默认NULL与历史未知来源不混用。
+
+## 类型USAGE（任务22）
+
+PostgreSQL CREATE TABLE沿原声明验证入口，用FieldType的真实PG类型OID查询共享USAGE权限；数组依元素类型检查。权限失败在分配和发布表元数据之前42501，旧ACL缺源0A000。读取已有列或显式cast不新增类型USAGE门禁，与PG18一致。MySQL路径不变。

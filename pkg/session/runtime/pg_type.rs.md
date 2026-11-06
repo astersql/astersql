@@ -1,0 +1,7 @@
+# `pkg/session/runtime/pg_type.rs`
+
+## 类型授权（任务22）
+
+类型USAGE授权复用PgStandardSchema的持久默认ACL标志和按数据库/类型OID保存的显式ACL。pg_type_facts将同一owner/角色事实提供给typacl、has_type_privilege与普通SQL工厂；NULL默认ACL与空数组不同，旧记录缺字段拒绝0A000。pg_type_privilege_command在现有元数据锁和KV事务内调用update_object_acl，保留PUBLIC、grantor、grant option、继承、RESTRICT/CASCADE。数组查询使用元素ACL，数组自身GRANT拒绝0LP01。
+
+类型owner显式转移时同事务替换ACL中的旧owner身份并合并重复条目，不改变其他数据库。原DROP ROLE依赖扫描检查活跃数据库的有效类型owner及显式ACL，防止删除被引用的角色造成缺源。

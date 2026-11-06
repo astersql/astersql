@@ -439,7 +439,7 @@ pub fn pg_has_column_privilege(
     Ok(Some(result))
 }
 
-fn table_name_parts(input: &str) -> SessionResult<Vec<String>> {
+pub(super) fn table_name_parts(input: &str) -> SessionResult<Vec<String>> {
     let mut chars = input.trim().chars().peekable();
     let mut parts = Vec::new();
     loop {

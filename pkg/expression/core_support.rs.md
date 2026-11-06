@@ -117,3 +117,7 @@ has_database_privilege加入unFoldableFunctions；常量实参也必须在执行
 ## 2026-11-06 列授权事实与查询（任务20）
 
 新增两列权限查询函数进入现有core builtin实现注册，避免只有目录特例。
+
+## 类型授权（任务22）
+
+任务22：正式可执行函数集合新增has_type_privilege。

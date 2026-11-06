@@ -171,6 +171,7 @@ struct Execution<'a> {
     database_role_names: std::cell::RefCell<std::collections::BTreeMap<i64, String>>,
     table_privileges: std::cell::RefCell<Option<TablePrivilegeSnapshot>>,
     role_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgRoleFact>>>,
+    type_namespaces: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgNamespaceFact>>>,
     session_identity: std::cell::RefCell<Option<(String, String)>>,
     providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
     ctes: std::cell::RefCell<std::collections::HashMap<usize, CatalogRows>>,
@@ -178,6 +179,18 @@ struct Execution<'a> {
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
+    fn type_namespaces(&self) -> ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>> {
+        if self.type_namespaces.borrow().is_none() {
+            *self.type_namespaces.borrow_mut() = Some(
+                self.context
+                    .pg_namespace_facts()
+                    .transpose()?
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(self.type_namespaces.borrow().as_ref().unwrap().clone())
+    }
+
     fn table_privileges(&self) -> ConnResult<std::cell::Ref<'_, TablePrivilegeSnapshot>> {
         if self.table_privileges.borrow().is_none() {
             let snapshot = self
@@ -1374,6 +1387,7 @@ impl CatalogQuery {
                         "pg_has_role"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_type_privilege"
                         | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_any_column_privilege"
@@ -1729,6 +1743,7 @@ impl CatalogQuery {
                         ("pg_type", 17) => 11,
                         ("pg_type", 18) => 5,
                         ("pg_type", 19) => 6,
+                        ("pg_type", 20) => 32,
                         ("pg_attribute", 1) => 5,
                         ("pg_attribute", 2) => 2,
                         ("pg_attribute", 4) => 6,
@@ -1931,6 +1946,7 @@ impl CatalogQuery {
             database_role_names: Default::default(),
             table_privileges: Default::default(),
             role_facts: Default::default(),
+            type_namespaces: Default::default(),
             session_identity: Default::default(),
             providers: Default::default(),
             ctes: Default::default(),
@@ -3006,13 +3022,8 @@ impl CatalogQuery {
                     database,
                     cancel,
                 )?;
-                if let Some(standard) = context
-                    .pg_namespace_facts()
-                    .transpose()?
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find_map(|f| f.standard)
-                {
+                let namespaces = execution.type_namespaces()?;
+                if let Some(standard) = namespaces.iter().find_map(|f| f.standard.as_ref()) {
                     for row in &mut rows {
                         if let Value::Signed(oid) = row[0] {
                             if let Some(owner) = standard.builtin_type_owners.get(&oid) {
@@ -3787,6 +3798,32 @@ impl CatalogQuery {
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
                     .is_some_and(|r| r.name == "pg_type")
+                    && local == 20
+                    && row[base] != Value::Null
+                {
+                    // Only an actual typacl projection requires ACL provenance; identity lookups stay usable.
+                    let roles = execution.role_facts()?;
+                    let types = astersql_session::runtime::pg_type_facts(
+                        &execution.type_namespaces()?,
+                        &roles,
+                    );
+                    let fact = &types
+                        .iter()
+                        .find(|(_, _, f)| row[base] == Value::Signed(f.id))
+                        .ok_or_else(|| {
+                            database_identity_unavailable(
+                                "PostgreSQL type ACL source is unavailable",
+                            )
+                        })?
+                        .2;
+                    let text = astersql_session::runtime::pg_type_acl_text(fact)
+                        .map_err(crate::runtime::session_protocol_error)?;
+                    return Ok(text.map_or(Value::Null, Value::Text));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_type")
                     && slot % CATALOG_ROW_WIDTH == 11
                     && row[slot - 11] != Value::Null
                 {
@@ -4289,6 +4326,40 @@ impl CatalogQuery {
                             )
                         }
                         .map_err(crate::runtime::session_protocol_error)?;
+                    result.map_or(Value::Null, |v| {
+                        Value::Text(if v { "t" } else { "f" }.into())
+                    })
+                }
+                "has_type_privilege" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    let oids = values
+                        .iter()
+                        .map(|v| matches!(v, Value::Signed(_)))
+                        .collect::<Vec<_>>();
+                    let values = values
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Null => Ok(None),
+                            Value::Signed(n) => Ok(Some(n.to_string())),
+                            Value::Text(s) => Ok(Some(s)),
+                            _ => Err(database_identity_unavailable(
+                                "invalid type privilege argument",
+                            )),
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?;
+                    let roles = execution.role_facts()?;
+                    let namespaces = execution.type_namespaces()?;
+                    let types = astersql_session::runtime::pg_type_facts(&namespaces, &roles);
+                    let result = astersql_session::runtime::pg_has_type_privilege(
+                        &types,
+                        &self.relation_path,
+                        &namespaces,
+                        &roles,
+                        &execution.session_identity()?.1,
+                        &values,
+                        &oids,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
                     result.map_or(Value::Null, |v| {
                         Value::Text(if v { "t" } else { "f" }.into())
                     })
@@ -6191,7 +6262,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_type", "typnotnull") => (10, 1),
         ("pg_type", "typowner") => (11, oid),
         // Type ACL facts are independent of explicit ownership.
-        ("pg_type", "typacl") => return None,
+        ("pg_type", "typacl") => (20, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_type", "typarray") => (16, oid),
         ("pg_type", "typdelim") => (17, internal_char),
         ("pg_type", "typlen") => (18, 2),

@@ -4894,6 +4894,13 @@ fn pg13_011_contract() {
             "missing or duplicated OID {oid}: {result:?}"
         );
     }
+    // The initialized builtin now has a real owner and a default (NULL) ACL.
+    let actual = query(
+        &mut a,
+        "SELECT t.typowner,t.typacl FROM pg_catalog.pg_type t WHERE t.oid=23",
+    );
+    assert!(!actual.iter().any(|m| m.0 == b'E'), "{actual:?}");
+    assert_eq!(actual.iter().filter(|m| m.0 == b'D').count(), 1);
     // Static builtin lookup must not validate unrelated native enum columns.
     native
         .execute("CREATE TABLE pg13_011_admin.bad_type (e ENUM('a','b'))")
@@ -4902,7 +4909,6 @@ fn pg13_011_contract() {
     for unsupported in [
         "CREATE DOMAIN public.type_domain AS integer CHECK (VALUE>0)",
         "CREATE TYPE public.type_composite AS (id integer)",
-        "SELECT t.typowner,t.typacl FROM pg_catalog.pg_type t WHERE t.oid=23",
     ] {
         let result = query(&mut a, unsupported);
         assert!(
@@ -4918,7 +4924,7 @@ fn pg13_011_contract() {
     drop(cleanup);
     assert!(TcpStream::connect(addr).is_err());
     println!(
-        "pg13_011_contract: base=4 closure=60 zero_rows=1 static_bad_model=1 refusals=3 recovery=3 connections=3 cleanup=1"
+        "pg13_011_contract: base=4 closure=60 zero_rows=1 static_bad_model=1 refusals=2 recovery=2 connections=3 cleanup=1"
     );
 }
 
@@ -20122,5 +20128,626 @@ fn cat14_21() {
     }
     println!(
         "cat14_21: nonroot=4 sequence_modes=3 overloads=8 extended_binds=12 delegation=1 grant_option_cascade=1 null_empty=1 lifecycle=1 recovery=1 cleanup=1"
+    );
+}
+
+#[test]
+fn cat14_22() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_22_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_22_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_22_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_22_otherdb")
+            .unwrap();
+        for name in [
+            "cat14_22_reader",
+            "cat14_22_owner",
+            "cat14_22_other",
+            "cat14_22_member",
+            "PUBLIC",
+        ] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_database(user, "cat14_22_work");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = if *oid == 1034 { 1247u32 } else { 0u32 };
+            let attr = if *oid == 1034 { [32i16][index] } else { 0i16 };
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    #[track_caller]
+    fn check(s: &mut TcpStream, sql: &str, expected: &[Option<&str>]) -> Vec<(u8, Vec<u8>)> {
+        let r = ok(s, sql);
+        assert_eq!(data(&r).len(), 1, "{sql}: {r:?}");
+        assert_eq!(
+            values(&data(&r)[0]),
+            expected
+                .iter()
+                .map(|v| v.map(|s| s.as_bytes().to_vec()))
+                .collect::<Vec<_>>(),
+            "{sql}"
+        );
+        r
+    }
+    fn binary_acl(s: &mut TcpStream, default: bool) {
+        send(
+            s,
+            b'P',
+            &[
+                b"acl_stmt\0SELECT typacl FROM pg_type WHERE typname='int4'\0".as_slice(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'S', b"");
+        let p = until_ready(s);
+        assert!(!p.iter().any(|m| m.0 == b'E'), "{p:?}");
+        send(
+            s,
+            b'B',
+            &[
+                b"acl_portal\0acl_stmt\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"Pacl_portal\0");
+        send(
+            s,
+            b'E',
+            &[b"acl_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', b"");
+        let r = until_ready(s);
+        description(&r, &[(1034, -1)], 1);
+        if default {
+            assert_eq!(values(&data(&r)[0]), vec![None]);
+            assert!(!r.iter().any(|m| m.0 == b'E'));
+        } else {
+            assert!(
+                r.iter()
+                    .any(|m| m.0 == b'E' && m.1.windows(7).any(|v| v == b"C42883\0")),
+                "{r:?}"
+            );
+            assert!(data(&r).is_empty());
+        }
+        for close in [b"Pacl_portal\0".as_slice(), b"Sacl_stmt\0"] {
+            send(s, b'C', close);
+            send(s, b'S', b"");
+            until_ready(s);
+        }
+    }
+    let mut bootstrap = connect_database("root", "cat14_22_db");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_22_work");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_22_otherdb");
+    send(&mut bootstrap, b'X', b"");
+    let mut admin = connect("root");
+    for role in ["owner", "reader", "other", "member"] {
+        ok(&mut admin, &format!("CREATE ROLE cat14_22_{role} LOGIN"));
+    }
+    ok(&mut admin, "CREATE ROLE \"PUBLIC\" NOLOGIN");
+    denied(
+        &mut admin,
+        "GRANT USAGE ON DOMAIN int4 TO cat14_22_reader",
+        "42809",
+        b'I',
+    );
+    ok(&mut admin, "ALTER TYPE int4 OWNER TO cat14_22_owner");
+    let mut owner = connect("cat14_22_owner");
+    let mut reader = connect("cat14_22_reader");
+    let mut other = connect("cat14_22_other");
+    let r = check(
+        &mut reader,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+        &[None],
+    );
+    description(&r, &[(1034, -1)], 0);
+    binary_acl(&mut reader, true);
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE'),has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("t"), Some("f")],
+    );
+    ok(&mut owner, "REVOKE USAGE ON TYPE int4 FROM PUBLIC");
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("f")],
+    );
+    ok(&mut owner, r#"GRANT USAGE ON TYPE int4 TO "PUBLIC""#);
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('PUBLIC','int4','USAGE'),has_type_privilege('public','int4','USAGE')",
+        &[Some("t"), Some("f")],
+    );
+    let quoted = ok(
+        &mut reader,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+    );
+    assert!(
+        String::from_utf8(values(&data(&quoted)[0])[0].clone().unwrap())
+            .unwrap()
+            .contains("PUBLIC=U/cat14_22_owner")
+    );
+    ok(&mut owner, r#"REVOKE USAGE ON TYPE int4 FROM "PUBLIC""#);
+    check(&mut reader, "SELECT 1::int4", &[Some("1")]);
+    check(
+        &mut reader,
+        "SELECT has_type_privilege(1007::oid,'USAGE')",
+        &[Some("f")],
+    );
+    denied(
+        &mut reader,
+        "CREATE TEMP TABLE cat14_22_denied(id integer)",
+        "42501",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "CREATE TEMP TABLE cat14_22_denied_array(id integer[])",
+        "42501",
+        b'I',
+    );
+    denied(
+        &mut owner,
+        "GRANT USAGE ON TYPE _int4 TO cat14_22_reader",
+        "0LP01",
+        b'I',
+    );
+    ok(
+        &mut owner,
+        "GRANT USAGE ON TYPE int4 TO cat14_22_reader WITH GRANT OPTION",
+    );
+    ok(
+        &mut reader,
+        "CREATE TEMP TABLE cat14_22_allowed(id integer)",
+    );
+    ok(&mut reader, "INSERT INTO cat14_22_allowed VALUES(22)");
+
+    let r = check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE'),has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("t"), Some("t")],
+    );
+    description(&r, &[(16, 1), (16, 1)], 0);
+    let r = ok(
+        &mut reader,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+    );
+    let acl = String::from_utf8(values(&data(&r)[0])[0].clone().unwrap()).unwrap();
+    assert!(acl.contains("cat14_22_owner=U/cat14_22_owner"), "{acl}");
+    assert!(acl.contains("cat14_22_reader=U*/cat14_22_owner"), "{acl}");
+    binary_acl(&mut reader, false);
+    ok(&mut reader, "GRANT USAGE ON TYPE int4 TO cat14_22_other");
+    denied(&mut admin, "DROP ROLE cat14_22_other", "2BP01", b'I');
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    ok(&mut reader, "REVOKE USAGE ON TYPE int4 FROM cat14_22_other");
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("f")],
+    );
+    ok(&mut reader, "GRANT USAGE ON TYPE int4 TO cat14_22_other");
+    denied(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR USAGE ON TYPE int4 FROM cat14_22_reader RESTRICT",
+        "2BP01",
+        b'I',
+    );
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("t")],
+    );
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut owner,
+        "REVOKE GRANT OPTION FOR USAGE ON TYPE int4 FROM cat14_22_reader CASCADE",
+    );
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("f")],
+    );
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("f")],
+    );
+    let revoked = ok(&mut reader, "GRANT USAGE ON TYPE int4 TO cat14_22_other");
+    assert!(
+        revoked
+            .iter()
+            .any(|m| m.0 == b'N' && m.1.windows(7).any(|w| w == b"C01007\0")),
+        "{revoked:?}"
+    );
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("f")],
+    );
+    let user = String::from_utf8(
+        values(
+            &data(&ok(
+                &mut reader,
+                "SELECT oid FROM pg_roles WHERE rolname='cat14_22_reader'",
+            ))[0],
+        )[0]
+        .clone()
+        .unwrap(),
+    )
+    .unwrap();
+    for u in [
+        String::new(),
+        "'cat14_22_reader',".into(),
+        "'cat14_22_reader'::name,".into(),
+        format!("{user}::oid,"),
+    ] {
+        for obj in ["'int4'", "23::oid"] {
+            check(
+                &mut reader,
+                &format!("SELECT has_type_privilege({u}{obj},'USAGE')"),
+                &[Some("t")],
+            );
+        }
+    }
+    check(
+        &mut reader,
+        "SELECT has_type_privilege(NULL::oid,'USAGE'),has_type_privilege(0::oid,'USAGE'),has_type_privilege('int4',NULL),has_type_privilege(NULL::oid,'int4','USAGE')",
+        &[None, None, None, None],
+    );
+    for sql in [
+        "SELECT has_type_privilege('absent','USAGE')",
+        "SELECT has_type_privilege('absent','int4','USAGE')",
+    ] {
+        denied(&mut reader, sql, "42704", b'I');
+    }
+    for mode in ["BOGUS", "USAGE,BOGUS", "BOGUS,USAGE"] {
+        denied(
+            &mut reader,
+            &format!("SELECT has_type_privilege('int4','{mode}')"),
+            "22023",
+            b'I',
+        );
+    }
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE WITH GRANT OPTION,USAGE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_22_reader TO cat14_22_member WITH INHERIT TRUE, SET TRUE",
+    );
+    let mut member = connect("cat14_22_member");
+    check(
+        &mut member,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "GRANT cat14_22_reader TO cat14_22_member WITH INHERIT FALSE, SET TRUE",
+    );
+    check(
+        &mut member,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("f")],
+    );
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT has_type_privilege('int4','BOGUS')",
+        "22023",
+        b'E',
+    );
+    denied(&mut reader, "SELECT 1", "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    check(&mut reader, "SELECT 1", &[Some("1")]);
+    // A new Bind must re-read committed ACL facts, for text and binary OID parameters.
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"type_stmt\0SELECT has_type_privilege($1,$2)\0".as_slice(),
+            &2i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+            &25u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+    for allowed in [true, false] {
+        if !allowed {
+            ok(&mut owner, "REVOKE USAGE ON TYPE int4 FROM cat14_22_reader");
+        }
+        for binary in [0i16, 1] {
+            for oid in [Some(23u32), None, Some(0)] {
+                let v = oid.map(|oid| {
+                    if binary == 1 {
+                        oid.to_be_bytes().to_vec()
+                    } else {
+                        oid.to_string().into_bytes()
+                    }
+                });
+                let mut b = [
+                    b"type_portal\0type_stmt\0".as_slice(),
+                    &1i16.to_be_bytes(),
+                    &binary.to_be_bytes(),
+                    &2i16.to_be_bytes(),
+                ]
+                .concat();
+                for v in [v, Some(b"USAGE".to_vec())] {
+                    b.extend((v.as_ref().map_or(-1, |v| v.len() as i32)).to_be_bytes());
+                    if let Some(v) = v {
+                        b.extend(v);
+                    }
+                }
+                b.extend(1i16.to_be_bytes());
+                b.extend(binary.to_be_bytes());
+                send(&mut reader, b'B', &b);
+                send(&mut reader, b'D', b"Ptype_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"type_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(16, 1)], binary);
+                assert_eq!(
+                    values(&data(&r)[0]),
+                    vec![if oid != Some(23) {
+                        None
+                    } else {
+                        Some(if binary == 1 {
+                            vec![u8::from(allowed)]
+                        } else {
+                            if allowed {
+                                b"t".to_vec()
+                            } else {
+                                b"f".to_vec()
+                            }
+                        })
+                    }]
+                );
+                send(&mut reader, b'C', b"Ptype_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+    }
+    send(&mut reader, b'C', b"Stype_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    ok(&mut owner, "REVOKE ALL ON TYPE int4 FROM cat14_22_owner");
+    check(
+        &mut reader,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+        &[Some("{}")],
+    );
+    check(
+        &mut owner,
+        "SELECT has_type_privilege('int4','USAGE'),has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("f"), Some("t")],
+    );
+    ok(&mut owner, "GRANT USAGE ON TYPE int4 TO PUBLIC");
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    let acl = String::from_utf8(
+        values(
+            &data(&ok(
+                &mut reader,
+                "SELECT typacl FROM pg_type WHERE typname='int4'",
+            ))[0],
+        )[0]
+        .clone()
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(acl.contains("=U/cat14_22_owner"), "{acl}");
+    domain.reload().unwrap();
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+
+    let mut fresh = connect("cat14_22_reader");
+    check(
+        &mut fresh,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    let mut otherdb = connect_database("cat14_22_reader", "cat14_22_otherdb");
+    check(
+        &mut otherdb,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+        &[None],
+    );
+    check(
+        &mut otherdb,
+        "SELECT has_type_privilege('int4','USAGE')",
+        &[Some("t")],
+    );
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('information_schema.sql_identifier','USAGE')",
+        &[Some("t")],
+    );
+    ok(
+        &mut admin,
+        "REVOKE USAGE ON TYPE information_schema.sql_identifier FROM PUBLIC",
+    );
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('information_schema.sql_identifier','USAGE')",
+        &[Some("f")],
+    );
+    ok(
+        &mut admin,
+        "GRANT USAGE ON DOMAIN information_schema.sql_identifier TO cat14_22_reader",
+    );
+    check(
+        &mut reader,
+        "SELECT has_type_privilege('information_schema.sql_identifier','USAGE')",
+        &[Some("t")],
+    );
+    ok(&mut admin, "ALTER TYPE int4 OWNER TO cat14_22_other");
+    check(
+        &mut reader,
+        "SELECT typacl FROM pg_type WHERE typname='int4'",
+        &[Some("{=U/cat14_22_other}")],
+    );
+    check(
+        &mut other,
+        "SELECT has_type_privilege('int4','USAGE WITH GRANT OPTION')",
+        &[Some("t")],
+    );
+    check(
+        &mut reader,
+        "SELECT oid FROM pg_type WHERE typname='int4'",
+        &[Some("23")],
+    );
+    send(&mut fresh, b'X', b"");
+    send(&mut otherdb, b'X', b"");
+    for s in [&mut member, &mut other, &mut reader, &mut owner, &mut admin] {
+        send(s, b'X', b"");
+    }
+    eprintln!(
+        "cat14_22: nonroot_identities=4 nonroot_connections=6 overloads=8 binds=12 acl_default_empty=1 delegation=1 revoke_cascade=1 recovery=1 cleanup=1"
     );
 }

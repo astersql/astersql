@@ -32,3 +32,7 @@ PgDatabaseGrant重导出共享模型类型并保留旧序列化结构。has_priv
 ## 2026-11-06 列授权事实与查询（任务20）
 
 update_object_acl_with_authority接收同对象上层表授权作为列grantor选择和撤权闭包的authority，只在本列entries中写入，避免复制或混入表ACL。原update_object_acl保持原调用语义。DROP ROLE同时检查持久列ACL中grantor/grantee依赖。
+
+## 类型ACL依赖（任务22）
+
+DROP ROLE沿已有按活跃数据库扫描的事务检查类型owner与grantor/grantee引用，有依赖返回2BP01，不留下悬空ACL身份。类型事实仍保存在原PgStandardSchema记录，不另存角色依赖表。

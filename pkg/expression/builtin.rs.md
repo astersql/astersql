@@ -192,3 +192,7 @@ has_table_privilege复用现有PG权限函数的2/3参正式typed签名、bool�
 ## 2026-11-06 列授权事实与查询（任务20）
 
 注册has_column_privilege(3/4参数)与has_any_column_privilege(2/3参数)正式工厂；共享严格NULL、boolean/16返回和statement-owned evaluator。typed重载区分用户/name/OID、表/text/OID、列/name/int2；参数OID21作为属性号身份传递，禁止其他数值类型冒充。
+
+## 类型授权（任务22）
+
+任务22：正式注册has_type_privilege两/三参数工厂，沿既有对象权限函数的typed signature选择和严格NULL求值，不在表达式层伪造权限。

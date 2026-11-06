@@ -355,6 +355,40 @@ impl ConcreteSession {
         astersql_planner_core::InstallPlannerExpressionFactory()
             .map_err(|error| SessionError::new(error.to_string()))?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // PG USAGE gates declarations, not reads/casts of already existing values.
+            let namespaces = self.pg_namespace_facts()?;
+            let actor = self.pg_schema_identity();
+            let roles = if actor == "root" {
+                self.pg_namespace_role_identities()?
+            } else {
+                self.pg_role_facts()?
+            };
+            let types = pg_type::pg_type_facts(&namespaces, &roles);
+            for column in &statement.Cols {
+                if let Some(oid) = column.Tp.PostgreSQLTypeOid() {
+                    let allowed = pg_type::pg_has_type_privilege(
+                        &types,
+                        &[],
+                        &namespaces,
+                        &roles,
+                        &actor,
+                        &[Some(oid.to_string()), Some("USAGE".into())],
+                        &[true, false],
+                    )?;
+                    if allowed == Some(false) {
+                        return Err(pg_schema::namespace_error(
+                            "42501",
+                            "permission denied for type",
+                        ));
+                    }
+                    if allowed.is_none() && actor != "root" {
+                        return Err(pg_schema::namespace_error(
+                            "0A000",
+                            "declared type authority is unavailable",
+                        ));
+                    }
+                }
+            }
             // Validate declarations before allocating or publishing metadata,
             // even when there are no defaults or rows to invoke numeric casts.
             for column in &statement.Cols {

@@ -125,3 +125,9 @@ TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受�
 原有有界TablePrivileges语法新增单一权限列列表（支持多列）、WITH GRANT OPTION、REVOKE GRANT OPTION FOR及RESTRICT/CASCADE；正式列授权不再落入仅root旧native桥接。不同权限使用不同列列表仍要求拆为单独语句，不把列表并集扩大权限。
 
 任务21：显式ON SEQUENCE授权语句进入既有TablePrivileges解析/执行链，保留sequence类别标记，接受ALL、grant option和RESTRICT/CASCADE；序列分配/DDL语句仍走原pg_sequence适配器。
+
+## 类型授权（任务22）
+
+任务22：有限GRANT/REVOKE ON TYPE/DOMAIN语法沿原对象ACL处理器接PgSchemaCommand::TypePrivileges；同样保留PUBLIC与带引号同名角色区分、WITH GRANT OPTION和RESTRICT/CASCADE。
+
+ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由共享层拒绝0LP01，避免修改元素权限之外的数组自身ACL。

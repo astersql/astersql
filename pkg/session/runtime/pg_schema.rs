@@ -52,6 +52,17 @@ pub enum PgSchemaCommand {
         schema: String,
         owner: String,
     },
+    TypePrivileges {
+        domain: bool,
+        schema: Option<String>,
+        name: String,
+        grantee: String,
+        public: bool,
+        privileges: String,
+        grant: bool,
+        grant_option: bool,
+        cascade: bool,
+    },
     TypeOwner {
         domain: bool,
         schema: Option<String>,
@@ -268,6 +279,7 @@ impl ConcreteSession {
                             PgSchemaCommand::TablePrivileges { .. }
                             | PgSchemaCommand::RelationPrivilege { .. }
                             | PgSchemaCommand::RelationOwner { .. }
+                            | PgSchemaCommand::TypePrivileges { .. }
                             | PgSchemaCommand::TypeOwner { .. }
                             | PgSchemaCommand::FunctionOwner { .. } => {
                                 unreachable!("handled before namespace transaction")
@@ -566,6 +578,9 @@ impl ConcreteSession {
         ) {
             return self.pg_schema_privilege_command(command).map(|_| ());
         }
+        if matches!(command, PgSchemaCommand::TypePrivileges { .. }) {
+            return self.pg_type_privilege_command(command).map(|_| ());
+        }
         if let PgSchemaCommand::FunctionOwner {
             schema,
             name,
@@ -654,6 +669,9 @@ impl ConcreteSession {
     ) -> SessionResult<Option<(&'static str, String)>> {
         if matches!(command, PgSchemaCommand::TablePrivileges { .. }) {
             return self.pg_table_privilege_command(command);
+        }
+        if matches!(command, PgSchemaCommand::TypePrivileges { .. }) {
+            return self.pg_type_privilege_command(command);
         }
         let _guard = PG_NAMESPACE_DDL_LOCK
             .lock()
@@ -832,6 +850,9 @@ impl ConcreteSession {
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
+            if let Some(acls) = standard.type_acl_overrides.get(&database.id) {
+                standard.type_acls.extend(acls.clone());
+            }
             if let Some(owners) = standard.builtin_type_owner_overrides.get(&database.id) {
                 standard.builtin_type_owners.extend(owners);
             }
@@ -1056,10 +1077,10 @@ impl ConcreteSession {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct BuiltinTypeIdentity {
-    oid: i64,
-    array: i64,
-    is_array: bool,
+pub(super) struct BuiltinTypeIdentity {
+    pub(super) oid: i64,
+    pub(super) array: i64,
+    pub(super) is_array: bool,
 }
 
 /// Durable identities for the bounded standard schema. OIDs are derived by the
@@ -1068,7 +1089,14 @@ struct BuiltinTypeIdentity {
 pub struct PgStandardSchema {
     // Declarations register identities on upgrade, never unknown historical owners.
     #[serde(default)]
-    builtin_types: BTreeMap<String, BuiltinTypeIdentity>,
+    pub(super) builtin_types: BTreeMap<String, BuiltinTypeIdentity>,
+    #[serde(default)]
+    pub(super) type_acl_initialized: bool,
+    #[serde(default)]
+    pub(super) type_acls: BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>,
+    #[serde(default)]
+    pub(super) type_acl_overrides:
+        BTreeMap<i64, BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>>,
     #[serde(default)]
     pub builtin_type_owners: BTreeMap<i64, i64>,
     #[serde(default)]
@@ -1156,6 +1184,9 @@ impl ConcreteSession {
                             created = true;
                             let standard = PgStandardSchema {
                                 builtin_types: BTreeMap::new(),
+                                type_acl_initialized: true,
+                                type_acls: BTreeMap::new(),
+                                type_acl_overrides: BTreeMap::new(),
                                 builtin_type_owners: BTreeMap::new(),
                                 builtin_type_owner_overrides: BTreeMap::new(),
                                 owner: owner.expect("initialization has an owner"),
@@ -1705,6 +1736,28 @@ impl ConcreteSession {
                     let value = txn.Get(&context, key.clone(), &[])?;
                     let mut standard: PgStandardSchema = serde_json::from_slice(&value.Value)
                         .map_err(|e| kv::errors::New(e.to_string()))?;
+                    let old = if builtin {
+                        standard
+                            .builtin_type_owner_overrides
+                            .get(&database.id)
+                            .and_then(|m| m.get(&id))
+                            .or_else(|| standard.builtin_type_owners.get(&id))
+                            .copied()
+                    } else {
+                        standard
+                            .type_owner_overrides
+                            .get(&database.id)
+                            .and_then(|m| m.get(&id))
+                            .or_else(|| standard.type_owners.get(&id))
+                            .copied()
+                    };
+                    super::pg_type::transfer_type_acl(
+                        &mut standard,
+                        database.id,
+                        if builtin { id } else { 16384 + id },
+                        old,
+                        owner,
+                    );
                     let overrides = if builtin {
                         &mut standard.builtin_type_owner_overrides
                     } else {

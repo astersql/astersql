@@ -33,3 +33,7 @@ TablePrivileges分派至表ACL共享消费者；旧RelationPrivilege无列形式
 ## 2026-11-06 列授权事实与查询（任务20）
 
 TablePrivileges.columns将列ACL接入原SchemaUtility worker；标准column/table/constraint可见性优先使用新共享列事实，并保留旧native列桥接的历史行为。新PG列不从mysql.columns_priv推断ACL。历史RelationPrivilege局部API也转入同一TablePrivileges列事务，避免保留第二条写入事实路径。
+
+## 类型授权（任务22）
+
+任务22：同一PgStandardSchema记录新增type_acl_initialized及按数据库ID/类型OID保存的type_acl_overrides。新建标准记录显式初始化默认类型USAGE来源；serde历史缺字段为false，不在重连或读取时回填。owner事实与ACL独立。

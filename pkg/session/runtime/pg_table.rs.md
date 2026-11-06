@@ -19,3 +19,7 @@ pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical meta
 ## 2026-11-06 序列授权事实与查询（任务21）
 
 序列复用TableInfo.PostgreSQLAcl与PgDatabaseFact，权限位USAGE/SELECT/UPDATE为1/2/4，文本输出顺序rwU。default_sequence_acl持久保存owner默认权限，严格校验default标记；relacl、has_sequence_privilege与实际nextval/currval/setval消费同一事实。TablePrivileges.sequence保留显式ON SEQUENCE类别检查；委派、PUBLIC、grant option及RESTRICT/CASCADE继续复用共享原子更新器。旧PgSequenceAcl缺失grantor/option来源，停止消费且不自动升级；旧对象缺来源0A000。原has_table_privilege对序列的有界拒绝保留，避免把INSERT位误当USAGE。独立测试cat14_21与runtime::pg_table_test::cat14_21_sequence_acl_provenance_atomicity_and_lifecycle。
+
+## 类型授权（任务22）
+
+任务22：将既有table_name_parts仅扩至session runtime模块可见，供类型名称解析共享引号与限定名规则，避免第二套标识符解析。

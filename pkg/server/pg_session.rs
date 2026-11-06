@@ -426,7 +426,8 @@ impl PgSession {
             SessionQuery::SchemaUtility(command) => {
                 if matches!(
                     command,
-                    astersql_session::runtime::PgSchemaCommand::Privileges { .. }
+                    astersql_session::runtime::PgSchemaCommand::TypePrivileges { .. }
+                        | astersql_session::runtime::PgSchemaCommand::Privileges { .. }
                         | astersql_session::runtime::PgSchemaCommand::TablePrivileges { .. }
                 ) {
                     if let Some((state, message)) = context.pg_schema_privileges(command.clone())? {
@@ -556,11 +557,17 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::TablePrivileges {
                     grant: true, ..
                 }
+                | astersql_session::runtime::PgSchemaCommand::TypePrivileges {
+                    grant: true, ..
+                }
                 | astersql_session::runtime::PgSchemaCommand::Privileges { grant: true, .. }
                 | astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::TablePrivileges {
                     grant: false,
                     ..
+                }
+                | astersql_session::runtime::PgSchemaCommand::TypePrivileges {
+                    grant: false, ..
                 }
                 | astersql_session::runtime::PgSchemaCommand::Privileges { grant: false, .. }
                 | astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => {
@@ -969,7 +976,9 @@ impl SessionQuery {
                     }
                     let privileges = modes.join(",");
                     if privileges != "ALL" {
-                        (if word(tokens.get(on + 1), "sequence") {
+                        (if word(tokens.get(on + 1), "type") || word(tokens.get(on + 1), "domain") {
+                            astersql_session::runtime::pg_type_privileges
+                        } else if word(tokens.get(on + 1), "sequence") {
                             astersql_session::runtime::pg_sequence_privileges
                         } else {
                             astersql_session::runtime::pg_table_privileges
@@ -979,7 +988,9 @@ impl SessionQuery {
                     let at = on
                         + 1
                         + usize::from(
-                            word(tokens.get(on + 1), "table")
+                            word(tokens.get(on + 1), "type")
+                                || word(tokens.get(on + 1), "domain")
+                                || word(tokens.get(on + 1), "table")
                                 || word(tokens.get(on + 1), "sequence"),
                         );
                     let first = tokens
@@ -1021,6 +1032,22 @@ impl SessionQuery {
                                 && (cascade || word(suffix.first(), "restrict")))
                     {
                         return Err(("0A000", "unsupported table grant syntax".into()));
+                    }
+                    if word(tokens.get(on + 1), "type") || word(tokens.get(on + 1), "domain") {
+                        if !columns.is_empty() {
+                            return Err(("42601", "type privileges cannot specify columns".into()));
+                        }
+                        return Ok(Some(Self::SchemaUtility(PgSchemaCommand::TypePrivileges {
+                            domain: word(tokens.get(on + 1), "domain"),
+                            schema,
+                            name: table,
+                            grantee,
+                            public,
+                            privileges,
+                            grant,
+                            grant_option: option,
+                            cascade,
+                        })));
                     }
                     return Ok(Some(Self::SchemaUtility(
                         PgSchemaCommand::TablePrivileges {

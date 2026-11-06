@@ -114,6 +114,8 @@ pub use pg_database::{
     pg_database_privileges, pg_has_database_privilege, pg_role_reachable,
 };
 mod pg_schema;
+mod pg_type;
+pub use pg_type::{pg_has_type_privilege, pg_type_acl_text, pg_type_facts, pg_type_privileges};
 mod pg_table;
 #[cfg(test)]
 mod pg_table_test;
