@@ -1258,6 +1258,21 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
+                    ("obj_description", [oid, catalog])
+                        if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
+                            && (matches!(catalog, Expr::Null)
+                                || textual_type(self.expr_type(catalog)?.0)) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("col_description", [oid, column])
+                        if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
+                            && (matches!(column, Expr::Null)
+                                || matches!(self.expr_type(column)?.0, 2 | 3)
+                                || matches!(column, Expr::Integer(n) if i32::try_from(*n).is_ok())) =>
+                    {
+                        Ok((253, 0))
+                    }
                     ("to_regclass", [arg])
                         if matches!(arg, Expr::Null) || textual_type(self.expr_type(arg)?.0) =>
                     {
@@ -3685,6 +3700,72 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                name @ ("obj_description" | "col_description") => {
+                    match (evaluate(&args[0])?, evaluate(&args[1])?) {
+                        (Value::Null, _) | (_, Value::Null) => Value::Null,
+                        (oid @ Value::Signed(_), target) => {
+                            let (catalog, subid) = match (name, target) {
+                                ("obj_description", Value::Text(catalog)) => (catalog, 0),
+                                ("col_description", Value::Signed(column)) => {
+                                    ("pg_class".into(), column)
+                                }
+                                _ => unreachable!("validated comment function arguments"),
+                            };
+                            let Some((_, classoid)) = crate::pg_oid::SYSTEM_RELATIONS
+                                .iter()
+                                .find(|(name, _)| *name == catalog)
+                            else {
+                                return Ok(Value::Null);
+                            };
+                            // Reuse the provider's real comments, stable attribute slots,
+                            // execution snapshot, materialization limit and work budget.
+                            // A provider failure must propagate instead of becoming NULL.
+                            if !execution.providers.borrow().contains_key("pg_description") {
+                                let mut rows = self.provider_rows(
+                                    "pg_description",
+                                    execution.context,
+                                    execution.snapshot.as_ref(),
+                                    database,
+                                    execution.cancel,
+                                    execution,
+                                )?;
+                                for row in &mut rows {
+                                    row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                                }
+                                let rows = execution.materialize(rows)?;
+                                execution
+                                    .providers
+                                    .borrow_mut()
+                                    .insert("pg_description".into(), rows);
+                            }
+                            let rows = execution.providers.borrow()["pg_description"].clone();
+                            let slot = |name| {
+                                description_column("pg_description", name)
+                                    .expect("registered description column")
+                                    .0
+                            };
+                            let (object_slot, class_slot, subid_slot, text_slot) = (
+                                slot("objoid"),
+                                slot("classoid"),
+                                slot("objsubid"),
+                                slot("description"),
+                            );
+                            let mut description = Value::Null;
+                            for row in rows.iter() {
+                                execution.comparison()?;
+                                if row[object_slot] == oid
+                                    && row[class_slot] == Value::Signed(i64::from(*classoid))
+                                    && row[subid_slot] == Value::Signed(subid)
+                                {
+                                    description = row[text_slot].clone();
+                                    break;
+                                }
+                            }
+                            description
+                        }
+                        _ => unreachable!("validated comment function OID"),
+                    }
+                }
                 "to_regclass" => match evaluate(&args[0])? {
                     Value::Null => Value::Null,
                     Value::Text(input) => {
@@ -4645,6 +4726,7 @@ fn catalog_parameter_type(oid: u32) -> ParseResult<(u8, usize)> {
     Ok(match oid {
         0 => return Err(("42P18", "could not determine catalog parameter type".into())),
         26 => (crate::pg_oid::OID_TYPE, 0),
+        19 => (crate::pg_result::CatalogColumnType::Name as u8, 0),
         194 => (crate::pg_result::CatalogColumnType::PgNodeTree as u8, 0),
         16 => (1, astersql_parser_mysql::r#type::IsBooleanFlag),
         20 => (8, 0),

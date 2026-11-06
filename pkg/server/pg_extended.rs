@@ -993,6 +993,18 @@ fn catalog_parameter(oid: u32, value: Option<&[u8]>) -> Result<crate::pg_catalog
             u32::try_from(number).map_err(|_| error("22003", "OID parameter out of range"))?;
         return Ok(Expr::Integer(i64::from(number)));
     }
+    if oid == 19 {
+        // namein clips at NAMEDATALEN-1 bytes without splitting a UTF-8 codepoint.
+        // Reuse the existing text decoder's UTF-8 and NUL validation.
+        let parsed = parameter(25, Some(value))?;
+        let mut name = String::from_utf8(parsed.value).expect("validated UTF-8 name");
+        let mut length = name.len().min(63);
+        while !name.is_char_boundary(length) {
+            length -= 1;
+        }
+        name.truncate(length);
+        return Ok(Expr::Text(name));
+    }
     let parsed = parameter(oid, Some(value))?;
     Ok(match oid {
         16 => Expr::Boolean(parsed.value[0] != 0),
@@ -1035,6 +1047,14 @@ fn catalog_binary_parameter(
             [1] => Expr::Boolean(true),
             _ => return Err(invalid()),
         },
+        19 => {
+            // namerecv refuses oversize identifiers instead of clipping them.
+            let name = catalog_parameter(oid, Some(value))?;
+            if value.len() >= 64 {
+                return Err(error("42622", "identifier too long"));
+            }
+            return Ok(name);
+        }
         25 | 194 | 1042 | 1043 => return catalog_parameter(oid, Some(value)),
         _ => return Err(error("0A000", "unsupported binary catalog parameter OID")),
     })

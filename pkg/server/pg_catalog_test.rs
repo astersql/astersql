@@ -11488,10 +11488,10 @@ fn cat14_04() {
         ))
         .is_empty()
     );
-    // Unsupported description functions belong to task5; no fake NULL result.
+    // The deprecated one-argument signature stays unsupported; no fake NULL result.
     let rejected = query(
         &mut socket,
-        "SELECT obj_description(oid,'pg_class') FROM pg_class WHERE relname='comment_contract'",
+        "SELECT obj_description(oid) FROM pg_class WHERE relname='comment_contract'",
     );
     assert_eq!(rejected[0].0, b'E');
     assert!(rejected[0].1.windows(5).any(|v| v == b"0A000"));
@@ -11512,4 +11512,434 @@ fn cat14_04() {
     println!(
         "cat14_04: four relation kinds, OID26/26/int4/text descriptions, Unicode bytes text/binary, NULL/empty, LEFT JOIN, stable attnum rename/drop, old OID empty, recreation, refusal/recovery, cleanup"
     );
+}
+
+#[test]
+fn cat14_05() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    astersql_session::runtime::EnableMockDDLForTest(&domain).unwrap();
+    native.execute("CREATE DATABASE cat14_05_probe").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_05_probe")
+            .unwrap();
+        domain.close();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("cat14_05 cleanup: database dropped, listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0cat14_05_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(r.iter().all(|m| m.0 != b'E'), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        r
+    }
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn scalar(s: &mut TcpStream, sql: &str) -> String {
+        let r = data(&ok(s, sql));
+        assert_eq!(r.len(), 1, "{sql}: {r:?}");
+        let size = i32::from_be_bytes(r[0][2..6].try_into().unwrap());
+        assert!(size >= 0);
+        String::from_utf8(r[0][6..6 + size as usize].to_vec()).unwrap()
+    }
+    fn description(body: &[u8]) -> Vec<(u32, i16, i32, i16)> {
+        let mut offset = 2;
+        (0..u16::from_be_bytes(body[..2].try_into().unwrap()))
+            .map(|_| {
+                offset += body[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+                assert_eq!(
+                    &body[offset..offset + 6],
+                    &[0; 6],
+                    "function expressions have no source attribute"
+                );
+                let v = (
+                    u32::from_be_bytes(body[offset + 6..offset + 10].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 10..offset + 12].try_into().unwrap()),
+                    i32::from_be_bytes(body[offset + 12..offset + 16].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 16..offset + 18].try_into().unwrap()),
+                );
+                offset += 18;
+                v
+            })
+            .collect()
+    }
+    native.execute("CREATE TABLE cat14_05_probe.comment_contract (a int, b text COMMENT '列 中文', INDEX comment_idx(a) COMMENT '索引 é') COMMENT='表 é ''引号''' ").unwrap();
+    let oid = scalar(
+        &mut socket,
+        "SELECT oid FROM pg_class WHERE relname='comment_contract'",
+    );
+    let sql = format!(
+        "SELECT pg_catalog.obj_description(oid,'pg_class'),pg_catalog.col_description(oid,2) FROM pg_class WHERE oid={oid}"
+    );
+    let r = ok(&mut socket, &sql);
+    assert_eq!(description(&r[0].1), vec![(25, -1, -1, 0); 2]);
+    assert_eq!(data(&r), vec![row(&[Some("表 é '引号'"), Some("列 中文")])]);
+    // Object identity includes its catalog; object descriptions exclude columns.
+    for category in [
+        "pg_proc",
+        "pg_type",
+        "pg_namespace",
+        "pg_database",
+        "missing",
+        "PG_CLASS",
+        "pg_catalog.pg_class",
+    ] {
+        let r = ok(
+            &mut socket,
+            &format!("SELECT obj_description({oid},'{category}') FROM pg_class WHERE oid={oid}"),
+        );
+        assert_eq!(data(&r), vec![row(&[None])], "{category}");
+    }
+    for expression in [
+        "obj_description(NULL,'pg_class')".into(),
+        format!("obj_description({oid},NULL)"),
+        "obj_description(0,'pg_class')".into(),
+        "col_description(NULL,2)".into(),
+        format!("col_description({oid},NULL)"),
+        format!("col_description({oid},-1)"),
+        format!("col_description({oid},2147483647)"),
+        "col_description(0,2)".into(),
+    ] {
+        assert_eq!(
+            data(&ok(
+                &mut socket,
+                &format!("SELECT {expression} FROM pg_class WHERE oid={oid}")
+            )),
+            vec![row(&[None])],
+            "{expression}"
+        );
+    }
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            "SELECT obj_description(oid,'pg_class') FROM pg_class WHERE relname='comment_idx'"
+        )),
+        vec![row(&[Some("索引 é")])]
+    );
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            "SELECT col_description(c.oid,a.attnum) FROM pg_class c JOIN pg_attribute a ON a.attrelid=c.oid WHERE c.relname='comment_contract' AND a.attname='b'"
+        )),
+        vec![row(&[Some("列 中文")])]
+    );
+    // PG18.4/18.6 match objsubid literally: slot zero returns the object comment.
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            &format!("SELECT col_description({oid},0) FROM pg_class WHERE oid={oid}")
+        )),
+        vec![row(&[Some("表 é '引号'")])]
+    );
+    domain
+        .ddl_create_table(
+            "cat14_05_probe",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("comment_seq"),
+                State: astersql_meta_model::StatePublic,
+                Sequence: Some(astersql_meta_model::SequenceInfo {
+                    Start: 1,
+                    Increment: 1,
+                    MinValue: 1,
+                    MaxValue: i64::MAX,
+                    Cache: false,
+                    CacheValue: 1,
+                    Cycle: false,
+                    Comment: "序列 😀".into(),
+                }),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            "SELECT obj_description(oid,'pg_class') FROM pg_class WHERE relname='comment_seq'"
+        )),
+        vec![row(&[Some("序列 😀")])]
+    );
+    // Update through the existing durable DDL job, not provider mutation.
+    let set_table_comment = |comment: &str| {
+        let table = domain
+            .table_by_name("cat14_05_probe", "comment_contract")
+            .unwrap();
+        let mut job = astersql_meta_model::group_3::Job {
+            tp: 17,
+            schema_id: table.DBID,
+            table_id: table.ID,
+            schema_name: "cat14_05_probe".into(),
+            table_name: "comment_contract".into(),
+            version: astersql_meta_model::group_3::JobVersion::V2,
+            raw_args: serde_json::to_vec(&serde_json::json!({"comment":comment})).unwrap(),
+            ..Default::default()
+        };
+        domain
+            .ddl()
+            .unwrap()
+            .submit_persistent_job(&mut job)
+            .unwrap();
+        assert_eq!(job.state, astersql_meta_model::group_3::JobState::Synced);
+        domain.reload().unwrap();
+        assert_eq!(
+            domain
+                .table_by_name("cat14_05_probe", "comment_contract")
+                .unwrap()
+                .Comment,
+            comment
+        );
+    };
+    set_table_comment("");
+    assert_eq!(
+        data(&ok(&mut socket, &sql)),
+        vec![row(&[None, Some("列 中文")])]
+    );
+    let text = "第二行\n中文 é 😀 '引号' \\";
+    set_table_comment(text);
+    let prepared = format!(
+        "SELECT obj_description($1,$2),col_description($1,$3) FROM pg_class WHERE oid={oid}"
+    );
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cat14_05\0".as_slice(),
+            prepared.as_bytes(),
+            b"\0",
+            &3u16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+            &19u32.to_be_bytes(),
+            &23u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Scat14_05\0");
+    send(&mut socket, b'S', b"");
+    let r = until_ready(&mut socket);
+    assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+    assert_eq!(
+        r[1].1,
+        [
+            &3u16.to_be_bytes()[..],
+            &26u32.to_be_bytes(),
+            &19u32.to_be_bytes(),
+            &23u32.to_be_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(description(&r[2].1), vec![(25, -1, -1, 0); 2]);
+    fn probe(s: &mut TcpStream, params: [Option<&[u8]>; 3], binary: bool) -> Vec<(u8, Vec<u8>)> {
+        let mut bind = b"\0cat14_05\0".to_vec();
+        bind.extend(1u16.to_be_bytes());
+        bind.extend(i16::from(binary).to_be_bytes());
+        bind.extend(3u16.to_be_bytes());
+        for p in params {
+            match p {
+                Some(p) => {
+                    bind.extend((p.len() as i32).to_be_bytes());
+                    bind.extend(p);
+                }
+                None => bind.extend((-1i32).to_be_bytes()),
+            }
+        }
+        bind.extend(1u16.to_be_bytes());
+        bind.extend(i16::from(binary).to_be_bytes());
+        send(s, b'B', &bind);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[b"\0".as_slice(), &0u32.to_be_bytes()].concat());
+        send(s, b'S', b"");
+        until_ready(s)
+    }
+    for binary in [false, true] {
+        let params = if binary {
+            vec![
+                oid.parse::<u32>().unwrap().to_be_bytes().to_vec(),
+                b"pg_class".to_vec(),
+                2i32.to_be_bytes().to_vec(),
+            ]
+        } else {
+            vec![oid.as_bytes().to_vec(), b"pg_class".to_vec(), b"2".to_vec()]
+        };
+        let values = [
+            Some(params[0].as_slice()),
+            Some(params[1].as_slice()),
+            Some(params[2].as_slice()),
+        ];
+        let r = probe(&mut socket, values, binary);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{r:?}");
+        assert_eq!(
+            description(&r[1].1),
+            vec![(25, -1, -1, i16::from(binary)); 2]
+        );
+        assert_eq!(data(&r), vec![row(&[Some(text), Some("列 中文")])]);
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        for null in 0..3 {
+            let mut nullable = values;
+            nullable[null] = None;
+            let r = probe(&mut socket, nullable, binary);
+            assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{r:?}");
+            assert_eq!(
+                description(&r[1].1),
+                vec![(25, -1, -1, i16::from(binary)); 2]
+            );
+            assert_eq!(
+                data(&r),
+                vec![row(&[
+                    if null == 0 || null == 1 {
+                        None
+                    } else {
+                        Some(text)
+                    },
+                    if null == 0 || null == 2 {
+                        None
+                    } else {
+                        Some("列 中文")
+                    }
+                ])]
+            );
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        }
+        let long_name = "é".repeat(40);
+        let r = probe(
+            &mut socket,
+            [values[0], Some(long_name.as_bytes()), values[2]],
+            binary,
+        );
+        if binary {
+            assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+            assert!(r[0].1.windows(6).any(|w| w == b"42622\0"));
+        } else {
+            assert_eq!(data(&r), vec![row(&[None, Some("列 中文")])]);
+        }
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        for invalid in [b"pg_class\0".as_slice(), &[0xff][..]] {
+            let r = probe(&mut socket, [values[0], Some(invalid), values[2]], binary);
+            assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+            assert!(r[0].1.windows(6).any(|w| w == b"22021\0"));
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            ok(&mut socket, "SELECT 1");
+        }
+    }
+    native
+        .execute("ALTER TABLE cat14_05_probe.comment_contract MODIFY COLUMN b text COMMENT ''")
+        .unwrap();
+    assert_eq!(data(&ok(&mut socket, &sql)), vec![row(&[Some(text), None])]);
+    native
+        .execute(
+            "ALTER TABLE cat14_05_probe.comment_contract MODIFY COLUMN b text COMMENT '列 中文'",
+        )
+        .unwrap();
+    ok(
+        &mut socket,
+        "ALTER TABLE public.comment_contract OWNER TO root",
+    );
+    ok(
+        &mut socket,
+        "ALTER TABLE public.comment_contract RENAME COLUMN b TO renamed",
+    );
+    native
+        .execute("ALTER TABLE cat14_05_probe.comment_contract DROP INDEX comment_idx")
+        .unwrap();
+    ok(
+        &mut socket,
+        "ALTER TABLE public.comment_contract DROP COLUMN a",
+    );
+    assert_eq!(
+        data(&ok(&mut socket, &sql)),
+        vec![row(&[Some(text), Some("列 中文")])]
+    );
+    ok(&mut socket, "DROP TABLE public.comment_contract");
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            &format!(
+                "SELECT obj_description({oid},'pg_class'),col_description({oid},2) FROM pg_database WHERE datname='cat14_05_probe'"
+            )
+        )),
+        vec![row(&[None, None])]
+    );
+    native
+        .execute("CREATE TABLE cat14_05_probe.comment_contract (a int,b text)")
+        .unwrap();
+    assert_ne!(
+        scalar(
+            &mut socket,
+            "SELECT oid FROM pg_class WHERE relname='comment_contract'"
+        ),
+        oid
+    );
+    assert_eq!(
+        data(&ok(
+            &mut socket,
+            "SELECT obj_description(oid,'pg_class'),col_description(oid,2) FROM pg_class WHERE relname='comment_contract'"
+        )),
+        vec![row(&[None, None])]
+    );
+    for expression in [
+        "obj_description(oid)",
+        "obj_description(oid,2)",
+        "col_description(oid,'bad')",
+    ] {
+        let r = query(
+            &mut socket,
+            &format!("SELECT {expression} FROM pg_class WHERE relname='comment_contract'"),
+        );
+        let error = &r
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("binding must reject unsupported signature")
+            .1;
+        assert!(error.windows(6).any(|w| w == b"0A000\0"), "{r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        ok(&mut socket, "SELECT 1");
+    }
+    send(&mut socket, b'C', b"Scat14_05\0");
+    send(&mut socket, b'S', b"");
+    assert_eq!(
+        until_ready(&mut socket)
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"3Z"
+    );
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    drop(cleanup);
 }
