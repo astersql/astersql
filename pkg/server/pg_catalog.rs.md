@@ -107,4 +107,10 @@ ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能
 
 ## 数据库 owner 按名关联（目录任务12）
 
-`database_name_filter` 只提取基表 `pg_database.datname` 与文本/NULL字面量的等值条件（允许AND中的合取项与交换操作数），`execute_rows` 在JOIN读取owner前对基表行应用它。完整WHERE仍在project执行，缓存provider不裁剪；OR、其他关系列和owner条件不提前求值。这样有持久owner的指定数据库可JOIN公开角色目录，不受无关legacy数据库缺owner影响。目标库缺owner仍0A000，外连接补NULL仍是SQL NULL。独立`pg_catalog_test::cat14_12`覆盖真实非root双连接、默认创建owner、两次ALTER OWNER、OID不变、同prepared新Bind、text/binary描述、缺源拒绝与恢复；未增加owner持久化或权限系统。
+`owner_object_name_filter` 只提取基表 `pg_database.datname` 与文本/NULL字面量的等值条件（允许AND中的合取项与交换操作数），`execute_rows` 在JOIN读取owner前对基表行应用它。完整WHERE仍在project执行，缓存provider不裁剪；OR、其他关系列和owner条件不提前求值。这样有持久owner的指定数据库可JOIN公开角色目录，不受无关legacy数据库缺owner影响。目标库缺owner仍0A000，外连接补NULL仍是SQL NULL。独立`pg_catalog_test::cat14_12`覆盖真实非root双连接、默认创建owner、两次ALTER OWNER、OID不变、同prepared新Bind、text/binary描述、缺源拒绝与恢复；未增加owner持久化或权限系统。
+
+## 命名空间 owner 按名关联（目录任务13）
+
+同一基表name等值合取项过滤也应用于`pg_namespace.nspname`；限定目标schema的角色JOIN不读取无关legacy schema的缺失owner。只对基表slot1的文本/NULL等值下推，OR不下推，provider缓存和最终WHERE完整保留。`nspowner`仍读取已有`PgNamespaces.owner_id`，缺源或身份不匹配仍0A000；不分配、推断或迁移owner。独立`pg_catalog_test::cat14_13`覆盖真实reader双连接、创建与管理员转移、持久OID、角色反查/JOIN、权限变化、text/binary新Bind、缺源和恢复。
+
+内置public/pg_catalog/information_schema的历史root标签也不能替代持久owner_id；共享`PgNamespaceFact.owner`不再按标签推断OID，缺源nspowner投影0A000。已有管理员ALTER SCHEMA OWNER可显式补齐；默认namespace记录回收须保留任何显式owner_id，防止ALTER OWNER TO root及删除最后一个用户schema后丢失事实。共享独立测试`runtime::pg_schema_test::cat14_13_builtin_owner_requires_persistence_and_survives_cleanup`覆盖这一来源和回收边界，wire测试同时验证reader迁移前拒绝、迁移后真实root来源。

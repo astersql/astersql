@@ -1989,11 +1989,11 @@ impl CatalogQuery {
         rows.truncate(limit.unwrap_or(usize::MAX));
         Ok(rows)
     }
-    // Restrict a database owner lookup before its JOIN reads datdba. Otherwise
-    // unrelated legacy databases can reject an explicitly selected, migrated DB.
+    // Restrict database/namespace owner lookups before JOIN reads their owner.
+    // Unrelated legacy objects must not reject an explicitly selected object.
     // Only a base-relation name equality (or an AND conjunct) is safe here;
     // keep the full WHERE evaluation after joins, including NULL-extension.
-    fn database_name_filter<'a>(&self, expr: &'a Expr) -> Option<&'a Expr> {
+    fn owner_object_name_filter<'a>(&self, expr: &'a Expr) -> Option<&'a Expr> {
         let name = |expr: &Expr| {
             matches!(expr, Expr::Column(path)
             if self.column(path).is_ok_and(|column| column.0 == 1))
@@ -2010,8 +2010,8 @@ impl CatalogQuery {
                 Some(expr)
             }
             Expr::And(left, right) => self
-                .database_name_filter(left)
-                .or_else(|| self.database_name_filter(right)),
+                .owner_object_name_filter(left)
+                .or_else(|| self.owner_object_name_filter(right)),
             _ => None,
         }
     }
@@ -2051,15 +2051,17 @@ impl CatalogQuery {
             }
         }
         let mut rows = (*providers[0]).clone();
-        if self.select.from.name == "pg_database"
-            && self.select.from.cte_id.is_none()
+        if matches!(
+            self.select.from.name.as_str(),
+            "pg_database" | "pg_namespace"
+        ) && self.select.from.cte_id.is_none()
             && !self.select.joins.is_empty()
         {
             if let Some(filter) = self
                 .select
                 .filter
                 .as_ref()
-                .and_then(|e| self.database_name_filter(e))
+                .and_then(|e| self.owner_object_name_filter(e))
             {
                 let mut selected = Vec::new();
                 for row in rows {

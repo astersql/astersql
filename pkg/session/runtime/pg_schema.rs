@@ -395,6 +395,8 @@ impl ConcreteSession {
                                     "public" | "pg_catalog" | "information_schema"
                                 ) && ns.explicit_acl == Some(false)
                                     && ns.owner == "root"
+                                    // Explicit ownership must survive default-record cleanup.
+                                    && ns.owner_id.is_none()
                                     && ns.usage == BTreeSet::from(["PUBLIC".into()])
                             });
                         if defaults {
@@ -647,20 +649,7 @@ impl ConcreteSession {
                 owner_usable: actor == "root" || enabled.contains(&namespace.owner),
                 owner: namespace
                     .owner_id
-                    .filter(|id| roles.get(id) == Some(&namespace.owner))
-                    .or_else(|| {
-                        (matches!(
-                            name.as_str(),
-                            "public" | "pg_catalog" | "information_schema"
-                        ) && namespace.owner == "root")
-                            .then(|| {
-                                roles
-                                    .iter()
-                                    .find(|(_, role)| **role == namespace.owner)
-                                    .map(|(id, _)| *id)
-                            })
-                            .flatten()
-                    }),
+                    .filter(|id| roles.get(id) == Some(&namespace.owner)),
                 acl_available: namespace.explicit_acl.is_some()
                     && roles.values().any(|name| name == &namespace.owner)
                     && namespace

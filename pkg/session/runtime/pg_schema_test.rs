@@ -1557,3 +1557,46 @@ fn pg13_040_constraint_column_usage_upgrade_is_explicit() {
         "pg13_040 upgrade: legacy_read_refused=1 explicit_upgrade=1 old_ids_preserved=12 catalog_reads_never_allocate=3"
     );
 }
+
+#[test]
+fn cat14_13_builtin_owner_requires_persistence_and_survives_cleanup() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let fact = || {
+        pg.pg_namespace_facts()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "public")
+            .unwrap()
+    };
+    let before = fact();
+    assert_eq!(
+        before.owner, None,
+        "an implicit root label is not a durable owner"
+    );
+    pg.pg_schema_command(&PgSchemaCommand::Owner {
+        schema: "public".into(),
+        owner: "root".into(),
+    })
+    .unwrap();
+    let migrated = fact();
+    assert_eq!(migrated.id, before.id);
+    assert_eq!(
+        migrated.owner,
+        Some(pg.pg_database_role_id("root").unwrap())
+    );
+    pg.pg_schema_command(&PgSchemaCommand::Create("cat14_13_cleanup".into()))
+        .unwrap();
+    pg.pg_schema_command(&PgSchemaCommand::Drop("cat14_13_cleanup".into()))
+        .unwrap();
+    domain.force_full_reload_for_test().unwrap();
+    let other = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let reloaded = other
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "public")
+        .unwrap();
+    assert_eq!((reloaded.id, reloaded.owner), (before.id, migrated.owner));
+    domain.close();
+}
