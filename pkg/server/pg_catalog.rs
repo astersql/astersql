@@ -4753,8 +4753,14 @@ fn visit_expr<E>(
 fn description_column(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
     match (relation, name) {
         ("pg_description" | "pg_shdescription", "description") => Some((2, 253, 0)),
-        ("pg_description" | "pg_shdescription", "objoid") => Some((6, 8, 0)),
-        ("pg_description" | "pg_shdescription", "classoid") => Some((7, 8, 0)),
+        ("pg_description", "objoid") => {
+            Some((6, crate::pg_result::CatalogColumnType::Oid as u8, 0))
+        }
+        ("pg_description", "classoid") => {
+            Some((7, crate::pg_result::CatalogColumnType::Oid as u8, 0))
+        }
+        ("pg_shdescription", "objoid") => Some((6, 8, 0)),
+        ("pg_shdescription", "classoid") => Some((7, 8, 0)),
         ("pg_description", "objsubid") => Some((9, 3, 0)),
         _ => None,
     }
