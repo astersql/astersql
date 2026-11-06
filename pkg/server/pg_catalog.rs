@@ -1407,6 +1407,15 @@ impl CatalogQuery {
                     {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
+                    ("pg_table_is_visible", [oid])
+                        if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) =>
+                    {
+                        Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+                    }
+                    ("pg_table_is_visible", _) => Err((
+                        "42883",
+                        "function pg_table_is_visible with these arguments does not exist".into(),
+                    )),
                     ("obj_description" | "shobj_description", [oid, catalog])
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(catalog, Expr::Null)
@@ -4564,6 +4573,72 @@ impl CatalogQuery {
                         _ => unreachable!("validated comment function OID"),
                     }
                 }
+                "pg_table_is_visible" => match evaluate(&args[0])? {
+                    Value::Null => Value::Null,
+                    Value::Signed(oid) => {
+                        // Read the same bounded provider as an explicit pg_class query.
+                        // Visibility is namespace/name resolution, independent of SELECT.
+                        if !execution.providers.borrow().contains_key("pg_class") {
+                            let mut rows = self.provider_rows(
+                                "pg_class",
+                                execution.context,
+                                execution.snapshot.as_ref(),
+                                database,
+                                execution.cancel,
+                                execution,
+                            )?;
+                            for row in &mut rows {
+                                row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                            }
+                            let rows = execution.materialize(rows)?;
+                            execution
+                                .providers
+                                .borrow_mut()
+                                .insert("pg_class".into(), rows);
+                        }
+                        let rows = execution.providers.borrow()["pg_class"].clone();
+                        let mut target = None;
+                        for row in rows.iter() {
+                            execution.comparison()?;
+                            if row[0] == Value::Signed(oid) {
+                                target = Some(row);
+                                break;
+                            }
+                        }
+                        let Some(target) = target else {
+                            return Ok(Value::Null);
+                        };
+                        let namespaces = execution.type_namespaces()?;
+                        let mut path = self.relation_path.clone();
+                        if !path.iter().any(|s| s == "pg_catalog") {
+                            path.insert(0, "pg_catalog".into());
+                        }
+                        let mut visible = false;
+                        'search: for schema in path {
+                            let namespace = if schema == "pg_catalog" {
+                                Some(11)
+                            } else {
+                                namespaces
+                                    .iter()
+                                    .find(|n| n.name == schema && n.usage)
+                                    .map(|n| crate::pg_oid::namespace_oid(n.id).map(i64::from))
+                                    .transpose()?
+                            };
+                            let Some(namespace) = namespace else {
+                                continue;
+                            };
+                            for row in rows.iter() {
+                                execution.comparison()?;
+                                if row[1] == target[1] && row[2] == Value::Signed(namespace) {
+                                    visible = row[0] == target[0];
+                                    break 'search;
+                                }
+                            }
+                        }
+                        Value::Text(if visible { "t" } else { "f" }.into())
+                    }
+                    _ => unreachable!("validated visibility OID"),
+                },
                 "to_regclass" => match evaluate(&args[0])? {
                     Value::Null => Value::Null,
                     Value::Text(input) => {

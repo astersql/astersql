@@ -21419,3 +21419,356 @@ fn cat14_23() {
         "cat14_23: nonroot_identities=4 nonroot_connections=6 overloads=8 binds=12 acl_default_empty=1 delegation=1 revoke_cascade=1 recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn cat14_24() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_24_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_24_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_24_work")
+            .unwrap();
+        for name in ["cat14_24_reader", "cat14_24_owner"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_database(user, "cat14_24_work");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let (source, attr) = if types.len() == 4 {
+                [(2615u32, 2i16), (1259, 1), (1259, 2), (0, 0)][index]
+            } else {
+                (0, 0)
+            };
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    #[track_caller]
+    fn check(s: &mut TcpStream, sql: &str, expected: &[Option<&str>]) -> Vec<(u8, Vec<u8>)> {
+        let r = ok(s, sql);
+        assert_eq!(data(&r).len(), 1, "{sql}: {r:?}");
+        assert_eq!(
+            values(&data(&r)[0]),
+            expected
+                .iter()
+                .map(|v| v.map(|s| s.as_bytes().to_vec()))
+                .collect::<Vec<_>>(),
+            "{sql}"
+        );
+        r
+    }
+
+    let mut bootstrap = connect_database("root", "cat14_24_db");
+    ok(&mut bootstrap, "CREATE ROLE cat14_24_owner LOGIN");
+    ok(&mut bootstrap, "CREATE ROLE cat14_24_reader LOGIN");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_24_work");
+    send(&mut bootstrap, b'X', b"");
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE TABLE public.pg_class (marker integer)");
+    ok(&mut admin, "INSERT INTO public.pg_class VALUES (71)");
+    ok(
+        &mut admin,
+        "CREATE SCHEMA cat14_24_hidden AUTHORIZATION cat14_24_owner",
+    );
+    ok(
+        &mut admin,
+        "CREATE TABLE cat14_24_hidden.t (marker integer)",
+    );
+    ok(&mut admin, "INSERT INTO cat14_24_hidden.t VALUES (24)");
+    ok(
+        &mut admin,
+        "GRANT SELECT ON cat14_24_hidden.t TO cat14_24_reader",
+    );
+    // Existing public grants USAGE to PUBLIC; explicit ACL mutation remains a legacy migration gate.
+    let mut reader = connect("cat14_24_reader");
+    let mut owner = connect("cat14_24_owner");
+    let oid = String::from_utf8(
+        values(&data(&ok(&mut reader, "SELECT 'public.pg_class'::regclass::oid"))[0])[0]
+            .clone()
+            .unwrap(),
+    )
+    .unwrap();
+    let model = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("cat14_24_work"),
+            &astersql_infoschema::CiString::new("pg_class"),
+        )
+        .unwrap();
+    assert_eq!(
+        oid,
+        crate::pg_oid::table_oid(model.Meta().id)
+            .unwrap()
+            .to_string()
+    );
+    let base = "SELECT n.nspname,c.oid,c.relname,pg_catalog.pg_table_is_visible(c.oid) AS visible FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relname='pg_class' ORDER BY n.nspname";
+    for (path, catalog, user) in [
+        ("public", "t", "f"),
+        ("public,pg_catalog", "f", "t"),
+        ("absent_schema,public,pg_catalog", "f", "t"),
+        ("pg_catalog,public", "t", "f"),
+        ("''", "t", "f"),
+        ("absent_schema,public", "t", "f"),
+    ] {
+        ok(&mut reader, &format!("SET search_path TO {path}"));
+        let r = ok(&mut reader, base);
+        description(&r, &[(19, 64), (26, 4), (19, 64), (16, 1)], 0);
+        let actual = data(&r).iter().map(|b| values(b)).collect::<Vec<_>>();
+        let expected = vec![
+            vec![
+                Some(b"pg_catalog".to_vec()),
+                Some(b"1259".to_vec()),
+                Some(b"pg_class".to_vec()),
+                Some(catalog.as_bytes().to_vec()),
+            ],
+            vec![
+                Some(b"public".to_vec()),
+                Some(oid.as_bytes().to_vec()),
+                Some(b"pg_class".to_vec()),
+                Some(user.as_bytes().to_vec()),
+            ],
+        ];
+        assert_eq!(actual, expected, "{path}");
+        check(
+            &mut reader,
+            "SELECT 'pg_class'::regclass::oid,'public.pg_class'::regclass::oid,'pg_catalog.pg_class'::regclass::oid",
+            &[
+                Some(if user == "t" { &oid } else { "1259" }),
+                Some(&oid),
+                Some("1259"),
+            ],
+        );
+        check(
+            &mut reader,
+            "SELECT oid FROM pg_catalog.pg_class WHERE oid=1259",
+            &[Some("1259")],
+        );
+    }
+    let r = check(
+        &mut reader,
+        "SELECT pg_catalog.pg_table_is_visible(NULL::oid),pg_catalog.pg_table_is_visible(0::oid)",
+        &[None, None],
+    );
+    description(&r, &[(16, 1), (16, 1)], 0);
+    ok(&mut reader, "SET search_path TO public,pg_catalog");
+    // Visibility does not confer table SELECT.
+    denied(&mut reader, "SELECT marker FROM pg_class", "42501", b'I');
+    ok(
+        &mut admin,
+        "GRANT SELECT ON public.pg_class TO cat14_24_reader",
+    );
+    check(&mut reader, "SELECT marker FROM pg_class", &[Some("71")]);
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON public.pg_class FROM cat14_24_reader",
+    );
+    check(
+        &mut reader,
+        &format!("SELECT pg_table_is_visible({oid}::oid)"),
+        &[Some("t")],
+    );
+    denied(&mut reader, "SELECT marker FROM pg_class", "42501", b'I');
+    ok(&mut reader, "SET search_path TO cat14_24_hidden,public");
+    let hidden = "SELECT pg_catalog.pg_table_is_visible(c.oid) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='cat14_24_hidden' AND c.relname='t'";
+    check(&mut reader, hidden, &[Some("f")]);
+    denied(
+        &mut reader,
+        "SELECT marker FROM cat14_24_hidden.t",
+        "42501",
+        b'I',
+    );
+    ok(
+        &mut owner,
+        "GRANT USAGE ON SCHEMA cat14_24_hidden TO cat14_24_reader",
+    );
+    check(&mut reader, hidden, &[Some("t")]);
+    check(&mut reader, "SELECT marker FROM t", &[Some("24")]);
+    ok(
+        &mut owner,
+        "REVOKE USAGE ON SCHEMA cat14_24_hidden FROM cat14_24_reader",
+    );
+    check(&mut reader, hidden, &[Some("f")]);
+    ok(&mut reader, "SET search_path TO ''");
+    denied(&mut reader, "SELECT marker FROM pg_class", "0A000", b'I');
+    ok(&mut reader, "BEGIN");
+    denied(&mut reader, "SELECT pg_table_is_visible()", "42883", b'E');
+    denied(&mut reader, "SELECT 1", "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    check(&mut reader, "SELECT 1", &[Some("1")]);
+    for path in ["public", "public,pg_catalog", "pg_catalog,public", "''"] {
+        ok(&mut reader, &format!("SET search_path TO {path}"));
+        send(
+            &mut reader,
+            b'P',
+            &[
+                b"vis_stmt\0SELECT pg_catalog.pg_table_is_visible($1)\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &26u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut reader, b'S', b"");
+        let r = until_ready(&mut reader);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        for format in [0i16, 1] {
+            for input in [Some(oid.as_str()), Some("1259"), None, Some("0")] {
+                let mut bind = b"vis_portal\0vis_stmt\0".to_vec();
+                bind.extend(0i16.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                match input {
+                    Some(v) => {
+                        bind.extend((v.len() as i32).to_be_bytes());
+                        bind.extend(v.as_bytes());
+                    }
+                    None => bind.extend((-1i32).to_be_bytes()),
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(format.to_be_bytes());
+                send(&mut reader, b'B', &bind);
+                send(&mut reader, b'D', b"Pvis_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"vis_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(16, 1)], format);
+                let visible = match input {
+                    None | Some("0") => None,
+                    Some("1259") => Some(path != "public,pg_catalog"),
+                    _ => Some(path == "public,pg_catalog"),
+                };
+                let expected = visible.map(|v| {
+                    if format == 1 {
+                        vec![u8::from(v)]
+                    } else {
+                        if v { b"t".to_vec() } else { b"f".to_vec() }
+                    }
+                });
+                assert_eq!(values(&data(&r)[0]), vec![expected]);
+                send(&mut reader, b'C', b"Pvis_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+        send(&mut reader, b'C', b"Svis_stmt\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    for s in [&mut reader, &mut owner, &mut admin] {
+        send(s, b'X', b"");
+    }
+}

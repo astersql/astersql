@@ -168,3 +168,7 @@ attacl在实际选中pg_attribute行惰性读取本执行快照的TableInfo列AC
 ## 任务23：函数授权
 
 proacl 按实际投影读取共享 pg_function_facts，并以 aclitem[]/1034、来源1255/30输出；默认 SQL NULL 与显式空数组分开。has_function_privilege 使用同源角色/函数快照，支持省略用户及 name/text/OID 组合与完整 oid 输入签名。三条内省原语执行前检查调用者的真实 EXECUTE；目录读取仍可在无 EXECUTE 时读取。扩展新 Bind 重新取得事实，非NULL ACL binary 沿 PG18 的42883边界。
+
+## 任务24：关系可见性与有效路径
+
+pg_table_is_visible(oid)使用同次Execution的有界pg_class provider缓存及有效显式路径。缺pg_catalog时先隐式搜索它，已显式列出时保留次序；按真实namespace USAGE与同名首个关系决定可见性，独立于表SELECT，不因path过滤显式目录行。NULL及未知OID返回NULL/bool16，错误签名42883；保留行/工作预算和取消检查。

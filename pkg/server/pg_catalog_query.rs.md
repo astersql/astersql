@@ -124,3 +124,7 @@ has_column_privilege/has_any_column_privilege无FROM标量查询接既有Catalog
 任务22：无FROM的has_type_privilege请求沿既有目录函数词法分类，保留name/OID cast与扩展参数语义。
 
 任务23：identity_scalar 同现有 has_* 路径接入 has_function_privilege；有原生 FROM 的查询仍由普通表达式工厂/共享授权消费者执行。
+
+## 任务24：关系可见性与有效路径
+
+无FROM的pg_table_is_visible由identity_scalar归入既有CatalogQuery，Q及扩展Parse共用绑定和bool描述；带真实目录FROM的查询仍由目录provider求值。普通原生关系FROM上的表达式函数注册未在本任务扩展。
