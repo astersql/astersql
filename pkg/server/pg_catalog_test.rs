@@ -10699,3 +10699,353 @@ fn cat14_02() {
         "cat14_02: three signatures; Q/extended text/binary/NULL/zero describe; language/type joins; cost/version Parse gates; DDL refusal; stable after unrelated DDL; cleanup"
     );
 }
+
+#[test]
+fn cat14_03() {
+    let (domain, _native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        assert!(TcpStream::connect(addr).is_err());
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let messages = query(socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+        assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+        messages
+    }
+    fn description(body: &[u8]) -> Vec<(u32, i16, i32, i16)> {
+        let mut offset = 2;
+        (0..u16::from_be_bytes(body[..2].try_into().unwrap()))
+            .map(|_| {
+                offset += body[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+                let value = (
+                    u32::from_be_bytes(body[offset + 6..offset + 10].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 10..offset + 12].try_into().unwrap()),
+                    i32::from_be_bytes(body[offset + 12..offset + 16].try_into().unwrap()),
+                    i16::from_be_bytes(body[offset + 16..offset + 18].try_into().unwrap()),
+                );
+                offset += 18;
+                value
+            })
+            .collect()
+    }
+
+    let sql = "SELECT pg_catalog.pg_get_function_arguments(oid),pg_catalog.pg_get_function_result(oid),pg_catalog.pg_get_function_sqlbody(oid) FROM pg_catalog.pg_proc WHERE oid=$1";
+    let expected = row(&[Some("function_oid oid"), Some("text"), None]);
+    let types = vec![(25, -1, -1, 0); 3];
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cat14_03\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &1u16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Scat14_03\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert_eq!(described.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+    assert_eq!(
+        described[1].1,
+        [&1u16.to_be_bytes()[..], &26u32.to_be_bytes()].concat()
+    );
+    assert_eq!(description(&described[2].1), types);
+    for binary in [false, true] {
+        for oid in [
+            Some(16000u32),
+            Some(16001),
+            Some(16002),
+            None,
+            Some(0),
+            Some(u32::MAX),
+        ] {
+            let parameter = match oid {
+                Some(v) if binary => [&4i32.to_be_bytes()[..], &v.to_be_bytes()].concat(),
+                Some(v) => {
+                    let v = v.to_string();
+                    [&(v.len() as i32).to_be_bytes()[..], v.as_bytes()].concat()
+                }
+                None => (-1i32).to_be_bytes().to_vec(),
+            };
+            send(
+                &mut socket,
+                b'B',
+                &[
+                    b"\0cat14_03\0".as_slice(),
+                    &1u16.to_be_bytes(),
+                    &i16::from(binary).to_be_bytes(),
+                    &1u16.to_be_bytes(),
+                    &parameter,
+                    &1u16.to_be_bytes(),
+                    &i16::from(binary).to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut socket, b'D', b"P\0");
+            send(
+                &mut socket,
+                b'E',
+                &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'S', b"");
+            let messages = until_ready(&mut socket);
+            assert!(
+                !messages.iter().any(|m| m.0 == b'E'),
+                "oid={oid:?} binary={binary}: {messages:?}"
+            );
+            assert_eq!(
+                description(&messages.iter().find(|m| m.0 == b'T').unwrap().1),
+                vec![(25, -1, -1, i16::from(binary)); 3]
+            );
+            let data = messages
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>();
+            // Unknown identities filtered out before projection do not invoke a primitive.
+            assert_eq!(
+                data,
+                if oid.is_some_and(|v| (16000..=16002).contains(&v)) {
+                    vec![expected.clone()]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(messages.last(), Some(&(b'Z', vec![b'I'])));
+            send(&mut socket, b'C', b"P\0");
+            send(&mut socket, b'S', b"");
+            assert_eq!(
+                until_ready(&mut socket)
+                    .iter()
+                    .map(|m| m.0)
+                    .collect::<Vec<_>>(),
+                b"3Z"
+            );
+        }
+    }
+    let joined = ok(
+        &mut socket,
+        "SELECT p.oid,p.proargtypes,p.prorettype,l.lanname,pg_get_function_arguments(p.oid),pg_get_function_result(p.oid),pg_get_function_sqlbody(p.oid) FROM pg_proc p JOIN pg_language l ON p.prolang=l.oid WHERE p.pronamespace=11 ORDER BY p.oid",
+    );
+    assert_eq!(
+        joined
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        (16000..=16002)
+            .map(|oid| row(&[
+                Some(&oid.to_string()),
+                Some("26"),
+                Some("25"),
+                Some("internal"),
+                Some("function_oid oid"),
+                Some("text"),
+                None
+            ]))
+            .collect::<Vec<_>>()
+    );
+    let excluded = ok(
+        &mut socket,
+        "WITH system_languages AS (SELECT oid AS lang FROM pg_language WHERE lanname IN ('c','internal')) SELECT pg_get_function_arguments(oid),pg_get_function_result(oid),pg_get_function_sqlbody(oid) FROM pg_proc WHERE prolang NOT IN (SELECT lang FROM system_languages)",
+    );
+    assert_eq!(description(&excluded[0].1), types);
+    assert!(!excluded.iter().any(|m| m.0 == b'D'));
+    let nulls = ok(
+        &mut socket,
+        "SELECT pg_get_function_arguments(NULL::oid),pg_get_function_result(NULL::oid),pg_get_function_sqlbody(NULL::oid) FROM pg_language",
+    );
+    assert_eq!(description(&nulls[0].1), types);
+    assert_eq!(
+        nulls
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[None, None, None])]
+    );
+    // Reject unknown names during Parse even when a predicate would yield no rows.
+    for name in [
+        "pg_get_function_arguments",
+        "pg_get_function_result",
+        "pg_get_function_sqlbody",
+        "unsupported_user_function",
+    ] {
+        for arguments in ["", "oid,oid"] {
+            let invalid = format!("SELECT {name}({arguments}) FROM pg_proc WHERE pronamespace=0");
+            let rejected = query(&mut socket, &invalid);
+            assert_eq!(rejected[0].0, b'E', "{invalid}: {rejected:?}");
+            assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+            assert_eq!(rejected.last(), Some(&(b'Z', vec![b'I'])));
+            send(
+                &mut socket,
+                b'P',
+                &[
+                    b"invalid\0".as_slice(),
+                    invalid.as_bytes(),
+                    b"\0",
+                    &0u16.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut socket, b'S', b"");
+            let rejected = until_ready(&mut socket);
+            assert_eq!(rejected.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+            assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+            assert_eq!(ok(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+        }
+    }
+    let unknown = ok(&mut socket, "SELECT oid FROM pg_proc WHERE pronamespace=0");
+    assert!(!unknown.iter().any(|m| m.0 == b'D'));
+    let invalid = "SELECT unsupported_user_function(oid) FROM pg_proc WHERE pronamespace=0";
+    let rejected = query(&mut socket, invalid);
+    assert_eq!(rejected[0].0, b'E');
+    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    assert_eq!(rejected.last(), Some(&(b'Z', vec![b'I'])));
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"invalid\0".as_slice(),
+            invalid.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let rejected = until_ready(&mut socket);
+    assert_eq!(rejected.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    // Direct invocation evaluates the OID and refuses unknown identities, unlike WHERE oid=$1.
+    for name in [
+        "pg_get_function_arguments",
+        "pg_get_function_result",
+        "pg_get_function_sqlbody",
+    ] {
+        let direct = format!("SELECT {name}($1) FROM pg_language");
+        send(
+            &mut socket,
+            b'P',
+            &[
+                b"direct\0".as_slice(),
+                direct.as_bytes(),
+                b"\0",
+                &1u16.to_be_bytes(),
+                &26u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut socket, b'S', b"");
+        assert_eq!(
+            until_ready(&mut socket)
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"1Z"
+        );
+        for oid in [0u32, u32::MAX] {
+            let begun = query(&mut socket, "BEGIN");
+            assert_eq!(begun.last(), Some(&(b'Z', vec![b'T'])));
+            send(
+                &mut socket,
+                b'B',
+                &[
+                    b"\0direct\0".as_slice(),
+                    &1u16.to_be_bytes(),
+                    &1u16.to_be_bytes(),
+                    &1u16.to_be_bytes(),
+                    &4i32.to_be_bytes(),
+                    &oid.to_be_bytes(),
+                    &0u16.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(
+                &mut socket,
+                b'E',
+                &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'S', b"");
+            let rejected = until_ready(&mut socket);
+            assert_eq!(
+                rejected[0].0, b'2',
+                "Bind must complete before Execute refusal: {rejected:?}"
+            );
+            let error = rejected
+                .iter()
+                .find(|m| m.0 == b'E')
+                .expect("unknown OID must be refused");
+            assert!(error.1.windows(7).any(|w| w == b"C0A000\0"), "{rejected:?}");
+            assert!(!rejected.iter().any(|m| m.0 == b'D'));
+            assert_eq!(rejected.last(), Some(&(b'Z', vec![b'E'])));
+            assert_eq!(
+                ok(&mut socket, "ROLLBACK").last(),
+                Some(&(b'Z', vec![b'I']))
+            );
+            assert_eq!(ok(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+            println!(
+                "{name}({oid}): Parse accepted; execution refused 0A000; T -> E -> I; recovery passed"
+            );
+        }
+        send(&mut socket, b'C', b"Sdirect\0");
+        send(&mut socket, b'S', b"");
+        assert_eq!(
+            until_ready(&mut socket)
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"3Z"
+        );
+    }
+    send(&mut socket, b'C', b"Scat14_03\0");
+    send(&mut socket, b'S', b"");
+    assert_eq!(
+        until_ready(&mut socket)
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"3Z"
+    );
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    println!(
+        "cat14_03: 26 -> 25/25/25, all three identities text/binary, NULL/filter empty, language JOIN/internal exclusion, arity/name Parse refusal, unknown OID execution refusal, recovery and cleanup"
+    );
+}
