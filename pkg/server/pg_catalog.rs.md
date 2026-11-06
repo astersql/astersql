@@ -114,3 +114,9 @@ ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能
 同一基表name等值合取项过滤也应用于`pg_namespace.nspname`；限定目标schema的角色JOIN不读取无关legacy schema的缺失owner。只对基表slot1的文本/NULL等值下推，OR不下推，provider缓存和最终WHERE完整保留。`nspowner`仍读取已有`PgNamespaces.owner_id`，缺源或身份不匹配仍0A000；不分配、推断或迁移owner。独立`pg_catalog_test::cat14_13`覆盖真实reader双连接、创建与管理员转移、持久OID、角色反查/JOIN、权限变化、text/binary新Bind、缺源和恢复。
 
 内置public/pg_catalog/information_schema的历史root标签也不能替代持久owner_id；共享`PgNamespaceFact.owner`不再按标签推断OID，缺源nspowner投影0A000。已有管理员ALTER SCHEMA OWNER可显式补齐；默认namespace记录回收须保留任何显式owner_id，防止ALTER OWNER TO root及删除最后一个用户schema后丢失事实。共享独立测试`runtime::pg_schema_test::cat14_13_builtin_owner_requires_persistence_and_survives_cleanup`覆盖这一来源和回收边界，wire测试同时验证reader迁移前拒绝、迁移后真实root来源。
+
+## 关系 owner 按名关联（目录任务14）
+
+`pg_class`基表也在JOIN前应用已绑定的`relname`文本/NULL等值合取项过滤，限定关系与`pg_roles`关联时不会读取无关legacy对象的缺源owner。完整provider缓存和最终WHERE保留，OR不下推，未匹配LEFT JOIN保留SQL NULL。表/视图/序列读取`TableInfo.PostgreSQLOwner`，索引读取所属表的同一持久owner；没有来源或角色不存在仍对所需投影0A000，不用调用者、root、0或NULL替代。
+
+`pg_catalog_test::cat14_14`经真实Domain/KV及两个非root reader验证四类关系、新建者事实、管理员两次ALTER TABLE OWNER、reload后OID不变、角色JOIN/反查、GRANT/REVOKE、同prepared新Bind的text/binary及NULL/不存在名称、legacy拒绝和显式迁移、Sync/ROLLBACK恢复。该局部接线不实现新的owner存储、非管理员自转移或完整DDL语法。

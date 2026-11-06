@@ -1989,7 +1989,7 @@ impl CatalogQuery {
         rows.truncate(limit.unwrap_or(usize::MAX));
         Ok(rows)
     }
-    // Restrict database/namespace owner lookups before JOIN reads their owner.
+    // Restrict database/namespace/relation owner lookups before JOIN reads their owner.
     // Unrelated legacy objects must not reject an explicitly selected object.
     // Only a base-relation name equality (or an AND conjunct) is safe here;
     // keep the full WHERE evaluation after joins, including NULL-extension.
@@ -2053,7 +2053,7 @@ impl CatalogQuery {
         let mut rows = (*providers[0]).clone();
         if matches!(
             self.select.from.name.as_str(),
-            "pg_database" | "pg_namespace"
+            "pg_database" | "pg_namespace" | "pg_class"
         ) && self.select.from.cte_id.is_none()
             && !self.select.joins.is_empty()
         {

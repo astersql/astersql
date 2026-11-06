@@ -14993,3 +14993,465 @@ fn cat14_13() {
         "cat14_13: persistent_owner=2 reader_connections=2 stable_namespace_oid=1 role_join=1 binary_text=12 legacy_rejection=1 transaction_recovery=1 cleanup=1"
     );
 }
+
+#[test]
+fn cat14_14() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_14_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_14_db")
+            .unwrap();
+        for name in ["cat14_14_reader", "cat14_14@owner'二", "cat14_14_group"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect = |user: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0cat14_14_db\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert!(data(&r).is_empty(), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            columns(t).iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            vec!["oid", "relowner", "pg_get_userbyid"]
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = if index < 2 { 1259u32 } else { 0 };
+            let attr = [1i16, 6, 0][index];
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE cat14_14_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_14@owner'二\" NOLOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_14_group NOLOGIN");
+    for sql in [
+        "CREATE SCHEMA cat14_14_ns",
+        "CREATE TABLE cat14_14_ns.cat14_14_t(id integer, PRIMARY KEY(id))",
+        "CREATE INDEX cat14_14_ix ON cat14_14_ns.cat14_14_t(id)",
+        "CREATE VIEW cat14_14_ns.cat14_14_v AS SELECT id FROM cat14_14_ns.cat14_14_t",
+        "CREATE SEQUENCE cat14_14_ns.cat14_14_s START WITH 10",
+    ] {
+        ok(&mut admin, sql);
+    }
+    native
+        .execute("CREATE TABLE cat14_14_db.cat14_14_legacy(id integer)")
+        .unwrap();
+    let mut reader = connect("cat14_14_reader");
+    let mut other = connect("cat14_14_reader");
+    let root = native.pg_database_role_id("root").unwrap();
+    for (name, kind) in [
+        ("cat14_14_t", "r"),
+        ("cat14_14_v", "v"),
+        ("cat14_14_s", "S"),
+        ("cat14_14_ix", "i"),
+    ] {
+        let r = ok(
+            &mut reader,
+            &format!(
+                "SELECT relowner,pg_get_userbyid(relowner),relkind FROM pg_class WHERE relname='{name}'"
+            ),
+        );
+        assert_eq!(data(&r).len(), 1, "{name}: {r:?}");
+        assert_eq!(
+            values(&data(&r)[0]),
+            vec![
+                Some(root.to_string().into_bytes()),
+                Some(b"root".to_vec()),
+                Some(kind.as_bytes().to_vec())
+            ]
+        );
+    }
+    let identities_sql = "SELECT oid,relname,relkind FROM pg_class WHERE relname IN ('cat14_14_t','cat14_14_ix','cat14_14_v','cat14_14_s') ORDER BY relname";
+    let identities = data(&ok(&mut reader, identities_sql));
+    assert_eq!(identities.len(), 4);
+    let owner = native.pg_database_role_id("cat14_14@owner'二").unwrap();
+    let group = native.pg_database_role_id("cat14_14_group").unwrap();
+    let sql = "SELECT oid,relowner,pg_get_userbyid(relowner) FROM pg_catalog.pg_class WHERE relname='cat14_14_t'";
+    let names = "SELECT oid,relname FROM pg_class WHERE relname='cat14_14_t'";
+    let original = ok(&mut reader, names);
+    let relation_oid = values(&data(&original)[0])[0].clone().unwrap();
+    denied(
+        &mut reader,
+        "ALTER TABLE cat14_14_ns.cat14_14_t OWNER TO cat14_14_reader",
+        "42501",
+        b'I',
+    );
+    ok(
+        &mut admin,
+        "ALTER TABLE cat14_14_ns.cat14_14_t OWNER TO \"cat14_14@owner'二\"",
+    );
+    let expected = vec![
+        Some(relation_oid.clone()),
+        Some(owner.to_string().into_bytes()),
+        Some("cat14_14@owner'二".as_bytes().to_vec()),
+    ];
+    for c in [&mut reader, &mut other, &mut admin] {
+        let r = ok(c, sql);
+        assert_eq!(values(&data(&r)[0]), expected);
+        description(&r, &[(26, 4), (26, 4), (19, 64)], 0);
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+    }
+    denied(
+        &mut reader,
+        "SELECT relowner FROM pg_class WHERE relname='cat14_14_legacy'",
+        "0A000",
+        b'I',
+    );
+    let legacy_names = ok(
+        &mut reader,
+        "SELECT oid,relname FROM pg_class WHERE relname='cat14_14_legacy'",
+    );
+    assert_eq!(data(&legacy_names).len(), 1);
+    let joined = ok(
+        &mut reader,
+        "SELECT d.relowner,r.oid,r.rolname FROM pg_class d JOIN pg_roles r ON r.oid=d.relowner WHERE d.relname='cat14_14_t'",
+    );
+    assert_eq!(
+        values(&data(&joined)[0]),
+        vec![
+            expected[1].clone(),
+            expected[1].clone(),
+            expected[2].clone()
+        ]
+    );
+    let ns_join = ok(
+        &mut reader,
+        "SELECT c.relowner,pg_catalog.pg_get_userbyid(c.relowner) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='cat14_14_ns' AND c.relname='cat14_14_t'",
+    );
+    assert_eq!(values(&data(&ns_join)[0]), expected[1..].to_vec());
+    for predicate in [
+        "'cat14_14_t'=d.relname",
+        "d.relname='cat14_14_t' AND r.oid=d.relowner",
+        "r.oid=d.relowner AND d.relname='cat14_14_t'",
+    ] {
+        let joined = ok(
+            &mut reader,
+            &format!(
+                "SELECT d.relowner,r.oid,r.rolname FROM pg_class d JOIN pg_roles r ON r.oid=d.relowner WHERE {predicate}"
+            ),
+        );
+        assert_eq!(
+            values(&data(&joined)[0]),
+            vec![
+                expected[1].clone(),
+                expected[1].clone(),
+                expected[2].clone()
+            ]
+        );
+    }
+    for predicate in [
+        "d.relname='cat14_14_legacy'",
+        "d.relname='cat14_14_t' OR d.relname='cat14_14_legacy'",
+    ] {
+        denied(
+            &mut reader,
+            &format!(
+                "SELECT d.relowner FROM pg_class d JOIN pg_roles r ON r.oid=d.relowner WHERE {predicate}"
+            ),
+            "0A000",
+            b'I',
+        );
+    }
+    let unmatched = ok(
+        &mut reader,
+        "SELECT r.relowner FROM pg_class d LEFT JOIN pg_class r ON r.relname='cat14_14_absent' WHERE d.relname='cat14_14_t'",
+    );
+    assert_eq!(values(&data(&unmatched)[0]), vec![None]);
+    let empty = ok(
+        &mut reader,
+        "SELECT d.relowner FROM pg_class d JOIN pg_roles r ON r.oid=d.relowner WHERE d.relname=NULL",
+    );
+    assert!(data(&empty).is_empty());
+    ok(
+        &mut admin,
+        "GRANT SELECT ON cat14_14_ns.cat14_14_t TO cat14_14_reader",
+    );
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON cat14_14_ns.cat14_14_t FROM cat14_14_reader",
+    );
+    assert_eq!(values(&data(&ok(&mut reader, sql))[0]), expected);
+    // Parse before the owner change; each new Bind/Execute must read current facts.
+    send(&mut reader,b'P',&[b"rel_owner_stmt\0SELECT oid,relowner,pg_get_userbyid(relowner) FROM pg_class WHERE relname=$1\0".as_slice(),&1i16.to_be_bytes(),&25u32.to_be_bytes()].concat());
+    send(&mut reader, b'D', b"Srel_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    let parsed = until_ready(&mut reader);
+    assert!(!parsed.iter().any(|m| m.0 == b'E'), "{parsed:?}");
+    description(&parsed, &[(26, 4), (26, 4), (19, 64)], 0);
+    for (role, oid, name) in [
+        ("cat14_14_group", group, "cat14_14_group"),
+        ("\"cat14_14@owner'二\"", owner, "cat14_14@owner'二"),
+    ] {
+        ok(
+            &mut admin,
+            &format!("ALTER TABLE cat14_14_ns.cat14_14_t OWNER TO {role}"),
+        );
+        for object in ["cat14_14_v", "cat14_14_s"] {
+            ok(
+                &mut admin,
+                &format!("ALTER TABLE cat14_14_ns.{object} OWNER TO {role}"),
+            );
+        }
+        domain.force_full_reload_for_test().unwrap();
+        for c in [&mut other, &mut reader] {
+            let r = ok(c, sql);
+            assert_eq!(
+                values(&data(&r)[0]),
+                vec![
+                    Some(relation_oid.clone()),
+                    Some(oid.to_string().into_bytes()),
+                    Some(name.as_bytes().to_vec())
+                ]
+            );
+        }
+        assert_eq!(data(&ok(&mut other, identities_sql)), identities);
+        for object in ["cat14_14_ix", "cat14_14_v", "cat14_14_s"] {
+            let r = ok(
+                &mut other,
+                &format!(
+                    "SELECT relowner,pg_get_userbyid(relowner) FROM pg_class WHERE relname='{object}'"
+                ),
+            );
+            assert_eq!(data(&r).len(), 1);
+            assert_eq!(
+                values(&data(&r)[0]),
+                vec![
+                    Some(oid.to_string().into_bytes()),
+                    Some(name.as_bytes().to_vec())
+                ]
+            );
+        }
+        for binary in [0i16, 1] {
+            for param in [
+                Some("cat14_14_t"),
+                None,
+                Some("cat14_14_absent"),
+                Some("cat14_14_legacy"),
+            ] {
+                let mut bind = b"rel_owner_portal\0rel_owner_stmt\0".to_vec();
+                bind.extend(0i16.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(param.map_or(-1, |v| v.len() as i32).to_be_bytes());
+                if let Some(p) = param {
+                    bind.extend(p.as_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                send(&mut reader, b'B', &bind);
+                send(&mut reader, b'D', b"Prel_owner_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"rel_owner_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                if param == Some("cat14_14_legacy") {
+                    assert!(
+                        r.iter()
+                            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+                        "{r:?}"
+                    );
+                    assert!(data(&r).is_empty());
+                    assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                    send(&mut reader, b'C', b"Prel_owner_portal\0");
+                    send(&mut reader, b'S', b"");
+                    until_ready(&mut reader);
+                    assert_eq!(data(&ok(&mut reader, sql)).len(), 1);
+                    continue;
+                }
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(26, 4), (26, 4), (19, 64)], binary);
+                if param == Some("cat14_14_t") {
+                    let db = if binary == 1 {
+                        std::str::from_utf8(&relation_oid)
+                            .unwrap()
+                            .parse::<u32>()
+                            .unwrap()
+                            .to_be_bytes()
+                            .to_vec()
+                    } else {
+                        relation_oid.clone()
+                    };
+                    let id = if binary == 1 {
+                        (oid as u32).to_be_bytes().to_vec()
+                    } else {
+                        oid.to_string().into_bytes()
+                    };
+                    assert_eq!(
+                        values(&data(&r)[0]),
+                        vec![Some(db), Some(id), Some(name.as_bytes().to_vec())]
+                    );
+                } else {
+                    assert!(data(&r).is_empty());
+                    assert!(r.iter().any(|m| m.0 == b'C' && m.1 == b"SELECT 0\0"));
+                }
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                send(&mut reader, b'C', b"Prel_owner_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+    }
+    // An invalid owner cannot disturb the last committed owner facts.
+    denied(
+        &mut admin,
+        "ALTER TABLE cat14_14_ns.cat14_14_t OWNER TO cat14_14_absent",
+        "42704",
+        b'I',
+    );
+    assert_eq!(values(&data(&ok(&mut other, sql))[0]), expected);
+    assert_eq!(ok(&mut reader, "BEGIN").last(), Some(&(b'Z', vec![b'T'])));
+    assert_eq!(ok(&mut reader, sql).last(), Some(&(b'Z', vec![b'T'])));
+    denied(
+        &mut reader,
+        "SELECT relowner FROM pg_class WHERE relname='cat14_14_legacy'",
+        "0A000",
+        b'E',
+    );
+    denied(&mut reader, sql, "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    assert_eq!(values(&data(&ok(&mut reader, sql))[0]), expected);
+    ok(
+        &mut admin,
+        "ALTER TABLE public.cat14_14_legacy OWNER TO cat14_14_group",
+    );
+    assert_eq!(
+        ok(
+            &mut reader,
+            "SELECT oid,relname FROM pg_class WHERE relname='cat14_14_legacy'"
+        ),
+        legacy_names
+    );
+    let recovered = ok(
+        &mut reader,
+        "SELECT relowner,pg_get_userbyid(relowner) FROM pg_class WHERE relname='cat14_14_legacy'",
+    );
+    assert_eq!(
+        values(&data(&recovered)[0]),
+        vec![
+            Some(group.to_string().into_bytes()),
+            Some(b"cat14_14_group".to_vec())
+        ]
+    );
+    ok(&mut admin, "DROP VIEW cat14_14_ns.cat14_14_v");
+    ok(&mut admin, "DROP SEQUENCE cat14_14_ns.cat14_14_s");
+    ok(&mut admin, "DROP TABLE cat14_14_ns.cat14_14_t");
+    ok(&mut admin, "DROP TABLE public.cat14_14_legacy");
+    ok(&mut admin, "DROP SCHEMA cat14_14_ns");
+    send(&mut reader, b'C', b"Srel_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    for c in [&mut reader, &mut other, &mut admin] {
+        send(c, b'X', b"");
+    }
+    println!(
+        "cat14_14: persistent_owner=2 table_index_view_sequence=4 reader_connections=2 stable_relation_oid=4 role_join=1 binary_text=12 legacy_rejection=1 transaction_recovery=1 cleanup=1"
+    );
+}
