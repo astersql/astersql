@@ -290,4 +290,7 @@ INSERT VALUES, INSERT SELECT and UPDATE preparation reject typed text assignment
 
 execute_grant 先解析永久元数据并复用 executor 白名单校验；规范表名只解析一次，临时表不覆盖目标。物化对象 ALL 只展开五种安全表权限，Column_priv 不由 ALL 引入 SELECT/INSERT/UPDATE/REFERENCES。原权限事务和缓存更新流程保持。此为 Go grant.go 的真实局部接线。
 
-`execute_revoke_role` 为共享原生角色图的局部反向操作：仅内部会话或未切换角色的bootstrap管理员可调用，先验证全部角色及账户存在，再移除授予边和对应默认角色并一次merge发布。它复用现有GRANT的运行时角色图，未新增持久PG成员选项或授权模型；PG SET ROLE每次读取当前图，所以撤销后再次切换会被拒绝。
+`execute_revoke_role` 为共享原生角色图的局部反向操作：仅内部会话或未切换角色的bootstrap管理员可调用，先验证全部角色及账户存在，再移除授予边和对应默认角色并一次merge发布。它复用现有GRANT的角色图；任务10进一步将native GRANT/REVOKE的mysql.role_edges行与旧PG选项失效处理放入同一事务，提交后发布缓存。GRANT也先验证全请求身份与管理员权限。DROP USER在原账户删除事务中移除两端成员行，避免重建身份后复活旧边。PG SET ROLE每次读取当前图，所以撤销后再次切换会被拒绝。
+
+
+任务10的INHERIT消费者位于`pg_database.rs::pg_inherited_privileges/pg_declared_inherited_roles`及`pg_schema.rs`。它们在查询局部的原生权限视图过滤显式INHERIT FALSE，并把显式INHERIT TRUE成员闭包加入namespace有效身份；不修改原生会话活动角色，也不把未知legacy选项变成PG默认值。标准view/table/column目录可见性继续复用现有owner及RequestVerification流程，避免新增的PG边绕过其INHERIT限制。

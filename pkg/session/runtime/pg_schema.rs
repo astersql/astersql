@@ -537,7 +537,7 @@ impl ConcreteSession {
     pub fn pg_effective_path(&self) -> SessionResult<Vec<String>> {
         let namespaces = self.pg_namespaces(None)?;
         let actor = self.pg_schema_identity();
-        let enabled = self.pg_enabled_namespace_roles();
+        let enabled = self.pg_enabled_namespace_roles()?;
         let mut result = Vec::new();
         for entry in &self.state.borrow().pg_search_path {
             let name = if entry == "$user" { &actor } else { entry };
@@ -605,14 +605,14 @@ pub(super) fn namespace_error(state: &'static str, message: &str) -> SessionErro
 }
 
 impl ConcreteSession {
-    fn pg_enabled_namespace_roles(&self) -> BTreeSet<String> {
+    fn pg_enabled_namespace_roles(&self) -> SessionResult<BTreeSet<String>> {
         let actor = self.pg_schema_identity();
         let mut enabled = BTreeSet::from([actor.clone()]);
         if let (Some(user), Some(host)) = (
             self.login_user.as_deref(),
             self.authenticated_host.as_deref(),
         ) {
-            let privileges = runtime_privilege_handle(&self.domain).Get();
+            let privileges = self.pg_inherited_privileges()?;
             enabled.extend(
                 privileges
                     .FindAllUserEffectiveRoles(user, host, &self.active_roles.borrow())
@@ -620,7 +620,8 @@ impl ConcreteSession {
                     .map(|r| r.Username.clone()),
             );
         }
-        enabled
+        enabled.extend(self.pg_declared_inherited_roles()?);
+        Ok(enabled)
     }
     pub fn pg_namespace_facts(&self) -> SessionResult<Vec<PgNamespaceFact>> {
         let actor = self.pg_schema_identity();
@@ -634,7 +635,7 @@ impl ConcreteSession {
             .first()
             .map(|f| (*f.roles).clone())
             .unwrap_or_default();
-        let enabled = self.pg_enabled_namespace_roles();
+        let enabled = self.pg_enabled_namespace_roles()?;
         let standard = self.pg_standard_schema(false)?;
         let mut facts: Vec<_> = self
             .pg_namespaces(None)?
@@ -1082,7 +1083,7 @@ impl ConcreteSession {
         let (user, host) = selected.as_ref().map_or((login, host), |r| {
             (r.Username.as_str(), r.Hostname.as_str())
         });
-        let privileges = runtime_privilege_handle(&self.domain).Get();
+        let privileges = self.pg_inherited_privileges()?;
         let active = privileges.getAllRoles(user, host);
         let inherited = privileges.FindAllRole(&active);
         Ok(owner == user || inherited.iter().any(|r| &r.Username == owner))
@@ -1116,7 +1117,7 @@ impl ConcreteSession {
         let (user, host) = selected.as_ref().map_or((login, login_host), |r| {
             (r.Username.as_str(), r.Hostname.as_str())
         });
-        let privileges = runtime_privilege_handle(&self.domain).Get();
+        let privileges = self.pg_inherited_privileges()?;
         // PostgreSQL enables inherited memberships on login; native MySQL
         // default-role activation is a separate contract and stays unchanged.
         let active = privileges.getAllRoles(user, host);
@@ -1204,7 +1205,7 @@ impl ConcreteSession {
         let (user, host) = selected.as_ref().map_or((login, login_host), |r| {
             (r.Username.as_str(), r.Hostname.as_str())
         });
-        let privileges = runtime_privilege_handle(&self.domain).Get();
+        let privileges = self.pg_inherited_privileges()?;
         // PostgreSQL enables inherited memberships on login; native MySQL
         // default-role activation is a separate contract and stays unchanged.
         let active = privileges.getAllRoles(user, host);

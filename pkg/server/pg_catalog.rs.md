@@ -90,3 +90,11 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 catalog_indexes 校验表内索引ID唯一、多主索引和整数句柄的唯一主键列；缺显式Primary时才投影局部ID -1。已保存的PG主键声明名用于关系命名，pg_class、pg_index及regclass共用该身份。PG表的独立唯一索引没有PostgreSQLConstraintName时不产生唯一约束行；原生遗留约束语义留待约束来源专项。IDX-BASE字段及conrelid补齐PG目录来源属性号，零行Describe也保持来源。
 
 索引辅助身份仅登记已证明的有符号整数 btree 等价类 int2_ops/int4_ops/int8_ops（1979/1978/3124，方法403）。indclass 与有序规范整数键关联，整数 indcollation 为0；未知等价来源在相关投影前拒绝。indexprs/indpred 使用 pg_node_tree/194，普通无表达式/条件才为NULL。状态/EXTRA 依赖 PostgreSQLBuildComplete 与 State/BackfillState；过渡模型拒绝。EXCLUDE/延迟/CLUSTER/并发构建/复制身份不开放时遵循入口拒绝策略。
+
+## 2026-11-06 成员目录与角色权限
+
+`pg_auth_members`读取本次Execution缓存的`PgRoleFact.memberships`，其存在性来自共享native role_graph，OID/grantor/ADMIN/INHERIT/SET属性来自按稳定角色OID关联的持久声明。边OID使用已有NextGlobalID分配；重新GRANT更新选项保留OID，REVOKE后重新授予分配新OID。旧native边缺属性时拒绝成员目录与依赖未知选项的查询，不导出占位布尔值。
+
+`pg_has_role`支持省略调用者和显式name/oid调用者、text/oid目标，以及MEMBER/USAGE/SET、六种WITH ADMIN/GRANT OPTION后缀和逗号任一匹配。MEMBER遍历真实存在性，USAGE/SET每一跳分别要求INHERIT/SET；ADMIN沿成员闭包检查最后一跳ADMIN。NULL严格传播，不存在的名字42704，不存在数值OID返回false（不是其他has_*函数的通用NULL规则），非法权限22023。目录提供器的RowDescription来源OID/属性号保持0，oid/26与bool/16使用既有codec。
+
+ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能是有界目录消费者；普通SQL全局函数注册、完整角色DDL/委派授权、任意客户端UI流程仍有独立范围。

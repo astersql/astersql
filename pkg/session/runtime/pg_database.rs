@@ -43,6 +43,58 @@ pub struct PgRoleFact {
     pub can_login: Option<bool>,
     pub attributes: Option<PgRoleAttributes>,
     pub valid_until_known: bool,
+    pub memberships: Vec<PgMembershipFact>,
+}
+
+/// Options qualify an existing native graph edge; absent legacy options remain unknown.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PgMembershipFact {
+    pub oid: i64,
+    pub roleid: i64,
+    pub member: i64,
+    pub grantor: i64,
+    pub admin_option: bool,
+    pub inherit_option: bool,
+    pub set_option: bool,
+}
+
+/// Traverse the shared facts with the option required at every hop. ADMIN is
+/// tested on the final edge of the unrestricted membership closure (PG18 acl.c).
+pub fn pg_role_reachable(
+    facts: &[PgRoleFact],
+    member: i64,
+    role: i64,
+    mode: &str,
+) -> SessionResult<bool> {
+    let mut pending = vec![member];
+    let mut seen = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if id == role && mode != "ADMIN" {
+            return Ok(true);
+        }
+        let Some(fact) = facts.iter().find(|f| f.oid == id) else {
+            continue;
+        };
+        for edge in &fact.memberships {
+            if edge.oid == 0 && mode != "MEMBER" {
+                return Err(namespace_error(
+                    "0A000",
+                    "native membership options are unknown",
+                ));
+            }
+            if mode == "ADMIN" && edge.roleid == role && edge.admin_option {
+                return Ok(true);
+            }
+            if mode == "USAGE" && !edge.inherit_option || mode == "SET" && !edge.set_option {
+                continue;
+            }
+            pending.push(edge.roleid);
+        }
+    }
+    Ok(false)
 }
 
 /// Explicit PG declaration defaults, not a conversion of native global privileges.
@@ -85,8 +137,21 @@ impl Default for PgRoleAttributes {
 /// Bounded PG declarations use native accounts and the existing persistent OID map.
 #[derive(Clone, Debug)]
 pub enum PgRoleCommand {
-    Create { name: String, can_login: bool },
-    Drop { name: String },
+    Create {
+        name: String,
+        can_login: bool,
+    },
+    Drop {
+        name: String,
+    },
+    Membership {
+        role: String,
+        member: String,
+        grant: bool,
+        admin: Option<bool>,
+        inherit: Option<bool>,
+        set: Option<bool>,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -94,6 +159,8 @@ struct RoleProperties {
     can_login: bool,
     // Present only for explicit PG declarations, never inferred from native SUPER.
     attributes: Option<PgRoleAttributes>,
+    #[serde(default)]
+    memberships: BTreeMap<i64, PgMembershipFact>,
 }
 fn role_properties_key(oid: i64) -> kv::Key {
     astersql_meta::transaction_meta_hash_key(
@@ -255,8 +322,12 @@ impl ConcreteSession {
             return Ok(());
         }
         let target = astersql_privilege_privileges::RoleIdentity::new(name, "%");
-        let privileges = runtime_privilege_handle(&self.domain).Get();
-        if login != "root" && !privileges.FindRole(&login, "%", &target) {
+        let facts = self.pg_role_facts()?;
+        let member = facts.iter().find(|f| f.name == login).unwrap().oid;
+        let role = facts.iter().find(|f| f.name == name).unwrap().oid;
+        // Do not infer SET rights from a legacy edge whose options are unknown.
+        let allowed = login == "root" || pg_role_reachable(&facts, member, role, "SET")?;
+        if login != "root" && !allowed {
             return Err(namespace_error("42501", "permission denied to set role"));
         }
         // Do not mutate on any failure; native GRANT/REVOKE is consulted anew.
@@ -310,6 +381,7 @@ impl ConcreteSession {
                             role_properties_key(oid),
                             serde_json::to_vec(&RoleProperties {
                                 can_login,
+                                memberships: BTreeMap::new(),
                                 attributes: if postgres_defaults {
                                     Some(PgRoleAttributes::default())
                                 } else {
@@ -368,7 +440,33 @@ impl ConcreteSession {
                             .iter()
                             .find(|r| r.base.User == name)
                             .is_some_and(|r| r.PasswordExpired || r.PasswordLifeTime > 0);
+                        let identity = astersql_privilege_privileges::RoleIdentity::new(&name, "%");
+                        let mut memberships = Vec::new();
+                        if let Some(edges) = accounts.role_graph.get(&identity) {
+                            for target in &edges.0 {
+                                if target.Hostname != "%" {
+                                    return Err(kv::errors::New(
+                                        "PostgreSQL role host mapping is unavailable",
+                                    ));
+                                }
+                                let roleid = *roles.get(&target.Username).ok_or_else(|| {
+                                    kv::errors::New("PostgreSQL role identity is unavailable")
+                                })?;
+                                let saved = props.as_ref().and_then(|p| p.memberships.get(&roleid));
+                                memberships.push(saved.cloned().unwrap_or(PgMembershipFact {
+                                    oid: 0,
+                                    roleid,
+                                    member: oid,
+                                    grantor: 0,
+                                    admin_option: false,
+                                    inherit_option: false,
+                                    set_option: false,
+                                }));
+                            }
+                        }
+                        memberships.sort_by_key(|e| e.roleid);
                         facts.push(PgRoleFact {
+                            memberships,
                             oid,
                             name,
                             can_login: props.as_ref().map(|p| p.can_login),
@@ -449,9 +547,21 @@ impl ConcreteSession {
                 "role administration requires an administrator",
             ));
         }
+        if let PgRoleCommand::Membership {
+            role,
+            member,
+            grant,
+            admin,
+            inherit,
+            set,
+        } = command
+        {
+            return self.pg_membership_command(role, member, *grant, *admin, *inherit, *set);
+        }
         let (name, can_login) = match command {
             PgRoleCommand::Create { name, can_login } => (name, Some(*can_login)),
             PgRoleCommand::Drop { name } => (name, None),
+            PgRoleCommand::Membership { .. } => unreachable!(),
         };
         if name.is_empty() {
             return Err(namespace_error("42602", "role name must not be empty"));
@@ -507,6 +617,281 @@ impl ConcreteSession {
                 .execute(&format!("DROP USER '{}'@'%'", quoted))?;
             Ok(())
         }
+    }
+
+    // The native graph remains the authority for edge existence. Persist its
+    // row using the existing account SQL writer; PG options qualify that edge.
+    fn pg_membership_command(
+        &self,
+        role: &str,
+        member: &str,
+        grant: bool,
+        admin: Option<bool>,
+        inherit: Option<bool>,
+        set: Option<bool>,
+    ) -> SessionResult<()> {
+        let facts = self.pg_role_facts()?;
+        let target = facts
+            .iter()
+            .find(|f| f.name == role)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?;
+        let recipient = facts
+            .iter()
+            .find(|f| f.name == member)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?;
+        let grantor = facts
+            .iter()
+            .find(|f| f.name == "root")
+            .ok_or_else(|| namespace_error("0A000", "grantor identity unavailable"))?
+            .oid;
+        if grant && pg_role_reachable(&facts, target.oid, recipient.oid, "MEMBER")? {
+            return Err(namespace_error(
+                "0LP01",
+                "role membership would create a cycle",
+            ));
+        }
+        let default_inherit = recipient
+            .attributes
+            .as_ref()
+            .and_then(|a| a.inherit)
+            .ok_or_else(|| namespace_error("0A000", "membership default is unknown"))?;
+        let quote = |s: &str| format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"));
+        let native = ConcreteSession::new(self.domain.clone());
+        native.begin_transaction(&ast::BeginStmt::default())?;
+        let result = (|| -> SessionResult<()> {
+            if grant {
+                native.execute_privilege_mutation(&format!("INSERT INTO mysql.role_edges (FROM_HOST,FROM_USER,TO_HOST,TO_USER,WITH_ADMIN_OPTION) VALUES ('%',{},'%',{},'{}') ON DUPLICATE KEY UPDATE WITH_ADMIN_OPTION=values(WITH_ADMIN_OPTION)",quote(role),quote(member),if admin.unwrap_or_else(|| recipient.memberships.iter().any(|e| e.roleid == target.oid && e.admin_option)) {"Y"} else {"N"}))?;
+            } else {
+                native.execute_privilege_mutation(&format!("DELETE FROM mysql.role_edges WHERE FROM_HOST='%' AND FROM_USER={} AND TO_HOST='%' AND TO_USER={}",quote(role),quote(member)))?;
+            }
+            let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+            let update = (|| -> Result<(), kv::errors::SharedError> {
+                let mut state = native.state.borrow_mut();
+                let txn = state
+                    .transaction
+                    .as_mut()
+                    .ok_or_else(|| kv::errors::New("membership transaction unavailable"))?;
+                let txn = txn.as_mut();
+                let mut props: Option<RoleProperties> =
+                    load(txn, &ctx, role_properties_key(recipient.oid))?;
+                let props = props
+                    .as_mut()
+                    .ok_or_else(|| kv::errors::New("membership properties unavailable"))?;
+                if grant {
+                    let previous = recipient
+                        .memberships
+                        .iter()
+                        .find(|e| e.roleid == target.oid && e.oid != 0);
+                    let oid = if let Some(edge) = previous {
+                        edge.oid
+                    } else {
+                        let key = astersql_meta::transaction_meta_string_key(b"NextGlobalID");
+                        let value = txn.Get(&ctx, key.clone(), &[])?;
+                        let previous: i64 = String::from_utf8(value.Value)
+                            .map_err(|e| kv::errors::New(e.to_string()))?
+                            .parse()
+                            .map_err(|_| kv::errors::New("invalid global ID"))?;
+                        let next = previous
+                            .checked_add(1)
+                            .filter(|n| *n > 0 && *n < 0x2000_0000)
+                            .ok_or_else(|| kv::errors::New("membership OID exhausted"))?;
+                        txn.Set(key, next.to_string().into_bytes())?;
+                        0x6000_0000 + next
+                    };
+                    props.memberships.insert(
+                        target.oid,
+                        PgMembershipFact {
+                            oid,
+                            roleid: target.oid,
+                            member: recipient.oid,
+                            grantor,
+                            admin_option: admin.unwrap_or(previous.is_some_and(|e| e.admin_option)),
+                            inherit_option: inherit
+                                .unwrap_or(previous.map_or(default_inherit, |e| e.inherit_option)),
+                            set_option: set.unwrap_or(previous.is_none_or(|e| e.set_option)),
+                        },
+                    );
+                } else {
+                    props.memberships.remove(&target.oid);
+                }
+                txn.Set(
+                    role_properties_key(recipient.oid),
+                    serde_json::to_vec(props).map_err(|e| kv::errors::New(e.to_string()))?,
+                )?;
+                Ok(())
+            })();
+            update.map_err(|e| session_error("persist native membership options", e))
+        })();
+        if let Err(error) = result {
+            native.finish_transaction(false)?;
+            return Err(error);
+        }
+        native.finish_transaction(true)?;
+        let handle = runtime_privilege_handle(&self.domain);
+        let mut privileges = handle.Get();
+        let edges = privileges
+            .role_graph
+            .entry(astersql_privilege_privileges::RoleIdentity::new(
+                member, "%",
+            ))
+            .or_default();
+        let target = astersql_privilege_privileges::RoleIdentity::new(role, "%");
+        if grant {
+            edges.0.insert(target);
+        } else {
+            edges.0.remove(&target);
+        }
+        handle.merge(privileges);
+        Ok(())
+    }
+
+    /// Apply explicit INHERIT options to a query-local native privilege view.
+    /// This does not mutate the native graph or reinterpret undeclared legacy edges.
+    pub(super) fn pg_inherited_privileges(
+        &self,
+    ) -> SessionResult<astersql_privilege_privileges::MySQLPrivilege> {
+        let mut privileges = runtime_privilege_handle(&self.domain).Get();
+        let ctx = kv::Context::default();
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                    let identities: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    for (member, edges) in &mut privileges.role_graph {
+                        let Some(oid) = identities.get(&member.Username) else {
+                            continue;
+                        };
+                        let props: Option<RoleProperties> =
+                            load(txn, &ctx, role_properties_key(*oid))?;
+                        if let Some(props) = props {
+                            edges.0.retain(|role| {
+                                !identities
+                                    .get(&role.Username)
+                                    .and_then(|id| props.memberships.get(id))
+                                    .is_some_and(|e| !e.inherit_option)
+                            });
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("read membership inheritance options", e))?;
+        Ok(privileges)
+    }
+
+    /// PG declarations enable inherited privileges without a native default-role
+    /// activation. Unknown native edges retain their previous activation policy.
+    pub(super) fn pg_declared_inherited_roles(&self) -> SessionResult<BTreeSet<String>> {
+        let privileges = runtime_privilege_handle(&self.domain).Get();
+        let actor = self.pg_schema_identity();
+        let ctx = kv::Context::default();
+        let mut enabled = BTreeSet::new();
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&ctx, store, false, |_, txn| {
+                    enabled.clear();
+                    let roles: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                    let mut pending = vec![actor.clone()];
+                    while let Some(name) = pending.pop() {
+                        if !enabled.insert(name.clone()) {
+                            continue;
+                        }
+                        let Some(oid) = roles.get(&name) else {
+                            continue;
+                        };
+                        let props: Option<RoleProperties> =
+                            load(txn, &ctx, role_properties_key(*oid))?;
+                        if let (Some(props), Some(edges)) = (
+                            props,
+                            privileges.role_graph.get(
+                                &astersql_privilege_privileges::RoleIdentity::new(&name, "%"),
+                            ),
+                        ) {
+                            for target in &edges.0 {
+                                if target.Hostname == "%"
+                                    && roles
+                                        .get(&target.Username)
+                                        .and_then(|id| props.memberships.get(id))
+                                        .is_some_and(|e| e.inherit_option)
+                                {
+                                    pending.push(target.Username.clone());
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(|e| session_error("read declared inherited roles", e))?;
+        Ok(enabled)
+    }
+
+    /// Native GRANT/REVOKE has no PG option declaration. Persist its existing
+    /// edge and invalidate any old PG options atomically, rather than reviving
+    /// stale grantor/OID/flags when a native edge is removed and re-created.
+    pub(super) fn pg_persist_native_memberships(
+        &self,
+        roles: &[astersql_privilege_privileges::RoleIdentity],
+        members: &[astersql_privilege_privileges::RoleIdentity],
+        grant: bool,
+    ) -> SessionResult<()> {
+        let native = ConcreteSession::new(self.domain.clone());
+        native.begin_transaction(&ast::BeginStmt::default())?;
+        let result = (|| -> SessionResult<()> {
+            let quote = |s: &str| format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"));
+            for member in members {
+                for role in roles {
+                    let predicate = format!(
+                        "FROM_HOST={} AND FROM_USER={} AND TO_HOST={} AND TO_USER={}",
+                        quote(&role.Hostname),
+                        quote(&role.Username),
+                        quote(&member.Hostname),
+                        quote(&member.Username)
+                    );
+                    if grant {
+                        native.execute_privilege_mutation(&format!("INSERT IGNORE INTO mysql.role_edges (FROM_HOST,FROM_USER,TO_HOST,TO_USER,WITH_ADMIN_OPTION) VALUES ({},{},{},{},'N')",quote(&role.Hostname),quote(&role.Username),quote(&member.Hostname),quote(&member.Username)))?;
+                    } else {
+                        native.execute_privilege_mutation(&format!(
+                            "DELETE FROM mysql.role_edges WHERE {predicate}"
+                        ))?;
+                    }
+                    if member.Hostname == "%" && role.Hostname == "%" {
+                        let update = (|| -> Result<(), kv::errors::SharedError> {
+                            let mut state = native.state.borrow_mut();
+                            let txn = state.transaction.as_mut().unwrap().as_mut();
+                            let ctx = kv::Context::default();
+                            let identities: BTreeMap<String, i64> = load(txn, &ctx, role_key())?;
+                            if let (Some(member), Some(role)) = (
+                                identities.get(&member.Username),
+                                identities.get(&role.Username),
+                            ) {
+                                let mut props: Option<RoleProperties> =
+                                    load(txn, &ctx, role_properties_key(*member))?;
+                                if let Some(props) = props.as_mut() {
+                                    props.memberships.remove(role);
+                                    txn.Set(
+                                        role_properties_key(*member),
+                                        serde_json::to_vec(props)
+                                            .map_err(|e| kv::errors::New(e.to_string()))?,
+                                    )?;
+                                }
+                            }
+                            Ok(())
+                        })();
+                        update.map_err(|e| {
+                            session_error("invalidate native membership options", e)
+                        })?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            native.finish_transaction(false)?;
+            return Err(error);
+        }
+        native.finish_transaction(true)
     }
 
     /// Read one ownership/ACL snapshot without allocating identities. An absent
@@ -723,6 +1108,21 @@ impl ConcreteSession {
                         }
                     }
                     if remove && let Some(oid) = roles.remove(role) {
+                        // Drop the adjunct options as well as the native rows;
+                        // a long-lived member must not accumulate dead role IDs.
+                        for member in roles.values() {
+                            let mut props: Option<RoleProperties> =
+                                load(txn, &ctx, role_properties_key(*member))?;
+                            if let Some(props) = props.as_mut()
+                                && props.memberships.remove(&oid).is_some()
+                            {
+                                txn.Set(
+                                    role_properties_key(*member),
+                                    serde_json::to_vec(props)
+                                        .map_err(|e| kv::errors::New(e.to_string()))?,
+                                )?;
+                            }
+                        }
                         txn.Delete(role_properties_key(oid))?;
                         txn.Set(
                             role_key(),

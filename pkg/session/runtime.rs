@@ -111,6 +111,7 @@ mod pg_record;
 mod pg_record_test;
 pub use pg_database::{
     PgDatabaseCommand, PgDatabaseFact, PgRoleAttributes, PgRoleCommand, PgRoleFact,
+    pg_role_reachable,
 };
 mod pg_schema;
 mod pg_sequence;

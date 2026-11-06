@@ -1113,8 +1113,10 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
 }
 
 pub(crate) fn is_catalog_relation(name: &str) -> bool {
-    matches!(name, "pg_user" | "pg_roles" | "pg_shadow")
-        || name == "pg_opclass"
+    matches!(
+        name,
+        "pg_user" | "pg_roles" | "pg_shadow" | "pg_auth_members"
+    ) || name == "pg_opclass"
         || name == "pg_locks"
         || crate::pg_oid::SYSTEM_RELATIONS
             .iter()
@@ -1180,7 +1182,7 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
 // Queries with native relations retain their existing executor ownership.
 fn identity_scalar(tokens: &[Token]) -> bool {
     !tokens.iter().any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
-        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role")))
+        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role" | "pg_has_role")))
 }
 
 // Standalone OID constants use the checked catalog codec.

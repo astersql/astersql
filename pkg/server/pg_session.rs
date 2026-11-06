@@ -472,10 +472,15 @@ impl SessionQuery {
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
-            Self::RoleUtility(command) => match command {
-                astersql_session::runtime::PgRoleCommand::Create { .. } => "CREATE ROLE",
-                astersql_session::runtime::PgRoleCommand::Drop { .. } => "DROP ROLE",
-            },
+            Self::RoleUtility(command) => {
+                match command {
+                    astersql_session::runtime::PgRoleCommand::Create { .. } => "CREATE ROLE",
+                    astersql_session::runtime::PgRoleCommand::Drop { .. } => "DROP ROLE",
+                    astersql_session::runtime::PgRoleCommand::Membership { grant, .. } => {
+                        if *grant { "GRANT ROLE" } else { "REVOKE ROLE" }
+                    }
+                }
+            }
             Self::DatabaseUtility(command) => match command {
                 astersql_session::runtime::PgDatabaseCommand::Owner { .. }
                 | astersql_session::runtime::PgDatabaseCommand::Policy { .. } => "ALTER DATABASE",
@@ -628,6 +633,74 @@ impl SessionQuery {
                 })
             };
             return Ok(Some(Self::SetRole(role)));
+        }
+        // A single role/member form; object privilege GRANT stays with its owner.
+        if (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
+            && (word(tokens.get(2), "to") || word(tokens.get(2), "from"))
+        {
+            let grant = word(tokens.first(), "grant");
+            if !word(tokens.get(2), if grant { "to" } else { "from" }) {
+                return Err(("42601", "invalid membership syntax".into()));
+            }
+            let role = tokens
+                .get(1)
+                .and_then(identifier)
+                .ok_or_else(|| ("42601", "expected role".into()))?;
+            let member = tokens
+                .get(3)
+                .and_then(identifier)
+                .ok_or_else(|| ("42601", "expected member".into()))?;
+            let (mut admin, mut inherit, mut set) = (None, None, None);
+            let mut i = 4;
+            if i < tokens.len() {
+                if !grant || !word(tokens.get(i), "with") {
+                    return Err(("0A000", "unsupported membership clause".into()));
+                }
+                i += 1;
+                loop {
+                    let option = match tokens.get(i) {
+                        Some(Token::Word(s)) => s.as_str(),
+                        _ => return Err(("42601", "expected membership option".into())),
+                    };
+                    i += 1;
+                    let value = if option == "admin" && word(tokens.get(i), "option") {
+                        true
+                    } else if word(tokens.get(i), "true") {
+                        true
+                    } else if word(tokens.get(i), "false") {
+                        false
+                    } else {
+                        return Err(("42601", "expected option value".into()));
+                    };
+                    let slot = match option {
+                        "admin" => &mut admin,
+                        "inherit" => &mut inherit,
+                        "set" => &mut set,
+                        _ => return Err(("42601", "unknown membership option".into())),
+                    };
+                    if slot.replace(value).is_some() {
+                        return Err(("42601", "duplicate membership option".into()));
+                    }
+                    i += 1;
+                    if i == tokens.len() {
+                        break;
+                    }
+                    if tokens.get(i) != Some(&Token::Symbol(',')) {
+                        return Err(("42601", "expected option separator".into()));
+                    }
+                    i += 1;
+                }
+            }
+            return Ok(Some(Self::RoleUtility(
+                astersql_session::runtime::PgRoleCommand::Membership {
+                    role,
+                    member,
+                    grant,
+                    admin,
+                    inherit,
+                    set,
+                },
+            )));
         }
         if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
             && (word(tokens.get(1), "role") || word(tokens.get(1), "user"))

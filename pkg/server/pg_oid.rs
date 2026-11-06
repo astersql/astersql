@@ -26,6 +26,7 @@ pub(crate) const SYSTEM_RELATIONS: &[(&str, u32)] = &[
     ("pg_depend", 2608),
     ("pg_database", 1262),
     ("pg_authid", 1260),
+    ("pg_auth_members", 1261),
     ("pg_tablespace", 1213),
     ("pg_shdescription", 2396),
     ("pg_sequence", 2224),

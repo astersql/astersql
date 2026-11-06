@@ -714,6 +714,7 @@ impl CatalogQuery {
                         | "__pg_scalar"
                         | "pg_user"
                         | "pg_roles"
+                        | "pg_auth_members"
                         | "pg_shadow"
                         | "pg_authid"
                         | "pg_class"
@@ -1083,6 +1084,27 @@ impl CatalogQuery {
                     ("pg_user" | "pg_shadow", "usesysid") | ("pg_roles", "oid") => {
                         Some((0, crate::pg_oid::OID_TYPE, 0))
                     }
+                    ("pg_auth_members", column @ ("oid" | "roleid" | "member" | "grantor")) => {
+                        Some((
+                            ["oid", "roleid", "member", "grantor"]
+                                .iter()
+                                .position(|n| *n == column)
+                                .unwrap(),
+                            crate::pg_oid::OID_TYPE,
+                            0,
+                        ))
+                    }
+                    (
+                        "pg_auth_members",
+                        column @ ("admin_option" | "inherit_option" | "set_option"),
+                    ) => Some((
+                        4 + ["admin_option", "inherit_option", "set_option"]
+                            .iter()
+                            .position(|n| *n == column)
+                            .unwrap(),
+                        1,
+                        boolean,
+                    )),
                     ("pg_roles", "rolcanlogin") => Some((2, 1, boolean)),
                     ("pg_roles", "rolinherit") => Some((12, 1, boolean)),
                     ("pg_roles", "rolcreaterole") => Some((13, 1, boolean)),
@@ -1304,6 +1326,17 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
+                    ("pg_has_role", values)
+                        if matches!(values.len(), 2 | 3)
+                            && values.iter().all(|v| {
+                                matches!(v, Expr::Null)
+                                    || self
+                                        .expr_type(v)
+                                        .is_ok_and(|(t, _)| textual_type(t) || numeric_type(t))
+                            }) =>
+                    {
+                        Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+                    }
                     ("obj_description" | "shobj_description", [oid, catalog])
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(catalog, Expr::Null)
@@ -2939,6 +2972,27 @@ impl CatalogQuery {
                     },
                 ));
             }
+            "pg_auth_members" => {
+                let facts = execution.role_facts()?;
+                let mut rows = Vec::new();
+                for edge in facts.iter().flat_map(|f| &f.memberships) {
+                    if edge.oid == 0 {
+                        return Err(database_identity_unavailable(
+                            "native membership options are unknown",
+                        ));
+                    }
+                    rows.push(vec![
+                        Value::Signed(edge.oid),
+                        Value::Signed(edge.roleid),
+                        Value::Signed(edge.member),
+                        Value::Signed(edge.grantor),
+                        Value::Text(if edge.admin_option { "t" } else { "f" }.into()),
+                        Value::Text(if edge.inherit_option { "t" } else { "f" }.into()),
+                        Value::Text(if edge.set_option { "t" } else { "f" }.into()),
+                    ]);
+                }
+                rows
+            }
             "pg_user" | "pg_roles" => {
                 let facts = execution.role_facts()?;
                 if name == "pg_user" && facts.iter().any(|f| f.can_login.is_none()) {
@@ -3812,6 +3866,70 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "pg_has_role" => {
+                    let mut values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.iter().any(|v| *v == Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    if values.len() == 2 {
+                        values.insert(0, Value::Text(execution.session_identity()?.1));
+                    }
+                    let facts = execution.role_facts()?;
+                    let resolve = |value: &Value| -> ConnResult<Option<i64>> {
+                        match value {
+                            Value::Signed(oid) => Ok(Some(*oid)),
+                            Value::Text(name) => facts
+                                .iter()
+                                .find(|f| f.name == *name)
+                                .map(|f| Some(f.oid))
+                                .ok_or_else(|| {
+                                    ConnError::PgFunction(
+                                        astersql_session::runtime::PgFunctionError {
+                                            state: "42704",
+                                            message: "role does not exist".into(),
+                                            detail: None,
+                                            hint: None,
+                                            position: None,
+                                        },
+                                    )
+                                }),
+                            _ => Err(database_identity_unavailable(
+                                "unsupported role identity type",
+                            )),
+                        }
+                    };
+                    let (Some(member), Some(role)) = (resolve(&values[0])?, resolve(&values[1])?)
+                    else {
+                        return Ok(Value::Null);
+                    };
+                    let Value::Text(privileges) = &values[2] else {
+                        return Err(database_identity_unavailable("role privilege must be text"));
+                    };
+                    let mut result = false;
+                    for privilege in privileges.split(',') {
+                        let privilege = privilege.trim().to_ascii_uppercase();
+                        let mode = if let Some(base) = privilege
+                            .strip_suffix(" WITH ADMIN OPTION")
+                            .or_else(|| privilege.strip_suffix(" WITH GRANT OPTION"))
+                        {
+                            if !matches!(base, "MEMBER" | "USAGE" | "SET") {
+                                return Err(invalid_role_privilege());
+                            }
+                            "ADMIN"
+                        } else if matches!(privilege.as_str(), "MEMBER" | "USAGE" | "SET") {
+                            privilege.as_str()
+                        } else {
+                            return Err(invalid_role_privilege());
+                        };
+                        result |= astersql_session::runtime::pg_role_reachable(
+                            &facts, member, role, mode,
+                        )
+                        .map_err(|_| {
+                            database_identity_unavailable("native membership options are unknown")
+                        })?;
+                    }
+                    Value::Text(if result { "t" } else { "f" }.into())
+                }
                 name @ ("obj_description" | "col_description" | "shobj_description") => {
                     match (evaluate(&args[0])?, evaluate(&args[1])?) {
                         (Value::Null, _) | (_, Value::Null) => Value::Null,
@@ -8403,4 +8521,14 @@ pub(crate) fn standard_column_identity(
         40 => if config.Cycle { "YES" } else { "NO" }.into(),
         _ => unreachable!("validated identity field"),
     }))
+}
+
+fn invalid_role_privilege() -> ConnError {
+    ConnError::PgFunction(astersql_session::runtime::PgFunctionError {
+        state: "22023",
+        message: "unrecognized role privilege type".into(),
+        detail: None,
+        hint: None,
+        position: None,
+    })
 }

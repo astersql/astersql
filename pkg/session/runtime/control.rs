@@ -5872,6 +5872,48 @@ impl ConcreteSession {
     }
 
     pub(super) fn execute_grant_role(&self, statement: &ast::GrantRoleStmt) -> SessionResult<()> {
+        if self
+            .login_user
+            .as_deref()
+            .is_some_and(|name| name != "root")
+            || !self.active_roles.borrow().is_empty()
+        {
+            return Err(super::pg_schema::namespace_error(
+                "42501",
+                "permission denied to grant role",
+            ));
+        }
+        let roles: Vec<_> = statement
+            .Roles
+            .iter()
+            .map(|r| {
+                astersql_privilege_privileges::RoleIdentity::new(
+                    &r.username,
+                    account_host(&r.hostname),
+                )
+            })
+            .collect();
+        let users: Vec<_> = statement
+            .Users
+            .iter()
+            .map(|r| {
+                astersql_privilege_privileges::RoleIdentity::new(
+                    &r.username,
+                    account_host(&r.hostname),
+                )
+            })
+            .collect();
+        let accounts = runtime_privilege_handle(&self.domain).Get();
+        for identity in roles.iter().chain(&users) {
+            if !accounts
+                .user
+                .iter()
+                .any(|r| r.base.User == identity.Username && r.base.Host == identity.Hostname)
+            {
+                return Err(SessionError::new("GRANT ROLE account does not exist"));
+            }
+        }
+        self.pg_persist_native_memberships(&roles, &users, true)?;
         let handle = runtime_privilege_handle(&self.domain);
         let mut privileges = handle.Get();
         for user in &statement.Users {
@@ -5940,6 +5982,7 @@ impl ConcreteSession {
                 return Err(SessionError::new("REVOKE ROLE account does not exist"));
             }
         }
+        self.pg_persist_native_memberships(&roles, &users, false)?;
         for user in &users {
             if let Some(edges) = privileges.role_graph.get_mut(user) {
                 for role in &roles {
@@ -6413,7 +6456,7 @@ impl ConcreteSession {
         Ok(())
     }
 
-    fn execute_privilege_mutation(&self, sql: &str) -> SessionResult<()> {
+    pub(super) fn execute_privilege_mutation(&self, sql: &str) -> SessionResult<()> {
         let statements = parse(sql)?;
         let statement = statements
             .first()
@@ -6458,6 +6501,10 @@ impl ConcreteSession {
             self.ensure_implicit_transaction()?;
             let result = (|| {
                 for (host, user) in &identities {
+                    self.execute_privilege_mutation(&format!(
+                        "DELETE FROM mysql.role_edges WHERE (FROM_USER={} AND FROM_HOST={}) OR (TO_USER={} AND TO_HOST={})", quote(user),quote(host),quote(user),quote(host)))?;
+                    self.execute_privilege_mutation(&format!(
+                        "DELETE FROM mysql.default_roles WHERE (User={} AND Host={}) OR (Default_role_user={} AND Default_role_host={})",quote(user),quote(host),quote(user),quote(host)))?;
                     for table in ["db", "tables_priv", "columns_priv", "user"] {
                         self.execute_privilege_mutation(&format!(
                             "DELETE FROM mysql.{table} WHERE User={} AND Host={}",
@@ -6476,6 +6523,14 @@ impl ConcreteSession {
         }
 
         for (host, user) in identities {
+            let identity = astersql_privilege_privileges::RoleIdentity::new(&user, &host);
+            privileges.role_graph.remove(&identity);
+            for edges in privileges.role_graph.values_mut() {
+                edges.0.remove(&identity);
+            }
+            privileges
+                .default_roles
+                .retain(|record| record.DefaultRoleUser != user || record.DefaultRoleHost != host);
             privileges.DropAccount(&host, &user);
             if host == "%" {
                 self.pg_database_drop_role(&user, true)?;

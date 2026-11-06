@@ -13341,9 +13341,10 @@ fn cat14_09() {
     ok(&mut admin, "CREATE ROLE \"cat14_09@reader'一\" LOGIN");
     ok(&mut admin, "CREATE ROLE \"cat14_09@group'二\" NOLOGIN");
     ok(&mut admin, "CREATE ROLE cat14_09_denied NOLOGIN");
-    native
-        .execute("GRANT 'cat14_09@group''二'@'%' TO 'cat14_09@reader''一'@'%'")
-        .unwrap();
+    ok(
+        &mut admin,
+        "GRANT \"cat14_09@group'二\" TO \"cat14_09@reader'一\" WITH INHERIT FALSE, SET TRUE",
+    );
     ok(
         &mut admin,
         "CREATE SCHEMA cat14_09_private AUTHORIZATION \"cat14_09@group'二\"",
@@ -13463,4 +13464,456 @@ fn cat14_09() {
     for s in [&mut a, &mut b, &mut admin] {
         send(s, b'X', b"");
     }
+}
+
+#[test]
+fn cat14_10() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_10_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_10_db")
+            .unwrap();
+        for name in ["cat14_10_reader", "cat14_10_group", "cat14_10_parent"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect = |user: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0cat14_10_db\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        let mut offset = 2;
+        for (oid, len) in types {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&t[offset..offset + 6], &[0; 6]);
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE cat14_10_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_10_group NOLOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_10_parent NOLOGIN");
+    ok(
+        &mut admin,
+        "GRANT cat14_10_group TO cat14_10_reader WITH INHERIT FALSE, SET TRUE, ADMIN FALSE",
+    );
+    ok(
+        &mut admin,
+        "CREATE SCHEMA cat14_10_private AUTHORIZATION cat14_10_group",
+    );
+    let mut reader = connect("cat14_10_reader");
+    ok(&mut reader, "SET search_path TO cat14_10_private");
+    let path_sql = "SELECT current_schema() FROM pg_namespace WHERE nspname='public'";
+    assert_eq!(data(&ok(&mut reader, path_sql)), vec![row(&[None])]);
+    let sql = "SELECT pg_has_role('cat14_10_group','MEMBER'),pg_has_role('cat14_10_group','USAGE'),pg_has_role('cat14_10_group','SET'),pg_has_role('cat14_10_group','MEMBER WITH ADMIN OPTION')";
+    let expected = vec![row(&[Some("t"), Some("f"), Some("t"), Some("f")])];
+    assert_eq!(data(&ok(&mut reader, sql)), expected);
+    let members = "SELECT oid,roleid,member,grantor,admin_option,inherit_option,set_option FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname='cat14_10_reader')";
+    let baseline = ok(&mut reader, members);
+    let text = data(&baseline);
+    assert_eq!(text.len(), 1);
+    let fields = values(&text[0]);
+    let edge = String::from_utf8(fields[0].clone().unwrap())
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let group = native.pg_database_role_id("cat14_10_group").unwrap();
+    let recipient = native.pg_database_role_id("cat14_10_reader").unwrap();
+    let grantor = native.pg_database_role_id("root").unwrap();
+    assert!(edge > 0 && ![group, recipient, grantor].contains(&edge));
+    assert_eq!(
+        text,
+        vec![row(&[
+            Some(&edge.to_string()),
+            Some(&group.to_string()),
+            Some(&recipient.to_string()),
+            Some(&grantor.to_string()),
+            Some("f"),
+            Some("f"),
+            Some("t")
+        ])]
+    );
+    let member_types = [
+        (26, 4),
+        (26, 4),
+        (26, 4),
+        (26, 4),
+        (16, 1),
+        (16, 1),
+        (16, 1),
+    ];
+    description(&baseline, &member_types, 0);
+    // Same prepared statement, parameter, schema and values in both codecs.
+    for (statement, types, rows) in [
+        (sql, vec![(16, 1); 4], expected.clone()),
+        (members, member_types.to_vec(), text.clone()),
+    ] {
+        send(
+            &mut reader,
+            b'P',
+            &[b"member_stmt\0".as_slice(), statement.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut reader, b'D', b"Smember_stmt\0");
+        send(&mut reader, b'S', b"");
+        let parsed = until_ready(&mut reader);
+        description(&parsed, &types, 0);
+        for binary in [0i16, 1] {
+            send(
+                &mut reader,
+                b'B',
+                &[
+                    b"member_portal\0member_stmt\0".as_slice(),
+                    &0i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &binary.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut reader, b'D', b"Pmember_portal\0");
+            send(
+                &mut reader,
+                b'E',
+                &[b"member_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+            );
+            send(&mut reader, b'S', b"");
+            let r = until_ready(&mut reader);
+            assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+            description(&r, &types, binary);
+            if binary == 0 {
+                assert_eq!(data(&r), rows);
+            } else {
+                let fields = values(&data(&r)[0]);
+                if types.len() == 4 {
+                    assert_eq!(
+                        fields,
+                        vec![Some(vec![1]), Some(vec![0]), Some(vec![1]), Some(vec![0])]
+                    );
+                } else {
+                    assert_eq!(
+                        fields,
+                        vec![
+                            Some((edge as u32).to_be_bytes().to_vec()),
+                            Some((group as u32).to_be_bytes().to_vec()),
+                            Some((recipient as u32).to_be_bytes().to_vec()),
+                            Some((grantor as u32).to_be_bytes().to_vec()),
+                            Some(vec![0]),
+                            Some(vec![0]),
+                            Some(vec![1])
+                        ]
+                    );
+                }
+            }
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            send(&mut reader, b'C', b"Pmember_portal\0");
+            send(&mut reader, b'S', b"");
+            until_ready(&mut reader);
+        }
+        send(&mut reader, b'C', b"Smember_stmt\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"parameter_role\0SELECT pg_has_role($1,$2)\0".as_slice(),
+            &2i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+            &25u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'D', b"Sparameter_role\0");
+    send(&mut reader, b'S', b"");
+    let parsed = until_ready(&mut reader);
+    assert_eq!(
+        parsed.iter().find(|m| m.0 == b't').unwrap().1,
+        [
+            2i16.to_be_bytes().as_slice(),
+            &26u32.to_be_bytes(),
+            &25u32.to_be_bytes()
+        ]
+        .concat()
+    );
+    for target in [Some(group.to_string()), None] {
+        let mut bind = b"parameter_portal\0parameter_role\0".to_vec();
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        bind.extend_from_slice(&2i16.to_be_bytes());
+        if let Some(target) = target.as_ref() {
+            bind.extend_from_slice(&(target.len() as i32).to_be_bytes());
+            bind.extend_from_slice(target.as_bytes());
+        } else {
+            bind.extend_from_slice(&(-1i32).to_be_bytes());
+        }
+        bind.extend_from_slice(&3i32.to_be_bytes());
+        bind.extend_from_slice(b"SET");
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        send(&mut reader, b'B', &bind);
+        send(&mut reader, b'D', b"Pparameter_portal\0");
+        send(
+            &mut reader,
+            b'E',
+            &[b"parameter_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(&mut reader, b'S', b"");
+        let r = until_ready(&mut reader);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        description(&r, &[(16, 1)], 1);
+        assert_eq!(values(&data(&r)[0]), vec![target.as_ref().map(|_| vec![1])]);
+        send(&mut reader, b'C', b"Pparameter_portal\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    send(&mut reader, b'C', b"Sparameter_role\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    // Explicit identity overloads, NULL propagation, nonexistent OID/name, and
+    // case-insensitive privilege lists (ADMIN is a suffix, not a privilege).
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            &format!(
+                "SELECT pg_has_role({recipient}::oid,{group}::oid,'member'),pg_has_role('cat14_10_reader','cat14_10_group','usage,set')"
+            )
+        )),
+        vec![row(&[Some("t"), Some("t")])]
+    );
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT pg_has_role(NULL,'MEMBER'),pg_has_role('cat14_10_group',NULL),pg_has_role(0::oid,'MEMBER'),pg_has_role(0::oid,'cat14_10_group','MEMBER')"
+        )),
+        vec![row(&[None, None, Some("f"), Some("f")])]
+    );
+    denied(
+        &mut reader,
+        "SELECT pg_has_role('cat14_10_missing','MEMBER')",
+        "42704",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT pg_has_role('cat14_10_group','ADMIN')",
+        "22023",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "GRANT cat14_10_group TO cat14_10_parent",
+        "42501",
+        b'I',
+    );
+    ok(&mut reader, "SET ROLE cat14_10_group");
+    assert_eq!(
+        data(&ok(&mut reader, path_sql)),
+        vec![row(&[Some("cat14_10_private")])]
+    );
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT session_user,current_user,current_role"
+        )),
+        vec![row(&[
+            Some("cat14_10_reader"),
+            Some("cat14_10_group"),
+            Some("cat14_10_group")
+        ])]
+    );
+    ok(&mut reader, "RESET ROLE");
+    ok(
+        &mut admin,
+        "GRANT cat14_10_parent TO cat14_10_group WITH INHERIT TRUE, SET FALSE, ADMIN TRUE",
+    );
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT pg_has_role('cat14_10_parent','MEMBER'),pg_has_role('cat14_10_parent','USAGE'),pg_has_role('cat14_10_parent','SET'),pg_has_role('cat14_10_parent','USAGE WITH ADMIN OPTION')"
+        )),
+        vec![row(&[Some("t"), Some("f"), Some("f"), Some("t")])]
+    );
+    denied(&mut reader, "SET ROLE cat14_10_parent", "42501", b'I');
+    // Regrant changes only specified flags and preserves the edge's identity.
+    ok(
+        &mut admin,
+        "GRANT cat14_10_group TO cat14_10_reader WITH INHERIT TRUE, ADMIN TRUE, SET FALSE",
+    );
+    assert_eq!(
+        data(&ok(&mut reader, sql)),
+        vec![row(&[Some("t"), Some("t"), Some("f"), Some("t")])]
+    );
+    assert_eq!(
+        data(&ok(&mut reader, path_sql)),
+        vec![row(&[Some("cat14_10_private")])]
+    );
+    assert_eq!(values(&data(&ok(&mut reader, members))[0])[0], fields[0]);
+    denied(&mut reader, "SET ROLE cat14_10_group", "42501", b'I');
+    denied(
+        &mut admin,
+        "GRANT cat14_10_reader TO cat14_10_parent",
+        "0LP01",
+        b'I',
+    );
+    domain.force_full_reload_for_test().unwrap();
+    let mut other = connect("cat14_10_reader");
+    assert_eq!(
+        data(&ok(&mut other, sql)),
+        vec![row(&[Some("t"), Some("t"), Some("f"), Some("t")])]
+    );
+    assert_eq!(values(&data(&ok(&mut other, members))[0])[0], fields[0]);
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT pg_has_role('cat14_10_group','ADMIN')",
+        "22023",
+        b'E',
+    );
+    denied(&mut reader, sql, "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    ok(&mut admin, "REVOKE cat14_10_group FROM cat14_10_reader");
+    assert!(data(&ok(&mut reader, members)).is_empty());
+    assert_eq!(
+        data(&ok(&mut reader, sql)),
+        vec![row(&[Some("f"), Some("f"), Some("f"), Some("f")])]
+    );
+    // New grant defaults consume the recipient's persisted role declaration.
+    ok(&mut admin, "GRANT cat14_10_group TO cat14_10_reader");
+    let renewed = data(&ok(&mut reader, members));
+    assert_ne!(values(&renewed[0])[0], fields[0]);
+    assert_eq!(
+        data(&ok(&mut reader, sql)),
+        vec![row(&[Some("t"), Some("t"), Some("t"), Some("f")])]
+    );
+    // Native REVOKE/GRANT must invalidate prior explicit PG flags, not revive them.
+    native
+        .execute("REVOKE 'cat14_10_group'@'%' FROM 'cat14_10_reader'@'%'")
+        .unwrap();
+    assert!(data(&ok(&mut reader, members)).is_empty());
+    native
+        .execute("GRANT 'cat14_10_group'@'%' TO 'cat14_10_reader'@'%'")
+        .unwrap();
+    denied(&mut reader, members, "0A000", b'I');
+    denied(&mut reader, sql, "0A000", b'I');
+    denied(&mut reader, "SET ROLE cat14_10_group", "0A000", b'I');
+    ok(
+        &mut admin,
+        "GRANT cat14_10_group TO cat14_10_reader WITH INHERIT FALSE, SET TRUE",
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), expected);
+    ok(&mut admin, "REVOKE cat14_10_group FROM cat14_10_reader");
+    ok(&mut admin, "REVOKE cat14_10_parent FROM cat14_10_group");
+    ok(&mut admin, "DROP SCHEMA cat14_10_private");
+    ok(&mut admin, "GRANT cat14_10_group TO cat14_10_reader");
+    let before_drop = values(&data(&ok(&mut reader, members))[0])[0].clone();
+    ok(&mut admin, "DROP ROLE cat14_10_group");
+    assert!(data(&ok(&mut reader, members)).is_empty());
+    ok(&mut admin, "CREATE ROLE cat14_10_group NOLOGIN");
+    assert_ne!(native.pg_database_role_id("cat14_10_group").unwrap(), group);
+    ok(&mut admin, "GRANT cat14_10_group TO cat14_10_reader");
+    assert_ne!(values(&data(&ok(&mut reader, members))[0])[0], before_drop);
+    ok(&mut admin, "REVOKE cat14_10_group FROM cat14_10_reader");
+    send(&mut reader, b'X', b"");
+    send(&mut other, b'X', b"");
+    send(&mut admin, b'X', b"");
 }
