@@ -158,3 +158,8 @@ prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不�
 ## SRF暂停恢复与释放（任务29）
 
 现有worker注册活SRF时使用1行传输块，防止Execute只请求一行却提前执行后续外行。非SRF的PG结果继续原物化路径；MySQL结果保留原流式块设置。session_protocol_error作为crate内共享转换供延迟结果读取保留PG错误身份。
+
+
+## 类型初始化owner（目录任务15）
+
+PG会话worker显式初始化标准schema时，把pg_catalog::builtin_type_identities返回的现有COLUMN_TYPES声明传入共享pg_initialize_standard_schema_with_types。仅新建标准元数据记录时保存bootstrap稳定角色OID；已有记录补类型声明不会补历史owner。目录读取不触发初始化或分配身份，不从reader登录身份推断owner。

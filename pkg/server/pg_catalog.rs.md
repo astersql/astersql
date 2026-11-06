@@ -122,6 +122,13 @@ ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能
 `pg_catalog_test::cat14_14`经真实Domain/KV及两个非root reader验证四类关系、新建者事实、管理员两次ALTER TABLE OWNER、reload后OID不变、角色JOIN/反查、GRANT/REVOKE、同prepared新Bind的text/binary及NULL/不存在名称、legacy拒绝和显式迁移、Sync/ROLLBACK恢复。该局部接线不实现新的owner存储、非管理员自转移或完整DDL语法。
 
 
+## 类型 owner（目录任务15）
+
+pg_type.typowner使用oid/26、来源1247/4；四个已注册information_schema域从PgStandardSchema.type_owners按持久类型ID读取显式角色OID，内置类型使用独立builtin_type_owners映射以避免静态OID与域的内部ID碰撞，并与当前公开角色事实校验。缺失旧字段或角色来源时，只对所需owner读取返回0A000；oid/typname仍可读。未匹配外连接保持SQL NULL。类型JOIN沿已有基表名称等值合取项过滤，不提前读取其他缺源类型，OR不下推。标准视图owner不作为类型owner来源。
+
+新标准域初始化在同一KV事务记录bootstrap初始化角色OID；历史记录不读时补齐。管理员ALTER TYPE/DOMAIN OWNER只更改已注册标准域的显式owner，同一类型ID保持不变。显式更新按当前数据库持久ID保存覆盖值，其他数据库不共享可变owner；初始逐类型事实保持独立，不改变标准视图owner。CREATE TYPE/DOMAIN仍由既有入口门禁。本任务新增真实reader双连接及text/binary新Bind、历史缺字段和显式迁移回归。新初始化按已批准策略将bootstrap稳定角色OID和现有内置类型声明在同一KV事务持久记录；旧记录启动只登记既有类型身份，不补owner。管理员ALTER TYPE pg_catalog.int4 OWNER同步更新数组owner，直接修改数组或ALTER DOMAIN非域为42809，更新按数据库ID隔离。
+
+
 ## 2026-11-06 数据库授权事实与查询
 
 pg_database.datacl按需消费共享PgDatabaseFact::acl_text，默认ACL为NULL、显式空ACL为{}、缺源为0A000；aclitem[]描述1034/-1/-1，来源1262/18。has_database_privilege与普通函数复用pg_has_database_privilege，不从目录存在性推断权限；Execution缓存只限一次执行。name显式转换保留类型19并按UTF8边界裁剪63字节。

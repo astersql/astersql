@@ -1034,7 +1034,9 @@ fn run_session_worker(
         }
         if dialect == astersql_parser_ast::SqlDialect::PostgreSQL {
             session
-                .pg_initialize_standard_schema()
+                .pg_initialize_standard_schema_with_types(
+                    &crate::pg_catalog::builtin_type_identities(),
+                )
                 .map_err(session_protocol_error)?;
         }
         Ok::<_, ConnError>(session)

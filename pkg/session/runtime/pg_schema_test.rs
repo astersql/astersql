@@ -1600,3 +1600,75 @@ fn cat14_13_builtin_owner_requires_persistence_and_survives_cleanup() {
     assert_eq!((reloaded.id, reloaded.owner), (before.id, migrated.owner));
     domain.close();
 }
+
+#[test]
+fn cat14_15_historical_type_owner_is_not_backfilled() {
+    let (domain, pg) = CreateAnalyzeSession().unwrap();
+    let types = [(23, "int4", 1007, false), (1007, "_int4", 0, true)];
+    pg.pg_initialize_standard_schema_with_types(&types).unwrap();
+    let standard = || {
+        pg.pg_namespace_facts()
+            .unwrap()
+            .into_iter()
+            .find_map(|f| f.standard)
+            .unwrap()
+    };
+    let before = standard();
+    assert_eq!(before.type_owners.len(), 4);
+    assert_eq!(before.builtin_type_owners.len(), 2);
+    let context = kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                let bytes = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                value.as_object_mut().unwrap().remove("type_owners");
+                value.as_object_mut().unwrap().remove("builtin_type_owners");
+                value.as_object_mut().unwrap().remove("builtin_types");
+                tx.Set(key, serde_json::to_vec(&value).unwrap())
+            })
+        })
+        .unwrap();
+    pg.pg_initialize_standard_schema_with_types(&types).unwrap();
+    let old = standard();
+    assert_eq!(old.sql_identifier, before.sql_identifier);
+    assert!(old.type_owners.is_empty());
+    assert!(old.builtin_type_owners.is_empty());
+    pg.pg_schema_command(&PgSchemaCommand::TypeOwner {
+        domain: false,
+        schema: Some("pg_catalog".into()),
+        name: "int4".into(),
+        owner: "root".into(),
+    })
+    .unwrap();
+    let migrated = standard();
+    assert_eq!(migrated.builtin_type_owners.len(), 2);
+    assert_eq!(
+        migrated.builtin_type_owners[&23],
+        pg.pg_database_role_id("root").unwrap()
+    );
+    assert_eq!(
+        migrated.builtin_type_owners[&23],
+        migrated.builtin_type_owners[&1007]
+    );
+    pg.pg_schema_command(&PgSchemaCommand::TypeOwner {
+        domain: false,
+        schema: Some("information_schema".into()),
+        name: "sql_identifier".into(),
+        owner: "root".into(),
+    })
+    .unwrap();
+    let after = standard();
+    assert_eq!(after.type_owners.len(), 1);
+    assert_eq!(
+        after.type_owners[&before.sql_identifier],
+        pg.pg_database_role_id("root").unwrap()
+    );
+    assert_eq!(
+        (after.sql_identifier, after.owner),
+        (before.sql_identifier, before.owner)
+    );
+    domain.close();
+}

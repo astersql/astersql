@@ -9,3 +9,10 @@ CREATE SCHEMA在写入namespace前调用`pg_require_database_privilege(4)`，与
 `pg_bind_relation`先处理当前连接未限定schema的本地临时表，保持其遮蔽永久关系和撤权后的已有表可用；永久对象仍按有效search_path与namespace USAGE/CREATE事实绑定。ACL事实未知不会转换成无权限false，bootstrap管理路径保留历史兼容边界。
 
 聚焦回归：`pg_catalog_test::cat14_17`；namespace owner/绑定既有回归分别由cat14_13、cat14_14及pg_schema_test维护。类型/函数owner类别不属于数据库ACL事实扩展。
+
+
+## 类型owner（目录任务15）
+
+PgStandardSchema复用同一KV记录保存逐类型bootstrap owner及按数据库ID的显式owner覆盖。标准域内部ID与内置类型OID分别存储，避免编号碰撞。server传入已有COLUMN_TYPES声明；新记录初始化在同一事务登记真实bootstrap稳定角色OID，旧记录只登记稳定声明，不补缺失owner。查询只合并当前数据库覆盖，不更改标准视图owner。
+
+管理员ALTER TYPE/DOMAIN OWNER仅处理已注册类型，类型身份不变；内置基础类型的数组owner同事务同步，直接修改数组或用DOMAIN修改非域为42809。共享角色不存在42704，非管理员42501，事务内由现有server DDL门禁拒绝。目录仅在读取缺源typowner时0A000，标识/name继续可读，外连接未匹配为SQL NULL。独立pg_schema_test::cat14_15_historical_type_owner_is_not_backfilled及server cat14_15覆盖真实KV升级/显式迁移和reader协议行为；不开放CREATE TYPE/DOMAIN。

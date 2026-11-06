@@ -1682,6 +1682,7 @@ impl CatalogQuery {
                         ("pg_type", 8) => 28,
                         ("pg_type", 9) => 31,
                         ("pg_type", 10) => 25,
+                        ("pg_type", 11) => 4,
                         ("pg_type", 12) => 14,
                         ("pg_type", 13) => 10,
                         ("pg_type", 16) => 15,
@@ -2057,7 +2058,7 @@ impl CatalogQuery {
         let mut rows = (*providers[0]).clone();
         if matches!(
             self.select.from.name.as_str(),
-            "pg_database" | "pg_namespace" | "pg_class"
+            "pg_database" | "pg_namespace" | "pg_class" | "pg_type"
         ) && self.select.from.cte_id.is_none()
             && !self.select.joins.is_empty()
         {
@@ -2969,6 +2970,13 @@ impl CatalogQuery {
                     .into_iter()
                     .find_map(|f| f.standard)
                 {
+                    for row in &mut rows {
+                        if let Value::Signed(oid) = row[0] {
+                            if let Some(owner) = standard.builtin_type_owners.get(&oid) {
+                                row[11] = Value::Signed(*owner);
+                            }
+                        }
+                    }
                     for (id, label, base, length, by_value) in [
                         (standard.sql_identifier, "sql_identifier", 19, 64, false),
                         (standard.character_data, "character_data", 1043, -1, false),
@@ -2986,6 +2994,9 @@ impl CatalogQuery {
                         row[7] = Value::Signed(if id == standard.yes_or_no { 7 } else { -1 });
                         row[8] = Value::Signed(0);
                         row[10] = Value::Text("false".into());
+                        if let Some(owner) = standard.type_owners.get(&id) {
+                            row[11] = Value::Signed(*owner);
+                        }
                         row[12] = Value::Signed(0);
                         row[13] = Value::Text("true".into());
                         row[16] = Value::Signed(0);
@@ -3678,6 +3689,23 @@ impl CatalogQuery {
                     return Err(database_identity_unavailable(
                         "PostgreSQL database owner or policy requires explicit administrator migration",
                     ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_type")
+                    && slot % CATALOG_ROW_WIDTH == 11
+                    && row[slot - 11] != Value::Null
+                {
+                    match row[slot] {
+                        Value::Signed(oid)
+                            if execution.role_facts()?.iter().any(|f| f.oid == oid) => {}
+                        _ => {
+                            return Err(database_identity_unavailable(
+                                "PostgreSQL type owner identity is unavailable",
+                            ));
+                        }
+                    }
                 }
                 if self
                     .relations()
@@ -5900,8 +5928,9 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_type", "typndims") => (8, 3),
         ("pg_type", "typdefault") => (9, 253),
         ("pg_type", "typnotnull") => (10, 1),
-        // No durable builtin owner/default-ACL facts exist in the role model.
-        ("pg_type", "typowner" | "typacl") => return None,
+        ("pg_type", "typowner") => (11, oid),
+        // Type ACL facts are independent of explicit ownership.
+        ("pg_type", "typacl") => return None,
         ("pg_type", "typarray") => (16, oid),
         ("pg_type", "typdelim") => (17, internal_char),
         ("pg_type", "typlen") => (18, 2),
@@ -5936,6 +5965,15 @@ struct BuiltinType {
     length: i64,
     by_value: bool,
 }
+// Reuse the catalog's registered identities; ownership is persisted by the
+// initializer, not derived from these declarations during a catalog read.
+pub(crate) fn builtin_type_identities() -> Vec<(i64, &'static str, i64, bool)> {
+    COLUMN_TYPES
+        .iter()
+        .map(|t| (t.oid, t.name, t.array, t.category == "A"))
+        .collect()
+}
+
 const COLUMN_TYPES: &[BuiltinType] = &[
     BuiltinType {
         oid: 194,

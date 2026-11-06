@@ -15457,6 +15457,519 @@ fn cat14_14() {
 }
 
 #[test]
+fn cat14_15() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_15_db").unwrap();
+    native.execute("CREATE DATABASE cat14_15_other").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_15_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_15_other")
+            .unwrap();
+        for name in ["cat14_15_reader", "cat14_15@owner'二", "cat14_15_group"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_db = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_db(user, "cat14_15_db");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert!(data(&r).is_empty(), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            columns(t).iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            vec!["oid", "typowner", "pg_get_userbyid"]
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = if index < 2 { 1247u32 } else { 0 };
+            let attr = [1i16, 4, 0][index];
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE cat14_15_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_15@owner'二\" NOLOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_15_group NOLOGIN");
+    let mut reader = connect("cat14_15_reader");
+    let mut other = connect("cat14_15_reader");
+    let sql =
+        "SELECT oid,typowner,pg_get_userbyid(typowner) FROM pg_type WHERE typname='sql_identifier'";
+    let initial = ok(&mut reader, sql);
+    description(&initial, &[(26, 4), (26, 4), (19, 64)], 0);
+    let identity = values(&data(&initial)[0])[0].clone().unwrap();
+    assert_eq!(
+        values(&data(&initial)[0])[1],
+        Some(
+            native
+                .pg_database_role_id("root")
+                .unwrap()
+                .to_string()
+                .into_bytes()
+        )
+    );
+    assert_eq!(values(&data(&initial)[0])[2], Some(b"root".to_vec()));
+    let builtin_sql =
+        "SELECT oid,typowner,pg_get_userbyid(typowner) FROM pg_type WHERE typname='int4'";
+    let builtin_initial = ok(&mut reader, builtin_sql);
+    description(&builtin_initial, &[(26, 4), (26, 4), (19, 64)], 0);
+    assert_eq!(
+        values(&data(&builtin_initial)[0]),
+        vec![
+            Some(b"23".to_vec()),
+            Some(
+                native
+                    .pg_database_role_id("root")
+                    .unwrap()
+                    .to_string()
+                    .into_bytes()
+            ),
+            Some(b"root".to_vec())
+        ]
+    );
+    let all = ok(&mut reader, "SELECT oid,typowner FROM pg_type ORDER BY oid");
+    assert_eq!(
+        data(&all).len(),
+        crate::pg_catalog::builtin_type_identities().len() + 4
+    );
+    let root_owner = native
+        .pg_database_role_id("root")
+        .unwrap()
+        .to_string()
+        .into_bytes();
+    for row in data(&all) {
+        assert_eq!(values(&row)[1], Some(root_owner.clone()));
+    }
+    // Simulate an old record without the new attribute; startup must not infer it.
+    let context = astersql_kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                let original = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                document.as_object_mut().unwrap().remove("type_owners");
+                document
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("builtin_type_owners");
+                document.as_object_mut().unwrap().remove("builtin_types");
+                tx.Set(key, serde_json::to_vec(&document).unwrap())
+            })
+        })
+        .unwrap();
+    let mut reconnected = connect("cat14_15_reader");
+    denied(&mut reconnected, sql, "0A000", b'I');
+    denied(&mut reconnected, builtin_sql, "0A000", b'I');
+    assert_eq!(
+        values(
+            &data(&ok(
+                &mut reconnected,
+                "SELECT oid,typname FROM pg_type WHERE oid=23"
+            ))[0]
+        ),
+        vec![Some(b"23".to_vec()), Some(b"int4".to_vec())]
+    );
+    ok(&mut admin, "ALTER TYPE pg_catalog.int4 OWNER TO root");
+    assert_eq!(
+        data(&ok(&mut reconnected, builtin_sql)),
+        data(&builtin_initial)
+    );
+    denied(
+        &mut admin,
+        "ALTER TYPE pg_catalog._int4 OWNER TO root",
+        "42809",
+        b'I',
+    );
+    denied(
+        &mut admin,
+        "ALTER DOMAIN pg_catalog.int4 OWNER TO root",
+        "42809",
+        b'I',
+    );
+    let names = "SELECT oid,typname FROM pg_type WHERE typname='sql_identifier'";
+    assert_eq!(
+        values(&data(&ok(&mut reconnected, names))[0])[0],
+        Some(identity.clone())
+    );
+    ok(
+        &mut admin,
+        "ALTER TYPE information_schema.sql_identifier OWNER TO root",
+    );
+    assert_eq!(data(&ok(&mut reconnected, sql)).len(), 1);
+    send(&mut reconnected, b'X', b"");
+    drop(reconnected);
+    denied(
+        &mut reader,
+        "ALTER TYPE information_schema.sql_identifier OWNER TO cat14_15_reader",
+        "42501",
+        b'I',
+    );
+    let mut foreign_admin = connect_db("root", "cat14_15_other");
+    let mut foreign_reader = connect_db("cat14_15_reader", "cat14_15_other");
+    ok(
+        &mut foreign_admin,
+        "ALTER TYPE information_schema.sql_identifier OWNER TO root",
+    );
+    let foreign_initial = data(&ok(&mut foreign_reader, sql));
+    ok(
+        &mut foreign_admin,
+        "ALTER TYPE pg_catalog.int4 OWNER TO root",
+    );
+    let foreign_builtin_initial = data(&ok(&mut foreign_reader, builtin_sql));
+    let mut parse = b"type_owner_stmt\0".to_vec();
+    parse.extend(b"SELECT oid,typowner,pg_get_userbyid(typowner) FROM pg_type WHERE typname=$1\0");
+    parse.extend(1i16.to_be_bytes());
+    parse.extend(25u32.to_be_bytes());
+    send(&mut reader, b'P', &parse);
+    send(&mut reader, b'D', b"Stype_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+    for name in ["cat14_15_group", "cat14_15@owner'二"] {
+        let role = name.replace('\'', "''");
+        let quoted = name.replace('"', "\"\"");
+        ok(
+            &mut admin,
+            &format!("ALTER TYPE information_schema.sql_identifier OWNER TO \"{quoted}\""),
+        );
+        ok(
+            &mut admin,
+            &format!("ALTER TYPE pg_catalog.int4 OWNER TO \"{quoted}\""),
+        );
+        let owner = native.pg_database_role_id(name).unwrap();
+        domain.reload().unwrap();
+        let expected = vec![
+            Some(identity.clone()),
+            Some(owner.to_string().into_bytes()),
+            Some(name.as_bytes().to_vec()),
+        ];
+        for c in [&mut reader, &mut other] {
+            assert_eq!(values(&data(&ok(c, sql))[0]), expected);
+        }
+        assert_eq!(
+            data(&ok(&mut foreign_reader, sql)),
+            foreign_initial,
+            "type owner must be scoped to its database"
+        );
+        assert_eq!(
+            data(&ok(&mut foreign_reader, builtin_sql)),
+            foreign_builtin_initial
+        );
+        for (typname, oid) in [("int4", 23), ("_int4", 1007)] {
+            let response = ok(
+                &mut other,
+                &format!(
+                    "SELECT oid,typowner,pg_get_userbyid(typowner) FROM pg_type WHERE typname='{typname}'"
+                ),
+            );
+            description(&response, &[(26, 4), (26, 4), (19, 64)], 0);
+            assert_eq!(
+                values(&data(&response)[0]),
+                vec![
+                    Some(oid.to_string().into_bytes()),
+                    Some(owner.to_string().into_bytes()),
+                    Some(name.as_bytes().to_vec())
+                ]
+            );
+        }
+        let joined = ok(
+            &mut reader,
+            "SELECT t.typowner,r.oid,r.rolname FROM pg_type t JOIN pg_roles r ON r.oid=t.typowner WHERE t.typname='sql_identifier'",
+        );
+        assert_eq!(
+            values(&data(&joined)[0]),
+            vec![
+                Some(owner.to_string().into_bytes()),
+                Some(owner.to_string().into_bytes()),
+                Some(name.as_bytes().to_vec())
+            ]
+        );
+        assert_eq!(
+            data(&ok(
+                &mut reader,
+                &format!("SELECT oid FROM pg_roles WHERE rolname='{role}'")
+            ))
+            .len(),
+            1
+        );
+        for binary in [0i16, 1] {
+            for param in [
+                Some("sql_identifier"),
+                Some("int4"),
+                Some("_int4"),
+                None,
+                Some("cat14_15_absent"),
+            ] {
+                let mut bind = b"type_owner_portal\0type_owner_stmt\0".to_vec();
+                bind.extend(0i16.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(param.map_or(-1, |p| p.len() as i32).to_be_bytes());
+                if let Some(p) = param {
+                    bind.extend(p.as_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                send(&mut reader, b'B', &bind);
+                send(&mut reader, b'D', b"Ptype_owner_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"type_owner_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(26, 4), (26, 4), (19, 64)], binary);
+                if matches!(param, Some("sql_identifier" | "int4" | "_int4")) {
+                    let mut expected = expected.clone();
+                    let type_oid = match param {
+                        Some("int4") => b"23".to_vec(),
+                        Some("_int4") => b"1007".to_vec(),
+                        _ => identity.clone(),
+                    };
+                    expected[0] = Some(type_oid.clone());
+                    if binary == 1 {
+                        expected[0] = Some(
+                            std::str::from_utf8(&type_oid)
+                                .unwrap()
+                                .parse::<u32>()
+                                .unwrap()
+                                .to_be_bytes()
+                                .to_vec(),
+                        );
+                        expected[1] = Some((owner as u32).to_be_bytes().to_vec());
+                    }
+                    assert_eq!(values(&data(&r)[0]), expected);
+                } else {
+                    assert!(data(&r).is_empty());
+                }
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                send(&mut reader, b'C', b"Ptype_owner_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+    }
+    let last_owner = data(&ok(&mut reader, sql));
+    denied(
+        &mut admin,
+        "ALTER TYPE information_schema.sql_identifier OWNER TO cat14_15_absent",
+        "42704",
+        b'I',
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), last_owner);
+    denied(
+        &mut admin,
+        "ALTER TYPE information_schema.cat14_15_absent OWNER TO root",
+        "42704",
+        b'I',
+    );
+    denied(
+        &mut admin,
+        "ALTER TYPE public.sql_identifier OWNER TO root",
+        "42704",
+        b'I',
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), last_owner);
+    denied(
+        &mut reader,
+        "SELECT typowner FROM pg_type WHERE typname='character_data'",
+        "0A000",
+        b'I',
+    );
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT typowner FROM pg_type WHERE typname='character_data'",
+        "0A000",
+        b'E',
+    );
+    denied(&mut reader, sql, "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    assert_eq!(data(&ok(&mut reader, sql)).len(), 1);
+    let before = data(&ok(&mut reader, sql));
+    ok(
+        &mut admin,
+        "GRANT USAGE ON SCHEMA information_schema TO cat14_15_reader",
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(
+        &mut admin,
+        "REVOKE USAGE ON SCHEMA information_schema FROM cat14_15_reader",
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(&mut admin, "BEGIN");
+    denied(
+        &mut admin,
+        "ALTER TYPE information_schema.sql_identifier OWNER TO root",
+        "0A000",
+        b'E',
+    );
+    ok(&mut admin, "ROLLBACK");
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    // An unrelated standard view's stored owner is not changed by type ownership.
+    let view = ok(
+        &mut reader,
+        "SELECT relowner FROM pg_class WHERE relname='schemata'",
+    );
+    assert_eq!(
+        values(&data(&view)[0])[0],
+        Some(
+            native
+                .pg_database_role_id("root")
+                .unwrap()
+                .to_string()
+                .into_bytes()
+        )
+    );
+    denied(
+        &mut reader,
+        "SELECT t.typowner FROM pg_type t WHERE t.typname='sql_identifier' OR t.typname='character_data'",
+        "0A000",
+        b'I',
+    );
+    let outer = ok(
+        &mut reader,
+        "SELECT r.typowner FROM pg_type t LEFT JOIN pg_type r ON r.typname='cat14_15_absent' WHERE t.typname='sql_identifier'",
+    );
+    assert_eq!(values(&data(&outer)[0]), vec![None]);
+    let restored = ok(
+        &mut admin,
+        "ALTER DOMAIN information_schema.sql_identifier OWNER TO root",
+    );
+    assert!(
+        restored
+            .iter()
+            .any(|m| m.0 == b'C' && m.1 == b"ALTER DOMAIN\0")
+    );
+    send(&mut reader, b'C', b"Stype_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    for c in [
+        &mut reader,
+        &mut other,
+        &mut admin,
+        &mut foreign_reader,
+        &mut foreign_admin,
+    ] {
+        send(c, b'X', b"");
+    }
+    drop((reader, other, admin, foreign_reader, foreign_admin));
+    drop(_cleanup);
+    println!(
+        "cat14_15: persistent_type_owner=3 reader_connections=3 database_isolation=1 transfers=2 stable_oid=1 role_join=2 extended_text_binary=20 legacy_owner=1 recovery=1 cleanup=1"
+    );
+}
+
+#[test]
 fn cat14_17() {
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     native.execute("CREATE DATABASE cat14_17_db").unwrap();

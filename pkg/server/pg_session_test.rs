@@ -254,3 +254,34 @@ fn cat14_07_role_parser_boundaries() {
         assert!(!error.1.contains("cat14_07_secret"));
     }
 }
+
+#[test]
+fn cat14_15_type_owner_parser() {
+    for kind in ["TYPE", "DOMAIN"] {
+        let sql = format!(
+            "ALTER {kind} information_schema.sql_identifier OWNER TO \"cat14_15@owner'二\""
+        );
+        match SessionQuery::parse(&sql).unwrap().unwrap() {
+            SessionQuery::SchemaUtility(
+                astersql_session::runtime::PgSchemaCommand::TypeOwner {
+                    schema,
+                    name,
+                    owner,
+                    domain,
+                },
+            ) => {
+                assert_eq!(domain, kind == "DOMAIN");
+                assert_eq!(schema.as_deref(), Some("information_schema"));
+                assert_eq!(name, "sql_identifier");
+                assert_eq!(owner, "cat14_15@owner'二");
+            }
+            other => panic!("unexpected parser result: {other:?}"),
+        }
+    }
+    assert!(!matches!(
+        SessionQuery::parse("ALTER TYPE sql_identifier OWNER TO root; SELECT 1"),
+        Ok(Some(SessionQuery::SchemaUtility(
+            astersql_session::runtime::PgSchemaCommand::TypeOwner { .. }
+        )))
+    ));
+}

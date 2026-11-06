@@ -174,6 +174,8 @@ impl PgSession {
                     | "REVOKE"
                     | "ALTER SCHEMA"
                     | "ALTER TABLE"
+                    | "ALTER TYPE"
+                    | "ALTER DOMAIN"
                     | "ALTER VIEW"
                     | "TRUNCATE TABLE"
             )
@@ -518,6 +520,13 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::Rename { .. }
                 | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::RelationOwner { .. } => "ALTER TABLE",
+                astersql_session::runtime::PgSchemaCommand::TypeOwner { domain, .. } => {
+                    if *domain {
+                        "ALTER DOMAIN"
+                    } else {
+                        "ALTER TYPE"
+                    }
+                }
                 astersql_session::runtime::PgSchemaCommand::RevokeAll { .. } => "REVOKE",
                 astersql_session::runtime::PgSchemaCommand::RelationPrivilege {
                     grant: true,
@@ -766,7 +775,11 @@ impl SessionQuery {
             };
             return Ok(Some(Self::RoleUtility(command)));
         }
-        if word(tokens.first(), "alter") && word(tokens.get(1), "table") {
+        if word(tokens.first(), "alter")
+            && (word(tokens.get(1), "table")
+                || word(tokens.get(1), "type")
+                || word(tokens.get(1), "domain"))
+        {
             let parsed =
                 if tokens.len() == 6 && word(tokens.get(3), "owner") && word(tokens.get(4), "to") {
                     identifier(&tokens[2])
@@ -785,11 +798,21 @@ impl SessionQuery {
                     None
                 };
             if let Some((schema, table, owner)) = parsed {
-                return Ok(Some(Self::SchemaUtility(PgSchemaCommand::RelationOwner {
-                    schema,
-                    table,
-                    owner,
-                })));
+                let command = if word(tokens.get(1), "table") {
+                    PgSchemaCommand::RelationOwner {
+                        schema,
+                        table,
+                        owner,
+                    }
+                } else {
+                    PgSchemaCommand::TypeOwner {
+                        domain: word(tokens.get(1), "domain"),
+                        schema,
+                        name: table,
+                        owner,
+                    }
+                };
+                return Ok(Some(Self::SchemaUtility(command)));
             }
         }
         use astersql_session::runtime::PgDatabaseCommand;

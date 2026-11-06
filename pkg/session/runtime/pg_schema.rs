@@ -47,6 +47,12 @@ pub enum PgSchemaCommand {
         schema: String,
         owner: String,
     },
+    TypeOwner {
+        domain: bool,
+        schema: Option<String>,
+        name: String,
+        owner: String,
+    },
     RelationOwner {
         schema: Option<String>,
         table: String,
@@ -227,7 +233,8 @@ impl ConcreteSession {
                     if let Some(command) = command {
                         match command {
                             PgSchemaCommand::RelationPrivilege { .. }
-                            | PgSchemaCommand::RelationOwner { .. } => {
+                            | PgSchemaCommand::RelationOwner { .. }
+                            | PgSchemaCommand::TypeOwner { .. } => {
                                 unreachable!("handled before namespace transaction")
                             }
                             PgSchemaCommand::Create(name) => {
@@ -440,6 +447,15 @@ impl ConcreteSession {
     }
 
     pub fn pg_schema_command(&self, command: &PgSchemaCommand) -> SessionResult<()> {
+        if let PgSchemaCommand::TypeOwner {
+            schema,
+            name,
+            owner,
+            domain,
+        } = command
+        {
+            return self.pg_type_owner(schema.as_deref(), name, owner, *domain);
+        }
         if let PgSchemaCommand::RelationOwner {
             schema,
             table,
@@ -633,7 +649,15 @@ impl ConcreteSession {
             .map(|f| (*f.roles).clone())
             .unwrap_or_default();
         let enabled = self.pg_enabled_namespace_roles()?;
-        let standard = self.pg_standard_schema(false)?;
+        let mut standard = self.pg_standard_schema(false)?;
+        if let Some(standard) = &mut standard {
+            if let Some(owners) = standard.builtin_type_owner_overrides.get(&database.id) {
+                standard.builtin_type_owners.extend(owners);
+            }
+            if let Some(owners) = standard.type_owner_overrides.get(&database.id) {
+                standard.type_owners.extend(owners);
+            }
+        }
         let mut facts: Vec<_> = self
             .pg_namespaces(None)?
             .into_iter()
@@ -866,10 +890,30 @@ impl ConcreteSession {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct BuiltinTypeIdentity {
+    oid: i64,
+    array: i64,
+    is_array: bool,
+}
+
 /// Durable identities for the bounded standard schema. OIDs are derived by the
 /// server from these globally allocated IDs, never copied from a reference build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgStandardSchema {
+    // Declarations register identities on upgrade, never unknown historical owners.
+    #[serde(default)]
+    builtin_types: BTreeMap<String, BuiltinTypeIdentity>,
+    #[serde(default)]
+    pub builtin_type_owners: BTreeMap<i64, i64>,
+    #[serde(default)]
+    pub builtin_type_owner_overrides: BTreeMap<i64, BTreeMap<i64, i64>>,
+    /// Explicit per-type ownership; absent historical entries remain unknown.
+    #[serde(default)]
+    pub type_owners: BTreeMap<i64, i64>,
+    /// ALTER OWNER is database-local even when bootstrap type identities are shared.
+    #[serde(default)]
+    pub type_owner_overrides: BTreeMap<i64, BTreeMap<i64, i64>>,
     /// Owner of the standard view, independent of later schema ownership changes.
     pub owner: i64,
     pub namespace: i64,
@@ -900,7 +944,23 @@ impl ConcreteSession {
         self.pg_standard_schema(true)?;
         Ok(())
     }
+    /// Register the server's existing builtin declarations during explicit startup.
+    /// Only a newly created standard record receives the bootstrap ownership fact.
+    pub fn pg_initialize_standard_schema_with_types(
+        &self,
+        types: &[(i64, &str, i64, bool)],
+    ) -> SessionResult<()> {
+        self.pg_standard_schema_with_types(true, types)?;
+        Ok(())
+    }
     fn pg_standard_schema(&self, initialize: bool) -> SessionResult<Option<PgStandardSchema>> {
+        self.pg_standard_schema_with_types(initialize, &[])
+    }
+    fn pg_standard_schema_with_types(
+        &self,
+        initialize: bool,
+        types: &[(i64, &str, i64, bool)],
+    ) -> SessionResult<Option<PgStandardSchema>> {
         let owner = if initialize {
             Some(self.pg_database_role_id("root")?)
         } else {
@@ -913,14 +973,21 @@ impl ConcreteSession {
             .with_storage(|store| {
                 kv::RunInNewTxn(&ctx, store, true, |_, txn| {
                     let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                    let mut created = false;
                     result = match txn.Get(&ctx, key.clone(), &[]) {
                         Ok(value) => Some(
                             serde_json::from_slice(&value.Value)
                                 .map_err(|e| kv::errors::New(e.to_string()))?,
                         ),
                         Err(e) if kv::IsErrNotFound(&e) && initialize => {
+                            created = true;
                             let standard = PgStandardSchema {
+                                builtin_types: BTreeMap::new(),
+                                builtin_type_owners: BTreeMap::new(),
+                                builtin_type_owner_overrides: BTreeMap::new(),
                                 owner: owner.expect("initialization has an owner"),
+                                type_owners: BTreeMap::new(),
+                                type_owner_overrides: BTreeMap::new(),
                                 namespace: allocate_namespace_id(txn, &ctx)?,
                                 sql_identifier: allocate_namespace_id(txn, &ctx)?,
                                 character_data: allocate_namespace_id(txn, &ctx)?,
@@ -935,6 +1002,17 @@ impl ConcreteSession {
                                 referential_constraints: allocate_namespace_id(txn, &ctx)?,
                                 constraint_column_usage: allocate_namespace_id(txn, &ctx)?,
                             };
+                            let mut standard = standard;
+                            for id in [
+                                standard.sql_identifier,
+                                standard.character_data,
+                                standard.yes_or_no,
+                                standard.cardinal_number,
+                            ] {
+                                standard
+                                    .type_owners
+                                    .insert(id, owner.expect("initialization has an owner"));
+                            }
                             txn.Set(
                                 key.clone(),
                                 serde_json::to_vec(&standard)
@@ -950,6 +1028,10 @@ impl ConcreteSession {
                         if standard.tables == 0 && standard.yes_or_no == 0 {
                             standard.tables = allocate_namespace_id(txn, &ctx)?;
                             standard.yes_or_no = allocate_namespace_id(txn, &ctx)?;
+                            standard.type_owners.insert(
+                                standard.yes_or_no,
+                                owner.expect("initialization has an owner"),
+                            );
                             txn.Set(
                                 key.clone(),
                                 serde_json::to_vec(standard)
@@ -967,6 +1049,10 @@ impl ConcreteSession {
                         if standard.columns == 0 && standard.cardinal_number == 0 {
                             standard.columns = allocate_namespace_id(txn, &ctx)?;
                             standard.cardinal_number = allocate_namespace_id(txn, &ctx)?;
+                            standard.type_owners.insert(
+                                standard.cardinal_number,
+                                owner.expect("initialization has an owner"),
+                            );
                             txn.Set(
                                 astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
                                 serde_json::to_vec(standard)
@@ -999,6 +1085,36 @@ impl ConcreteSession {
                         }
                         if standard.constraint_column_usage == 0 {
                             standard.constraint_column_usage = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
+                    }
+                    if initialize && let Some(standard) = &mut result {
+                        let mut changed = false;
+                        for &(oid, name, array, is_array) in types {
+                            let identity = BuiltinTypeIdentity {
+                                oid,
+                                array,
+                                is_array,
+                            };
+                            if let Some(previous) = standard.builtin_types.get(name) {
+                                if previous != &identity {
+                                    return Err(kv::errors::New("builtin type identity changed"));
+                                }
+                            } else {
+                                standard.builtin_types.insert(name.into(), identity);
+                                if created {
+                                    standard
+                                        .builtin_type_owners
+                                        .insert(oid, owner.expect("initialization has an owner"));
+                                }
+                                changed = true;
+                            }
+                        }
+                        if changed {
                             txn.Set(
                                 astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
                                 serde_json::to_vec(standard)
@@ -1293,5 +1409,95 @@ impl ConcreteSession {
             .filter(|((db, _), _)| db == &database)
             .map(|(_, model)| model.clone())
             .collect()
+    }
+}
+
+impl ConcreteSession {
+    // Update only registered standard type identities in the existing metadata record.
+    // This is explicit migration for historical entries, never a read-time fallback.
+    fn pg_type_owner(
+        &self,
+        schema: Option<&str>,
+        name: &str,
+        owner: &str,
+        domain: bool,
+    ) -> SessionResult<()> {
+        let _guard = PG_NAMESPACE_DDL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.pg_schema_identity() != "root" {
+            return Err(namespace_error(
+                "42501",
+                "permission denied to change type owner",
+            ));
+        }
+        let mut path = self.pg_effective_path()?;
+        if !path.iter().any(|s| s == "pg_catalog") {
+            path.insert(0, "pg_catalog".into());
+        }
+        let namespaces = schema.map_or(path, |s| vec![s.into()]);
+        let standard = self
+            .pg_standard_schema(false)?
+            .ok_or_else(|| namespace_error("0A000", "type identities are unavailable"))?;
+        let target = namespaces
+            .iter()
+            .find_map(|schema| match schema.as_str() {
+                "information_schema" => match name {
+                    "sql_identifier" => Some((standard.sql_identifier, 0, false, false)),
+                    "character_data" => Some((standard.character_data, 0, false, false)),
+                    "yes_or_no" => Some((standard.yes_or_no, 0, false, false)),
+                    "cardinal_number" => Some((standard.cardinal_number, 0, false, false)),
+                    _ => None,
+                },
+                "pg_catalog" => standard
+                    .builtin_types
+                    .get(name)
+                    .map(|t| (t.oid, t.array, t.is_array, true)),
+                _ => None,
+            })
+            .ok_or_else(|| namespace_error("42704", "type does not exist"))?;
+        let (id, array, is_array, builtin) = target;
+        if is_array {
+            return Err(namespace_error(
+                "42809",
+                "cannot alter array type; alter its element type instead",
+            ));
+        }
+        if domain && builtin {
+            return Err(namespace_error("42809", "type is not a domain"));
+        }
+        let owner = self.pg_database_role_id(owner)?;
+        let database = self
+            .domain
+            .info_schema()
+            .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
+            .ok_or_else(|| namespace_error("3D000", "no current database selected"))?;
+        let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&context, store, true, |_, txn| {
+                    let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                    let value = txn.Get(&context, key.clone(), &[])?;
+                    let mut standard: PgStandardSchema = serde_json::from_slice(&value.Value)
+                        .map_err(|e| kv::errors::New(e.to_string()))?;
+                    let overrides = if builtin {
+                        &mut standard.builtin_type_owner_overrides
+                    } else {
+                        &mut standard.type_owner_overrides
+                    };
+                    let owners = overrides.entry(database.id).or_default();
+                    owners.insert(id, owner);
+                    if array != 0 {
+                        owners.insert(array, owner);
+                    }
+                    txn.Set(
+                        key,
+                        serde_json::to_vec(&standard)
+                            .map_err(|e| kv::errors::New(e.to_string()))?,
+                    )
+                })
+            })
+            .map_err(|e| session_error("persist PostgreSQL type owner", e))
     }
 }
