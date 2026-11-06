@@ -34,6 +34,15 @@ const TABLES_COLUMNS: &[&str] = &[
     "is_typed",
     "commit_action",
 ];
+const CONSTRAINT_COLUMN_USAGE_COLUMNS: &[&str] = &[
+    "table_catalog",
+    "table_schema",
+    "table_name",
+    "column_name",
+    "constraint_catalog",
+    "constraint_schema",
+    "constraint_name",
+];
 const REFERENTIAL_CONSTRAINTS_COLUMNS: &[&str] = &[
     "constraint_catalog",
     "constraint_schema",
@@ -243,7 +252,7 @@ pub(crate) struct CatalogQuery {
     cte_columns: CteColumns,
     parameter_oids: Vec<u32>,
     parameter_values: Vec<Expr>,
-    standard_view_id: Option<[i64; 7]>,
+    standard_view_id: Option<[i64; 8]>,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
@@ -365,6 +374,7 @@ impl CatalogQuery {
                     | "information_schema.table_constraints"
                     | "information_schema.key_column_usage"
                     | "information_schema.referential_constraints"
+                    | "information_schema.constraint_column_usage"
             )
         }) {
             let standard = context
@@ -383,6 +393,7 @@ impl CatalogQuery {
                 standard.table_constraints,
                 standard.key_column_usage,
                 standard.referential_constraints,
+                standard.constraint_column_usage,
             ]);
         }
         Ok(Some(query))
@@ -685,6 +696,7 @@ impl CatalogQuery {
                         | "information_schema.table_constraints"
                         | "information_schema.key_column_usage"
                         | "information_schema.referential_constraints"
+                        | "information_schema.constraint_column_usage"
                         | "__pg_scalar"
                         | "pg_user"
                         | "pg_authid"
@@ -911,6 +923,12 @@ impl CatalogQuery {
                             "PostgreSQL column collation identity is unavailable".into(),
                         ));
                     }
+                    ("information_schema.constraint_column_usage", column) => {
+                        CONSTRAINT_COLUMN_USAGE_COLUMNS
+                            .iter()
+                            .position(|n| *n == column)
+                            .map(|slot| (slot, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
                     ("information_schema.referential_constraints", column) => {
                         REFERENTIAL_CONSTRAINTS_COLUMNS
                             .iter()
@@ -1075,6 +1093,7 @@ impl CatalogQuery {
                     | "information_schema.table_constraints"
                     | "information_schema.key_column_usage"
                     | "information_schema.referential_constraints"
+                    | "information_schema.constraint_column_usage"
             ) && qualifier.is_none_or(|q| q == r.alias)
         }) {
             return Err(("42703", format!("column {} does not exist", path.join("."))));
@@ -1692,6 +1711,7 @@ impl CatalogQuery {
                             | "information_schema.table_constraints"
                             | "information_schema.key_column_usage"
                             | "information_schema.referential_constraints"
+                            | "information_schema.constraint_column_usage"
                     ) {
                         return None;
                     }
@@ -1703,6 +1723,7 @@ impl CatalogQuery {
                             "information_schema.table_constraints" => 4,
                             "information_schema.key_column_usage" => 5,
                             "information_schema.referential_constraints" => 6,
+                            "information_schema.constraint_column_usage" => 7,
                             _ => 0,
                         }],
                         attribute_number: (slot % CATALOG_ROW_WIDTH + 1) as i16,
@@ -1962,7 +1983,9 @@ impl CatalogQuery {
             "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
             "information_schema.table_constraints"
             | "information_schema.key_column_usage"
-            | "information_schema.referential_constraints" => {
+            | "information_schema.referential_constraints"
+            | "information_schema.constraint_column_usage" => {
+                let column_usage = name == "information_schema.constraint_column_usage";
                 let key_usage = name == "information_schema.key_column_usage";
                 let referential = name == "information_schema.referential_constraints";
                 let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
@@ -2017,6 +2040,7 @@ impl CatalogQuery {
                         })
                         .ok_or(ConnError::UnsupportedCommand(0))?;
                     if !key_usage
+                        && !column_usage
                         && !context
                             .pg_standard_constraint_visible(database.into(), model.clone())?
                     {
@@ -2037,6 +2061,96 @@ impl CatalogQuery {
                         ),
                         None => ("public", model.Name.O.as_str()),
                     };
+                    if column_usage {
+                        // FK dependencies belong to the referenced table; CHECK conkey
+                        // was rendered from bound column IDs, including constant zero keys.
+                        let target = if kind == "FOREIGN KEY" {
+                            tables
+                                .iter()
+                                .filter_map(|t| t.model_meta.as_ref())
+                                .find(|m| {
+                                    crate::pg_oid::table_oid(m.ID)
+                                        .ok()
+                                        .map(|id| Value::Signed(id as i64))
+                                        == Some(con[7].clone())
+                                })
+                                .ok_or(ConnError::UnsupportedCommand(0))?
+                        } else {
+                            model
+                        };
+                        if !context.pg_standard_view_owner(target.clone())? {
+                            continue;
+                        }
+                        let target_schema = match &target.PostgreSQLNamespace {
+                            Some((id, _)) => facts
+                                .iter()
+                                .find(|f| f.id == *id)
+                                .ok_or(ConnError::UnsupportedCommand(0))?
+                                .name
+                                .as_str(),
+                            None => "public",
+                        };
+                        let target_name = target
+                            .PostgreSQLNamespace
+                            .as_ref()
+                            .map_or(target.Name.O.as_str(), |(_, n)| n.as_str());
+                        let keys = if kind == "FOREIGN KEY" {
+                            &con[8]
+                        } else {
+                            &con[5]
+                        };
+                        let keys = match keys {
+                            Value::Null if con[2] == Value::Text("c".into()) => "",
+                            Value::Text(v) => v
+                                .strip_prefix('{')
+                                .and_then(|v| v.strip_suffix('}'))
+                                .ok_or(ConnError::UnsupportedCommand(0))?,
+                            _ => return Err(ConnError::UnsupportedCommand(0)),
+                        };
+                        let slots = target
+                            .postgresql_attribute_slots()
+                            .map_err(|_| ConnError::UnsupportedCommand(0))?;
+                        let mut seen = std::collections::BTreeSet::new();
+                        for key in keys.split(',').filter(|k| !k.is_empty()) {
+                            check_catalog_cancel(cancel)?;
+                            let attnum = key
+                                .parse::<usize>()
+                                .ok()
+                                .filter(|n| *n > 0)
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            if !seen.insert(attnum) {
+                                continue;
+                            }
+                            let (id, dropped) = slots
+                                .get(attnum - 1)
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            if *dropped {
+                                continue;
+                            }
+                            let column = target
+                                .Columns
+                                .iter()
+                                .find(|c| {
+                                    c.ID == *id
+                                        && c.State == astersql_meta_model::StatePublic
+                                        && !c.Hidden
+                                })
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            rows.push(vec![
+                                Value::Text(database.into()),
+                                Value::Text(target_schema.into()),
+                                Value::Text(target_name.into()),
+                                Value::Text(column.Name.O.clone()),
+                                Value::Text(database.into()),
+                                Value::Text(schema.into()),
+                                con[1].clone(),
+                            ]);
+                            if rows.len() > MAX_CATALOG_ROWS {
+                                return Err(catalog_row_limit());
+                            }
+                        }
+                        continue;
+                    }
                     if referential {
                         // Follow the FK's real supporting index and referenced relation.
                         // An independent unique index has no parent p/u constraint.
@@ -2422,6 +2536,7 @@ impl CatalogQuery {
                     (standard.table_constraints, "table_constraints"),
                     (standard.key_column_usage, "key_column_usage"),
                     (standard.referential_constraints, "referential_constraints"),
+                    (standard.constraint_column_usage, "constraint_column_usage"),
                 ] {
                     let mut row = vec![
                         Value::Text(database.into()),
@@ -2548,6 +2663,7 @@ impl CatalogQuery {
                     "table_constraints",
                     "key_column_usage",
                     "referential_constraints",
+                    "constraint_column_usage",
                 ] {
                     rows.push(vec![
                         Value::Text(database.into()),
@@ -3000,6 +3116,11 @@ impl CatalogQuery {
                         KEY_COLUMN_USAGE_COLUMNS,
                     ),
                     (
+                        standard.constraint_column_usage,
+                        "constraint_column_usage",
+                        CONSTRAINT_COLUMN_USAGE_COLUMNS,
+                    ),
+                    (
                         standard.referential_constraints,
                         "referential_constraints",
                         REFERENTIAL_CONSTRAINTS_COLUMNS,
@@ -3029,6 +3150,8 @@ impl CatalogQuery {
                                 } else {
                                     standard.character_data
                                 }
+                            } else if view_id == standard.constraint_column_usage {
+                                standard.sql_identifier
                             } else if view_id == standard.referential_constraints {
                                 if slot < 6 {
                                     standard.sql_identifier
@@ -3160,6 +3283,7 @@ impl CatalogQuery {
                                 standard.table_constraints,
                                 standard.key_column_usage,
                                 standard.referential_constraints,
+                                standard.constraint_column_usage,
                             ]
                             .contains(&id)
                             {

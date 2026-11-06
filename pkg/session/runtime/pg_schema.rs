@@ -899,6 +899,8 @@ pub struct PgStandardSchema {
     pub key_column_usage: i64,
     #[serde(default)]
     pub referential_constraints: i64,
+    #[serde(default)]
+    pub constraint_column_usage: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -938,6 +940,7 @@ impl ConcreteSession {
                                 table_constraints: allocate_namespace_id(txn, &ctx)?,
                                 key_column_usage: allocate_namespace_id(txn, &ctx)?,
                                 referential_constraints: allocate_namespace_id(txn, &ctx)?,
+                                constraint_column_usage: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
                                 key.clone(),
@@ -1001,6 +1004,14 @@ impl ConcreteSession {
                                     .map_err(|e| kv::errors::New(e.to_string()))?,
                             )?;
                         }
+                        if standard.constraint_column_usage == 0 {
+                            standard.constraint_column_usage = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
                     }
                     Ok(())
                 })
@@ -1020,9 +1031,10 @@ impl ConcreteSession {
                 standard.table_constraints,
                 standard.key_column_usage,
                 standard.referential_constraints,
+                standard.constraint_column_usage,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 12
+            if unique.len() != 13
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()

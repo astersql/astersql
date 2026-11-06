@@ -10063,3 +10063,124 @@ fn pg13_039_contract() {
         "pg13_039_contract: scenarios=8 base reverse_fk independent_index_null zero_describe cross_schema rename drop cleanup"
     );
 }
+
+#[test]
+fn pg13_040_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_040_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_040_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG40 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_040_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn cells(body: &[u8]) -> Vec<Option<&str>> {
+        let count = u16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut pos = 2;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let len = i32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if len < 0 {
+                out.push(None);
+            } else {
+                let end = pos + len as usize;
+                out.push(Some(std::str::from_utf8(&body[pos..end]).unwrap()));
+                pos = end;
+            }
+        }
+        out
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.cp(a integer,b integer,CONSTRAINT cp_pk PRIMARY KEY(a,b))",
+    );
+    ok(
+        &mut socket,
+        "CREATE TABLE public.cc(x integer,y integer,v integer,CONSTRAINT cc_fk FOREIGN KEY(x,y) REFERENCES public.cp(b,a),CONSTRAINT cc_ck CHECK(v > x AND v > 0),CONSTRAINT cc_const CHECK(1=1))",
+    );
+    let sql = "SELECT table_catalog,table_schema,table_name,column_name,constraint_catalog,constraint_schema,constraint_name FROM information_schema.constraint_column_usage WHERE constraint_name IN ('cp_pk','cc_fk','cc_ck','cc_const') ORDER BY constraint_name,column_name";
+    let m = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&m[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![19; 7]
+    );
+    let rows: Vec<_> = m
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| cells(&m.1))
+        .collect();
+    assert_eq!(rows.len(), 6);
+    assert_eq!(
+        rows.iter().map(|r| (r[2], r[3], r[6])).collect::<Vec<_>>(),
+        vec![
+            (Some("cc"), Some("v"), Some("cc_ck")),
+            (Some("cc"), Some("x"), Some("cc_ck")),
+            (Some("cp"), Some("a"), Some("cc_fk")),
+            (Some("cp"), Some("b"), Some("cc_fk")),
+            (Some("cp"), Some("a"), Some("cp_pk")),
+            (Some("cp"), Some("b"), Some("cp_pk"))
+        ]
+    );
+    let zero = ok(
+        &mut socket,
+        &sql.replace("'cp_pk','cc_fk','cc_ck','cc_const'", "'cc_const'"),
+    );
+    assert_eq!(columns(&zero[0].1), columns(&m[0].1));
+    assert!(!zero.iter().any(|m| m.0 == b'D'));
+    ok(&mut socket, "ALTER TABLE public.cc RENAME COLUMN v TO vv");
+    let renamed = ok(&mut socket, sql);
+    assert!(
+        renamed
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| cells(&m.1))
+            .any(|r| r[3] == Some("vv"))
+    );
+    println!(
+        "pg13_040_contract: scenarios=6 p fk check_deduplicated constant_zero zero_describe rename; shared domain TCP cleanup"
+    );
+}
