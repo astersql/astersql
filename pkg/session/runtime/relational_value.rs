@@ -1336,20 +1336,24 @@ pub(super) fn pg_int4_unary_minus_value(value: Option<String>) -> SessionResult<
     Ok((!null).then(|| value.to_string()))
 }
 
-// Range-check a bound PG virtual value only when that column is consumed.
-// The existing scan may compute its text while reading a row, but selecting
-// another column must not evaluate this definition's integer conversion.
-fn pg_generated_column_value(name: &str, value: Option<String>) -> SessionResult<Option<String>> {
-    let virtual_int4 = PG_CAST_TABLE.with(|slot| {
+// Range-check bound PG int4 values only when their column is consumed. A
+// virtual definition or calculated view projection may be scanned as text;
+// selecting another column must not apply this column's integer conversion.
+pub(super) fn pg_bound_column_value(
+    name: &str,
+    value: Option<String>,
+) -> SessionResult<Option<String>> {
+    let bound_int4 = PG_CAST_TABLE.with(|slot| {
         slot.borrow().as_ref().is_some_and(|table| {
             table.Columns.iter().any(|column| {
                 column.Name.L == name
-                    && column.PostgreSQLGenerated.is_some()
-                    && !column.GeneratedStored
+                    && ((column.PostgreSQLGenerated.is_some() && !column.GeneratedStored)
+                        || (column.FieldType.IsPostgreSQLDeclaration()
+                            && column.GetType() == astersql_parser_mysql::r#type::TypeLong))
             })
         })
     });
-    if virtual_int4 {
+    if bound_int4 {
         astersql_expression::pg_cast_int4(value.as_deref())
             .map(|number| number.map(|n| n.to_string()))
             .map_err(|error| {
@@ -1386,7 +1390,7 @@ pub(super) fn relational_expression_value(
             ast::ValueDatum::Bool(value) => Some(if *value { "1" } else { "0" }.to_owned()),
             _ => Some(value.text()),
         }),
-        ast::ExprKind::Column(column) => pg_generated_column_value(
+        ast::ExprKind::Column(column) => pg_bound_column_value(
             &column.Name.L,
             row.get(&column.Name.L)
                 .cloned()
@@ -5066,7 +5070,7 @@ pub(super) fn project_relational_rows(
             projections
                 .iter()
                 .map(|projection| match projection {
-                    Projection::Column(name, is_bit) => Ok(pg_generated_column_value(
+                    Projection::Column(name, is_bit) => Ok(pg_bound_column_value(
                         name,
                         row.get(name).and_then(Option::as_ref).cloned(),
                     )?

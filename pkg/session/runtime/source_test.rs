@@ -220,7 +220,7 @@ fn pg13_025_view_binding_uses_shared_executor() {
     assert!(
         session
             .execute(
-                "CREATE OR REPLACE VIEW view_binding AS SELECT id+1 AS n FROM view_binding_base"
+                "CREATE OR REPLACE VIEW view_binding AS SELECT id*2 AS n FROM view_binding_base"
             )
             .is_err()
     );
@@ -331,4 +331,52 @@ fn pg13_034_plain_view_preserves_column_declarations() {
     pg.execute("DROP VIEW pg34_view").unwrap();
     pg.execute("DROP TABLE pg34_view_base").unwrap();
     println!("pg13_034 plain view declarations: preserved=4 cleanup=2");
+}
+
+#[test]
+fn pg13_035_computed_view_keeps_bound_integer_projection() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg35_base(a integer DEFAULT 7)")
+        .unwrap();
+    pg.execute("INSERT INTO pg35_base VALUES(4),(NULL)")
+        .unwrap();
+    pg.execute("CREATE VIEW pg35_view AS SELECT a,a+1 AS calculated FROM pg35_base")
+        .unwrap();
+    let (_, view) = domain.stats_table("test", "pg35_view").unwrap();
+    assert!(view.PostgreSQLView.is_some());
+    assert_eq!(
+        view.Columns[1].GetType(),
+        astersql_parser_mysql::r#type::TypeLong
+    );
+    let mut rows = pg
+        .execute("SELECT a,calculated FROM pg35_view ORDER BY a NULLS LAST")
+        .unwrap();
+    assert_eq!(rows[0].next_row().unwrap().unwrap(), ["4", "5"]);
+    assert!(rows[0].next_row().unwrap().is_some());
+    assert!(rows[0].next_row().unwrap().is_none());
+    assert!(
+        pg.execute("CREATE VIEW pg35_bad AS SELECT a*2 AS calculated FROM pg35_base")
+            .is_err()
+    );
+    assert!(domain.stats_table("test", "pg35_bad").is_none());
+    pg.execute("INSERT INTO pg35_base VALUES(2147483647)")
+        .unwrap();
+    let mut plain = pg
+        .execute("SELECT a FROM pg35_view WHERE a=2147483647")
+        .unwrap();
+    assert_eq!(plain[0].next_row().unwrap().unwrap(), ["2147483647"]);
+    let overflow = pg
+        .execute("SELECT calculated FROM pg35_view WHERE a=2147483647")
+        .err()
+        .unwrap();
+    assert!(
+        overflow.to_string().contains("integer out of range"),
+        "{overflow}"
+    );
+    pg.execute("DROP VIEW pg35_view").unwrap();
+    pg.execute("DROP TABLE pg35_base").unwrap();
+    println!(
+        "pg13_035 view: integer_projection=1 null_rows=1 unsupported_no_publication=1 cleanup=2"
+    );
 }

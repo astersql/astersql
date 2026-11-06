@@ -1070,6 +1070,17 @@ fn existing_column_suffix(
     let mut suffix = if include_type {
         if astersql_parser_mysql::r#type::HasIsBooleanFlag(column.GetFlag()) {
             " BOOLEAN".into()
+        } else if column.FieldType.IsPostgreSQLDeclaration() {
+            // Native CompactStr supplies an integer display width even when the
+            // PG declaration has none. Re-parsing it for SET/DROP DEFAULT would
+            // change the stored type and invalidate otherwise unchanged views.
+            use astersql_parser_mysql::r#type::{TypeLong, TypeLonglong, TypeShort};
+            match column.GetType() {
+                TypeShort => " SMALLINT".into(),
+                TypeLong => " INTEGER".into(),
+                TypeLonglong => " BIGINT".into(),
+                _ => format!(" {}", column.GetTypeDesc()),
+            }
         } else {
             format!(" {}", column.GetTypeDesc())
         }

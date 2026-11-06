@@ -8,7 +8,9 @@ use crate::conn::{
 // Fixed provider slots preserve the existing catalog column layout. Joined
 // relations get separate slots, including empty providers after LEFT JOIN.
 // Includes constraint state and auxiliary identities; every JOIN uses this stride.
-const CATALOG_ROW_WIDTH: usize = 34;
+const CATALOG_ROW_WIDTH: usize = 46;
+const STANDARD_COLUMN_MODEL_SLOT: usize = 44;
+const STANDARD_COLUMN_ID_SLOT: usize = 45;
 const SCHEMATA_COLUMNS: &[&str] = &[
     "catalog_name",
     "schema_name",
@@ -51,6 +53,7 @@ const STANDARD_COLUMNS: &[(&str, usize)] = &[
     ("table_name", 2),
     ("column_name", 3),
     ("ordinal_position", 4),
+    ("column_default", 5),
     ("is_nullable", 6),
     ("data_type", 7),
     ("character_maximum_length", 8),
@@ -79,12 +82,15 @@ const STANDARD_COLUMNS: &[(&str, usize)] = &[
     ("maximum_cardinality", 31),
     ("dtd_identifier", 32),
     ("is_self_referencing", 33),
+    ("is_generated", 41),
+    ("generation_expression", 42),
+    ("is_updatable", 43),
 ];
 fn standard_column_type(slot: usize) -> u8 {
     match slot {
         4 | 8..=13 | 15 | 31 => 3,
-        6 | 33 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
-        7 | 14 => crate::pg_result::CatalogColumnType::Varchar as u8,
+        6 | 33 | 43 => crate::pg_result::CatalogColumnType::YesOrNo as u8,
+        5 | 7 | 14 | 41 | 42 => crate::pg_result::CatalogColumnType::Varchar as u8,
         _ => crate::pg_result::CatalogColumnType::Name as u8,
     }
 }
@@ -1975,6 +1981,10 @@ impl CatalogQuery {
                         row[32] = Value::Text((slot + 1).to_string());
                         standard_column_size(&mut row, oid, modifier)?;
                         row[33] = Value::Text("NO".into());
+                        // Private lookup keys; metadata is resolved only if requested,
+                        // against this Execute's snapshot, after row filtering.
+                        row[STANDARD_COLUMN_MODEL_SLOT] = Value::Signed(model.ID);
+                        row[STANDARD_COLUMN_ID_SLOT] = Value::Signed(column.ID);
                         rows.push(row);
                         if rows.len() > MAX_CATALOG_ROWS {
                             return Err(catalog_row_limit());
@@ -2539,8 +2549,8 @@ impl CatalogQuery {
                     for (label, slot) in STANDARD_COLUMNS {
                         let domain = match slot {
                             4 | 8..=13 | 15 | 31 => standard.cardinal_number,
-                            6 | 33 => standard.yes_or_no,
-                            7 | 14 => standard.character_data,
+                            6 | 33 | 43 => standard.yes_or_no,
+                            5 | 7 | 14 | 41 | 42 => standard.character_data,
                             _ => standard.sql_identifier,
                         };
                         let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
@@ -2626,6 +2636,42 @@ impl CatalogQuery {
                 let slot = self.column(path).expect("validated column").0;
                 let local = slot % CATALOG_ROW_WIDTH;
                 let base = slot - local;
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "information_schema.columns")
+                    && matches!(local, 5 | 41..=43)
+                    && row[base] != Value::Null
+                {
+                    let (Value::Signed(table_id), Value::Signed(column_id)) = (
+                        &row[base + STANDARD_COLUMN_MODEL_SLOT],
+                        &row[base + STANDARD_COLUMN_ID_SLOT],
+                    ) else {
+                        return Err(ConnError::UnsupportedCommand(0));
+                    };
+                    let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
+                    let mut tables = snapshot
+                        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                        .map_err(|e| ConnError::Session(e.to_string()))?;
+                    tables.extend(
+                        execution
+                            .context
+                            .pg_local_temporary_models()?
+                            .into_iter()
+                            .map(|m| astersql_infoschema::Table::from_model(m).0),
+                    );
+                    let model = tables
+                        .iter()
+                        .filter_map(|t| t.model_meta.as_ref())
+                        .find(|m| m.ID == *table_id)
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    let column = model
+                        .Columns
+                        .iter()
+                        .find(|c| c.ID == *column_id)
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    return standard_column_definition(snapshot, database, model, column, local);
+                }
                 if self
                     .relations()
                     .nth(slot / CATALOG_ROW_WIDTH)
@@ -7326,4 +7372,111 @@ fn standard_table_insertable(
         _ => false,
     });
     Some(writable && standard_table_insertable(snapshot, database, base, visited)?)
+}
+
+// These fields share the same durable definitions as pg_attribute/pg_attrdef.
+// UPDATE privilege controls visibility, never structural column writability.
+pub(crate) fn standard_column_definition(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    model: &astersql_meta_model::TableInfo,
+    column: &astersql_meta_model::ColumnInfo,
+    field: usize,
+) -> ConnResult<Value> {
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    if field == 43 {
+        return standard_column_updatable(
+            snapshot,
+            database,
+            model,
+            column.ID,
+            &mut Default::default(),
+        )
+        .map(|v| Value::Text(if v { "YES" } else { "NO" }.into()))
+        .ok_or_else(unsupported);
+    }
+    let generated = column.PostgreSQLGenerated.as_ref();
+    if column.IsGenerated() != generated.is_some() {
+        return Err(unsupported());
+    }
+    if let Some(bound) = generated {
+        if bound.render(model, true, &mut Vec::new()).as_deref()
+            != Some(column.GeneratedExprString.as_str())
+        {
+            return Err(unsupported());
+        }
+        generated_node_tree(bound, model)?;
+    }
+    let default = if generated.is_some() || column.PostgreSQLIdentity.is_some() {
+        None
+    } else {
+        column_default(column, native_column_type(column)?.0)?
+    };
+    let has_definition = generated.is_some() || default.is_some();
+    if column.PostgreSQLHasDefault.is_some_and(|exists| {
+        exists != has_definition || exists != column.PostgreSQLDefaultID.is_some()
+    }) || column.PostgreSQLDefaultID.is_some_and(|id| id <= 0)
+    {
+        return Err(unsupported());
+    }
+    Ok(match field {
+        5 => default.map_or(Value::Null, Value::Text),
+        41 => Value::Text(
+            if generated.is_some() {
+                "ALWAYS"
+            } else {
+                "NEVER"
+            }
+            .into(),
+        ),
+        42 => match generated {
+            Some(bound) => Value::Text(
+                bound
+                    .render(model, false, &mut Vec::new())
+                    .ok_or_else(unsupported)?,
+            ),
+            None => Value::Null,
+        },
+        _ => unreachable!("validated standard definition field"),
+    })
+}
+
+fn standard_column_updatable(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    model: &astersql_meta_model::TableInfo,
+    column_id: i64,
+    visited: &mut std::collections::BTreeSet<i64>,
+) -> Option<bool> {
+    use astersql_meta_model::PostgreSQLCheckExpression;
+    if !visited.insert(model.ID) || model.Sequence.is_some() || model.GetPartitionInfo().is_some() {
+        return None;
+    }
+    let column = model
+        .Columns
+        .iter()
+        .find(|c| c.ID == column_id && !c.Hidden && c.State == astersql_meta_model::StatePublic)?;
+    if model.View.is_none() {
+        return Some(true);
+    }
+    let view = model.PostgreSQLView.as_ref()?;
+    let Some(base_id) = view.RelationID else {
+        view.render(model, None, "public", false)?;
+        return Some(false);
+    };
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .ok()?;
+    let base = tables
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|m| m.ID == base_id)?;
+    view.render(model, Some(base), "public", false)?;
+    let index = model.Columns.iter().position(|c| c.ID == column.ID)?;
+    let PostgreSQLCheckExpression::Column(id) = &view.Projection.get(index)?.0 else {
+        return Some(false);
+    };
+    // PG reports structural writability even for a projected generated source;
+    // assignment restrictions are enforced separately by the write path.
+    standard_column_updatable(snapshot, database, base, *id, visited)
 }

@@ -9184,3 +9184,213 @@ fn pg13_034_contract() {
         "pg13_034_contract: scenarios=14 types=11 lengths numeric temporal interval null zero_describe error recovery cleanup"
     );
 }
+
+#[test]
+fn pg13_035_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_035_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_035_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG35 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_035_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn cells(body: &[u8]) -> Vec<Option<&str>> {
+        let count = u16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut pos = 2;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let len = i32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if len < 0 {
+                out.push(None);
+            } else {
+                let end = pos + len as usize;
+                out.push(Some(std::str::from_utf8(&body[pos..end]).unwrap()));
+                pos = end;
+            }
+        }
+        out
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.is_def_t(a integer DEFAULT 7, b integer GENERATED ALWAYS AS (a+1) STORED, plain integer)",
+    );
+    let sql = "SELECT column_name,column_default,is_generated,generation_expression,is_updatable FROM information_schema.columns WHERE table_schema='public' AND table_name='is_def_t' ORDER BY ordinal_position";
+    let result = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&result[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![19, 1043, 1043, 1043, 1043]
+    );
+    let values: Vec<_> = result
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| cells(&m.1))
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            vec![Some("a"), Some("7"), Some("NEVER"), None, Some("YES")],
+            vec![
+                Some("b"),
+                None,
+                Some("ALWAYS"),
+                Some("(\"a\" + 1)"),
+                Some("YES")
+            ],
+            vec![Some("plain"), None, Some("NEVER"), None, Some("YES")]
+        ]
+    );
+    ok(&mut socket, "INSERT INTO public.is_def_t(plain) VALUES(3)");
+    let inserted = ok(&mut socket, "SELECT a,b,plain FROM public.is_def_t");
+    assert_eq!(
+        cells(&inserted.iter().find(|m| m.0 == b'D').unwrap().1),
+        vec![Some("7"), Some("8"), Some("3")]
+    );
+    ok(&mut socket, "UPDATE public.is_def_t SET a=9");
+    let updated = ok(&mut socket, "SELECT a,b FROM public.is_def_t");
+    assert_eq!(
+        cells(&updated.iter().find(|m| m.0 == b'D').unwrap().1),
+        vec![Some("9"), Some("10")]
+    );
+    ok(
+        &mut socket,
+        "CREATE VIEW public.is_def_v AS SELECT a,a+1 AS calculated FROM public.is_def_t",
+    );
+    let view = ok(&mut socket, &sql.replace("is_def_t", "is_def_v"));
+    assert_eq!(
+        view.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| cells(&m.1))
+            .collect::<Vec<_>>(),
+        vec![
+            vec![Some("a"), None, Some("NEVER"), None, Some("YES")],
+            vec![Some("calculated"), None, Some("NEVER"), None, Some("NO")]
+        ]
+    );
+    for ddl in [
+        "ALTER TABLE public.is_def_t ALTER COLUMN a SET DEFAULT 11",
+        "ALTER TABLE public.is_def_t ALTER COLUMN a DROP DEFAULT",
+        "ALTER TABLE public.is_def_t ALTER COLUMN plain SET DEFAULT NULL",
+    ] {
+        ok(&mut socket, ddl);
+    }
+    let refreshed = domain
+        .info_schema()
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(
+            "pg13_035_contract_probe",
+        ))
+        .unwrap();
+    let base = refreshed
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|m| m.Name.O == "is_def_t")
+        .unwrap();
+    let view = refreshed
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|m| m.Name.O == "is_def_v")
+        .unwrap();
+    let bound = view.PostgreSQLView.as_ref().unwrap();
+    assert!(
+        bound.render(view, Some(base), "public", false).is_some(),
+        "base={:?} dependency={:?}",
+        base.Columns[0].FieldType,
+        bound.RelationColumns[0].1
+    );
+    let empty = ok(&mut socket, &sql.replace("is_def_t", "missing"));
+    assert_eq!(columns(&empty[0].1), columns(&result[0].1));
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    let bad = query(&mut socket, "SELECT absent FROM information_schema.columns");
+    assert!(
+        bad.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"42703"))
+    );
+    ok(&mut socket, "SELECT 1");
+    // Corruption is injected only at the stored model boundary, never as provider rows.
+    let snapshot = domain.info_schema();
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(
+            "pg13_035_contract_probe",
+        ))
+        .unwrap();
+    let model = tables
+        .iter()
+        .filter_map(|t| t.model_meta.as_ref())
+        .find(|m| m.Name.O == "is_def_t")
+        .unwrap();
+    for scenario in 0..4 {
+        let mut bad = model.as_ref().clone();
+        match scenario {
+            0 => bad.Columns[1].PostgreSQLGenerated = None,
+            1 => bad.Columns[1].PostgreSQLDefaultID = None,
+            2 => bad.Columns[1].PostgreSQLHasDefault = Some(false),
+            _ => {
+                bad.Columns[1].PostgreSQLGenerated =
+                    Some(astersql_meta_model::PostgreSQLCheckExpression::Column(999))
+            }
+        }
+        for field in [5, 41, 42] {
+            assert!(
+                crate::pg_catalog::standard_column_definition(
+                    snapshot.as_ref(),
+                    "pg13_035_contract_probe",
+                    &bad,
+                    &bad.Columns[1],
+                    field
+                )
+                .is_err(),
+                "corrupt model {scenario} field {field}"
+            );
+        }
+    }
+    println!(
+        "pg13_035_contract: scenarios=13 corrupt_models=4 defaults generated stored insert update view column_analysis null zero_describe recovery cleanup"
+    );
+}

@@ -2453,7 +2453,11 @@ impl ConcreteSession {
                 })
             }
 
-            ast::ExprKind::Column(column) => self.relational_query_column_value(column, row),
+            ast::ExprKind::Column(column) => self
+                .relational_query_column_value(column, row)
+                .and_then(|value| {
+                    super::relational_value::pg_bound_column_value(&column.Name.L, value)
+                }),
             ast::ExprKind::Variable {
                 Name,
                 IsGlobal,

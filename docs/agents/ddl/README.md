@@ -354,3 +354,21 @@ modifier validator before metadata allocation/publication. Focused coverage is
 `pg13_034_contract`, `pg13_034_differential`, and the two `pg13_034` source tests in
 `pkg/session/runtime/source_test.rs`. Missing PG column collation identity refuses
 only that projection; native collation names are not substituted.
+
+## Rust PostgreSQL standard column definitions
+
+`information_schema.columns` reuses ordinary defaults and bound generated
+expressions from the shared column model. Generated expressions appear only in
+`generation_expression`; ordinary defaults appear only in `column_default`.
+The structural `is_updatable` analysis follows a bound view projection to its
+base column and excludes calculated expressions; visibility still uses effective
+column privileges independently.
+PG CREATE VIEW additionally accepts an integer column plus an integer constant,
+using the existing bound expression, evaluator and metadata publication path.
+Its stored result declaration is integer; the existing bound column read
+conversion enforces int4 range when consuming that projection. Other computed
+view grammar retains its existing gate. SET/DROP DEFAULT preserves PG integer declarations without
+introducing native display widths, so existing bound views remain valid.
+Focused tests are `pg13_035_contract`,
+`pg13_035_differential`, and
+`pg13_035_computed_view_keeps_bound_integer_projection`.

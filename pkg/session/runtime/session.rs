@@ -3763,6 +3763,22 @@ impl ConcreteSession {
             }
             super::ddl::pg_bind_check_expression(&expression, base_model)
         };
+        // Admit the same bounded integer addition as generated declarations.
+        // Preserve its PostgreSQL int4 identity instead of native bigint inference.
+        let integer_addition = |expression: &B| match expression {
+            B::Binary(op, left, right) if op == "+" => match (left.as_ref(), right.as_ref()) {
+                (B::Column(id), B::Literal(value)) => {
+                    value.parse::<i32>().is_ok()
+                        && base_model.Columns.iter().any(|c| {
+                            c.ID == *id
+                                && c.GetType() == astersql_parser_mysql::r#type::TypeLong
+                                && !astersql_parser_mysql::r#type::HasUnsignedFlag(c.GetFlag())
+                        })
+                }
+                _ => false,
+            },
+            _ => false,
+        };
         let mut expressions = Vec::new();
         for field in &select.Fields.Fields {
             if field.WildCard.is_some() {
@@ -3778,7 +3794,9 @@ impl ConcreteSession {
                 );
             } else {
                 let expression = bind(field.Expr.as_ref().ok_or_else(unsupported)?)?;
-                if !matches!(expression, B::Column(_) | B::Literal(_)) {
+                if !matches!(expression, B::Column(_) | B::Literal(_))
+                    && !integer_addition(&expression)
+                {
                     return Err(unsupported());
                 }
                 expressions.push(expression);
@@ -3807,6 +3825,14 @@ impl ConcreteSession {
                 )
             } else {
                 None
+            };
+            let source = if integer_addition(&expression) {
+                let mut tp =
+                    astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLong);
+                tp.SetPostgreSQLDeclaration();
+                Some(tp)
+            } else {
+                source
             };
             let declared = source
                 .as_ref()
