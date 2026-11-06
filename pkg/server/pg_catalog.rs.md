@@ -104,3 +104,7 @@ ROLE-MEMBER的真实服务验证为独立`pg_catalog_test::cat14_10`。本功能
 `Execution::role_name` 消费单次执行缓存的 `TiDBContext::pg_role_facts`，与 `pg_roles.oid/rolname` 使用同一稳定身份来源，不依赖数据库列表、owner 或调用者角色。`database_role_name` 仍服务于既有 owner 存在性检查，未知 owner 不由函数 fallback 掩盖。`pg_catalog_query::identity_scalar` 接入无 FROM 的普通/pg_catalog 限定调用及 OID 参数；带原生 FROM 的语句仍保留共享执行器归属。
 
 独立测试 `pg_catalog_test::cat14_11` 覆盖真实非root双连接、特殊名称、NULL、0/最大OID、删除/重建、文本/二进制参数及name结果描述、事务错误与恢复。未知值文字由固定PG18.4/18.6参考构建采证；对象owner写入与完整普通SQL函数工厂仍遵循其主责范围。
+
+## 数据库 owner 按名关联（目录任务12）
+
+`database_name_filter` 只提取基表 `pg_database.datname` 与文本/NULL字面量的等值条件（允许AND中的合取项与交换操作数），`execute_rows` 在JOIN读取owner前对基表行应用它。完整WHERE仍在project执行，缓存provider不裁剪；OR、其他关系列和owner条件不提前求值。这样有持久owner的指定数据库可JOIN公开角色目录，不受无关legacy数据库缺owner影响。目标库缺owner仍0A000，外连接补NULL仍是SQL NULL。独立`pg_catalog_test::cat14_12`覆盖真实非root双连接、默认创建owner、两次ALTER OWNER、OID不变、同prepared新Bind、text/binary描述、缺源拒绝与恢复；未增加owner持久化或权限系统。
