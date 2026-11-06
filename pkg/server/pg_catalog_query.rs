@@ -546,8 +546,13 @@ impl Parser {
             Expr::Boolean(true)
         } else if self.word("false") {
             Expr::Boolean(false)
-        } else if self.word("current_user") {
-            Expr::Call(vec!["current_user".into()], vec![])
+        } else if matches!(self.peek(), Some(Token::Word(name)) if matches!(name.as_str(), "session_user" | "current_user" | "current_role"))
+        {
+            let Token::Word(name) = self.tokens[self.pos].clone() else {
+                unreachable!()
+            };
+            self.pos += 1;
+            Expr::Call(vec![name], vec![])
         } else if self.word("current_catalog") {
             Expr::Call(vec!["current_catalog".into()], vec![])
         } else if self.word("array") {
@@ -997,7 +1002,7 @@ impl Parser {
         let from = if self.word("from") {
             self.relation()?
         } else {
-            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass" | "pg_get_expr" | "pg_get_viewdef")) && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
+            if !identity_scalar(&self.tokens[projection_start..self.pos]) && !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass" | "pg_get_expr" | "pg_get_viewdef")) && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
                 matches!(&w[0],Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
                 && matches!(&w[2],Token::Word(s) if matches!(s.as_str(),"pg_is_in_recovery" | "txid_current" | "format_type" | "pg_get_indexdef" | "pg_get_constraintdef"))
                 && w[3]==Token::Symbol('(')
@@ -1171,8 +1176,14 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// Standalone OID constants use the same checked catalog codec as catalog fields.
+// Standalone identity expressions read shared actors at Execute time.
 // Queries with native relations retain their existing executor ownership.
+fn identity_scalar(tokens: &[Token]) -> bool {
+    !tokens.iter().any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
+        && tokens.iter().any(|t| matches!(t, Token::Word(s) if matches!(s.as_str(), "session_user" | "current_user" | "current_role")))
+}
+
+// Standalone OID constants use the checked catalog codec.
 fn oid_scalar(tokens: &[Token]) -> bool {
     !tokens
         .iter()
@@ -1223,7 +1234,12 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
     let implicit_catalog = implicit_positions(&tokens)
         .iter()
         .any(|(_, name)| !shadowed.contains(name));
-    if !catalog && !implicit_catalog && !scalar_catalog && !oid_scalar(&tokens) {
+    if !catalog
+        && !implicit_catalog
+        && !scalar_catalog
+        && !oid_scalar(&tokens)
+        && !identity_scalar(&tokens)
+    {
         return Ok(None);
     }
     if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select" || s == "with") {

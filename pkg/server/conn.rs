@@ -906,6 +906,13 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    /// Structured shared-session actors; never derive them from audit strings.
+    fn pg_session_identity(&self) -> ConnResult<(String, String)> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
+    fn pg_set_role(&self, _role: Option<String>) -> ConnResult<()> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     fn pg_role_administrator(&self) -> ConnResult<bool> {
         Ok(false)
     }

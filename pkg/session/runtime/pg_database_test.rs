@@ -323,3 +323,104 @@ fn cat14_08_role_defaults_persist_and_old_fields_remain_unknown() {
         })
         .unwrap();
 }
+
+#[test]
+fn cat14_09_shared_identity_rejects_ambiguous_native_roles() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let mut session =
+        ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    assert_eq!(
+        session
+            .pg_session_identity()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "28000"
+    );
+    session.SetAuthenticatedUser("reader@quoted".into(), false);
+    assert_eq!(
+        session.pg_session_identity().unwrap(),
+        ("reader@quoted".into(), "reader@quoted".into())
+    );
+    *session.active_roles.borrow_mut() = vec![
+        astersql_privilege_privileges::RoleIdentity::new("one", "%"),
+        astersql_privilege_privileges::RoleIdentity::new("two", "%"),
+    ];
+    assert_eq!(
+        session
+            .pg_session_identity()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    // Never silently choose the first actor in a native multi-role context.
+    assert!(session.pg_set_role(Some("one")).is_err());
+    assert_eq!(session.active_roles.borrow().len(), 2);
+    session.SetAuthenticatedIdentity(
+        "reader@quoted".into(),
+        "127.0.0.1".into(),
+        "127.0.0.1".into(),
+        false,
+    );
+    assert_eq!(
+        session
+            .pg_session_identity()
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+    domain.close();
+}
+
+#[test]
+fn cat14_09_native_revoke_preserves_request_atomicity_and_defaults() {
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.execute("CREATE USER 'cat14_09_native'@'%'").unwrap();
+    native.execute("CREATE ROLE 'cat14_09_role'@'%'").unwrap();
+    native
+        .execute("GRANT 'cat14_09_role'@'%' TO 'cat14_09_native'@'%'")
+        .unwrap();
+    native
+        .execute("SET DEFAULT ROLE 'cat14_09_role'@'%' TO 'cat14_09_native'@'%'")
+        .unwrap();
+    let role = astersql_privilege_privileges::RoleIdentity::new("cat14_09_role", "%");
+    let handle = runtime_privilege_handle(&domain);
+    assert!(
+        native
+            .execute(
+                "REVOKE 'cat14_09_role'@'%' FROM 'cat14_09_native'@'%', 'cat14_09_missing'@'%'"
+            )
+            .is_err()
+    );
+    assert!(handle.Get().FindRole("cat14_09_native", "%", &role));
+    assert_eq!(
+        handle.Get().getDefaultRoles("cat14_09_native", "%"),
+        vec![role.clone()]
+    );
+    let mut reader = ConcreteSession::new(domain.clone());
+    reader.SetAuthenticatedUser("cat14_09_native".into(), false);
+    assert!(
+        reader
+            .execute("REVOKE 'cat14_09_role'@'%' FROM 'cat14_09_native'@'%'")
+            .is_err()
+    );
+    assert!(handle.Get().FindRole("cat14_09_native", "%", &role));
+    native
+        .execute("REVOKE 'cat14_09_role'@'%' FROM 'cat14_09_native'@'%'")
+        .unwrap();
+    assert!(!handle.Get().FindRole("cat14_09_native", "%", &role));
+    assert!(
+        handle
+            .Get()
+            .getDefaultRoles("cat14_09_native", "%")
+            .is_empty()
+    );
+    native.execute("DROP USER 'cat14_09_native'@'%'").unwrap();
+    native.execute("DROP ROLE 'cat14_09_role'@'%'").unwrap();
+    domain.close();
+}

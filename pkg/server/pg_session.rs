@@ -5,6 +5,8 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
+    SetRole(Option<String>),
+    ResetRole,
     Sequence(astersql_session::runtime::PgSequenceCommand, Option<String>),
     NumericLocaleShow(bool),
     NumericLocaleSet(bool, String, bool),
@@ -291,6 +293,14 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::SetRole(role) => {
+                context.pg_set_role(role.clone())?;
+                None
+            }
+            SessionQuery::ResetRole => {
+                context.pg_set_role(None)?;
+                None
+            }
             SessionQuery::Sequence(command, name) => {
                 let value = context.pg_sequence(command.clone())?;
                 name.as_ref()
@@ -437,6 +447,8 @@ impl SessionQuery {
     }
     pub(crate) fn command(&self) -> &'static str {
         match self {
+            Self::SetRole(_) => "SET",
+            Self::ResetRole => "RESET",
             Self::Sequence(command, _) => match command {
                 astersql_session::runtime::PgSequenceCommand::AlterIdentity { .. } => "ALTER TABLE",
                 astersql_session::runtime::PgSequenceCommand::Create { .. } => "CREATE SEQUENCE",
@@ -593,6 +605,30 @@ impl SessionQuery {
             Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
             _ => None,
         };
+        if word(tokens.first(), "reset") && word(tokens.get(1), "role") {
+            if tokens.len() != 2 {
+                return Err(("42601", "unexpected RESET ROLE clause".into()));
+            }
+            return Ok(Some(Self::ResetRole));
+        }
+        if word(tokens.first(), "set") && word(tokens.get(1), "role") {
+            let mut index = 2;
+            if word(tokens.get(index), "to") || tokens.get(index) == Some(&Token::Symbol('=')) {
+                index += 1;
+            }
+            if tokens.len() != index + 1 {
+                return Err(("42601", "expected one role name".into()));
+            }
+            let role = if word(tokens.get(index), "none") {
+                None
+            } else {
+                Some(match &tokens[index] {
+                    Token::Word(name) | Token::Quoted(name) | Token::String(name) => name.clone(),
+                    _ => return Err(("42601", "expected role name".into())),
+                })
+            };
+            return Ok(Some(Self::SetRole(role)));
+        }
         if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
             && (word(tokens.get(1), "role") || word(tokens.get(1), "user"))
         {

@@ -5893,6 +5893,67 @@ impl ConcreteSession {
         Ok(())
     }
 
+    // Mirror the existing native GRANT ROLE cache mutation, so subsequent
+    // shared-session SET ROLE checks observe revocation immediately.
+    pub(super) fn execute_revoke_role(&self, statement: &ast::RevokeRoleStmt) -> SessionResult<()> {
+        // This bounded runtime has no delegated role-administration policy.
+        // Internal native sessions and the explicit bootstrap administrator may
+        // administer the existing role graph; ordinary connections may not.
+        if self
+            .login_user
+            .as_deref()
+            .is_some_and(|name| name != "root")
+            || !self.active_roles.borrow().is_empty()
+        {
+            return Err(super::pg_schema::namespace_error(
+                "42501",
+                "permission denied to revoke role",
+            ));
+        }
+        let handle = runtime_privilege_handle(&self.domain);
+        let mut privileges = handle.Get();
+        let roles: Vec<_> = statement
+            .Roles
+            .iter()
+            .map(|role| {
+                astersql_privilege_privileges::RoleIdentity::new(
+                    &role.username,
+                    account_host(&role.hostname),
+                )
+            })
+            .collect();
+        let users: Vec<_> = statement
+            .Users
+            .iter()
+            .map(|user| {
+                astersql_privilege_privileges::RoleIdentity::new(
+                    &user.username,
+                    account_host(&user.hostname),
+                )
+            })
+            .collect();
+        // Validate the complete request before publishing any graph mutation.
+        for identity in roles.iter().chain(users.iter()) {
+            if !privileges.user.iter().any(|record| {
+                record.base.User == identity.Username && record.base.Host == identity.Hostname
+            }) {
+                return Err(SessionError::new("REVOKE ROLE account does not exist"));
+            }
+        }
+        for user in &users {
+            if let Some(edges) = privileges.role_graph.get_mut(user) {
+                for role in &roles {
+                    edges.0.remove(role);
+                }
+            }
+            let mut defaults = privileges.getDefaultRoles(&user.Username, &user.Hostname);
+            defaults.retain(|role| !roles.contains(role));
+            privileges.setDefaultRoles(&user.Username, &user.Hostname, &defaults);
+        }
+        handle.merge(privileges);
+        Ok(())
+    }
+
     pub(super) fn execute_set_role(&self, statement: &ast::SetRoleStmt) -> SessionResult<()> {
         let Some(user) = self.login_user.as_deref() else {
             return Err(SessionError::new("SET ROLE requires an authenticated user"));

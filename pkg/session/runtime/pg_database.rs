@@ -212,6 +212,58 @@ impl ConcreteSession {
         Ok(result)
     }
 
+    /// Read the authentication and effective actors without flattening user/host.
+    /// The native active-role storage is also used by namespace/ACL evaluation.
+    pub fn pg_session_identity(&self) -> SessionResult<(String, String)> {
+        let login = self
+            .login_user
+            .clone()
+            .ok_or_else(|| namespace_error("28000", "session has no authenticated role"))?;
+        let active = self.active_roles.borrow();
+        if active.len() > 1 || active.iter().any(|role| role.Hostname != "%") {
+            return Err(namespace_error(
+                "0A000",
+                "ambiguous PostgreSQL effective role",
+            ));
+        }
+        if self.authenticated_host.as_deref() != Some("%") {
+            return Err(namespace_error(
+                "0A000",
+                "PostgreSQL role host mapping is unavailable",
+            ));
+        }
+        let actor = active
+            .first()
+            .map_or_else(|| login.clone(), |role| role.Username.clone());
+        Ok((login, actor))
+    }
+
+    /// Select exactly one actor in the existing shared session role storage.
+    /// Authorization uses the authenticated account even after a prior SET ROLE.
+    pub fn pg_set_role(&self, role: Option<&str>) -> SessionResult<()> {
+        let (login, _) = self.pg_session_identity()?;
+        let Some(name) = role else {
+            self.active_roles.borrow_mut().clear();
+            return Ok(());
+        };
+        // This read validates stable PG identities and rejects Host collisions.
+        if !self.pg_role_facts()?.iter().any(|fact| fact.name == name) {
+            return Err(namespace_error("22023", "role does not exist"));
+        }
+        if name == login {
+            self.active_roles.borrow_mut().clear();
+            return Ok(());
+        }
+        let target = astersql_privilege_privileges::RoleIdentity::new(name, "%");
+        let privileges = runtime_privilege_handle(&self.domain).Get();
+        if login != "root" && !privileges.FindRole(&login, "%", &target) {
+            return Err(namespace_error("42501", "permission denied to set role"));
+        }
+        // Do not mutate on any failure; native GRANT/REVOKE is consulted anew.
+        *self.active_roles.borrow_mut() = vec![target];
+        Ok(())
+    }
+
     pub fn pg_role_administrator(&self) -> bool {
         self.login_user.as_deref() == Some("root") && self.active_roles.borrow().is_empty()
     }

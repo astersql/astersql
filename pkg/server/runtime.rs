@@ -823,6 +823,13 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgSessionIdentity {
+        response: mpsc::SyncSender<ConnResult<(String, String)>>,
+    },
+    PgSetRole {
+        role: Option<String>,
+        response: mpsc::SyncSender<ConnResult<()>>,
+    },
     PgRoleAdministrator {
         response: mpsc::SyncSender<bool>,
     },
@@ -1049,6 +1056,20 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgSessionIdentity { response } => {
+                let _ = response.send(
+                    session
+                        .pg_session_identity()
+                        .map_err(session_protocol_error),
+                );
+            }
+            SessionRequest::PgSetRole { role, response } => {
+                let _ = response.send(
+                    session
+                        .pg_set_role(role.as_deref())
+                        .map_err(session_protocol_error),
+                );
+            }
             SessionRequest::PgRoleAdministrator { response } => {
                 let _ = response.send(session.pg_role_administrator());
             }
@@ -2090,6 +2111,16 @@ impl TiDBContext for ConcreteTiDBContext {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
         rx.recv().map_err(packet_error)
+    }
+    fn pg_session_identity(&self) -> ConnResult<(String, String)> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgSessionIdentity { response: tx })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_set_role(&self, role: Option<String>) -> ConnResult<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgSetRole { role, response: tx })?;
+        rx.recv().map_err(packet_error)?
     }
     fn pg_role_administrator(&self) -> ConnResult<bool> {
         let (tx, rx) = mpsc::sync_channel(1);

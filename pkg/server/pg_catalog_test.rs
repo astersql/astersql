@@ -13224,3 +13224,243 @@ fn cat14_08() {
         "cat14_08: 12 fields Q/text/binary, NULL, persisted defaults/reload, legacy per-field gates, native grant/revoke isolation, sensitive 42501/0A000, I/T/E recovery, secret-free logs, cleanup"
     );
 }
+
+#[test]
+fn cat14_09() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_09_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_09_db")
+            .unwrap();
+        for name in ["cat14_09@reader'一", "cat14_09@group'二", "cat14_09_denied"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect = |user: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0cat14_09_db\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+    fn identity(r: &[(u8, Vec<u8>)], login: &str, actor: &str, binary: bool, status: u8) {
+        let t = &r.iter().find(|m| m.0 == b'T').expect("description").1;
+        assert_eq!(
+            columns(t),
+            vec![
+                ("session_user".into(), 19),
+                ("current_user".into(), 19),
+                ("current_role".into(), 19)
+            ]
+        );
+        let mut offset = 2;
+        for _ in 0..3 {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&t[offset..offset + 6], &[0; 6]);
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                64
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                i16::from(binary)
+            );
+            offset += 18;
+        }
+        assert_eq!(
+            r.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some(login), Some(actor), Some(actor)])]
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert_eq!(
+            r.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"EZ",
+            "{sql}: {r:?}"
+        );
+        assert!(
+            r[0].1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {r:?}"
+        );
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    let login = "cat14_09@reader'一";
+    let actor = "cat14_09@group'二";
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE \"cat14_09@reader'一\" LOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_09@group'二\" NOLOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_09_denied NOLOGIN");
+    native
+        .execute("GRANT 'cat14_09@group''二'@'%' TO 'cat14_09@reader''一'@'%'")
+        .unwrap();
+    ok(
+        &mut admin,
+        "CREATE SCHEMA cat14_09_private AUTHORIZATION \"cat14_09@group'二\"",
+    );
+    let mut a = connect(login);
+    let mut b = connect(login);
+    ok(&mut a, "SET search_path TO cat14_09_private");
+    let schema_sql = "SELECT current_schema() FROM pg_namespace WHERE nspname='public'";
+    assert_eq!(
+        ok(&mut a, schema_sql)
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[None])
+    );
+    let sql = "SELECT session_user,current_user,current_role";
+    identity(&ok(&mut a, sql), login, login, false, b'I');
+    identity(&ok(&mut b, sql), login, login, false, b'I');
+    // Parse once, execute after SET/RESET: no identity is frozen into a statement.
+    send(
+        &mut a,
+        b'P',
+        &[b"identity\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut a, b'D', b"Sidentity\0");
+    send(&mut a, b'S', b"");
+    let r = until_ready(&mut a);
+    assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ", "{r:?}");
+    for binary in [false, true] {
+        if binary {
+            send(
+                &mut a,
+                b'P',
+                "\0SET ROLE \"cat14_09@group'二\"\0\0\0".as_bytes(),
+            );
+            send(&mut a, b'B', &[0; 8]);
+            send(&mut a, b'E', &[0; 5]);
+            send(&mut a, b'S', b"");
+            let r = until_ready(&mut a);
+            assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"12CZ", "{r:?}");
+        } else {
+            ok(&mut a, "SET ROLE \"cat14_09@group'二\"");
+        }
+        identity(&ok(&mut a, sql), login, actor, false, b'I');
+        assert_eq!(
+            ok(&mut a, schema_sql)
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("cat14_09_private")])
+        );
+        identity(&ok(&mut b, sql), login, login, false, b'I');
+        let bind = [
+            b"\0identity\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &1u16.to_be_bytes(),
+            &i16::from(binary).to_be_bytes(),
+        ]
+        .concat();
+        send(&mut a, b'B', &bind);
+        send(&mut a, b'D', b"P\0");
+        send(&mut a, b'E', b"\0\0\0\0\0");
+        send(&mut a, b'S', b"");
+        let r = until_ready(&mut a);
+        assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{r:?}");
+        identity(&r, login, actor, binary, b'I');
+        denied(&mut a, "SET ROLE cat14_09_denied", "42501", b'I');
+        denied(&mut a, "SET ROLE root", "42501", b'I');
+        denied(&mut a, "SET ROLE cat14_09_missing", "22023", b'I');
+        identity(&ok(&mut a, sql), login, actor, false, b'I');
+        // The effective identity must drive actual authority, not only its label.
+        denied(
+            &mut a,
+            "CREATE ROLE cat14_09_forbidden LOGIN",
+            "42501",
+            b'I',
+        );
+        assert_eq!(ok(&mut a, "BEGIN").last(), Some(&(b'Z', vec![b'T'])));
+        denied(&mut a, "SET ROLE cat14_09_denied", "42501", b'E');
+        denied(&mut a, sql, "25P02", b'E');
+        ok(&mut a, "ROLLBACK");
+        identity(&ok(&mut a, sql), login, actor, false, b'I');
+        ok(&mut a, "RESET ROLE");
+        assert_eq!(
+            ok(&mut a, schema_sql)
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[None])
+        );
+        identity(&ok(&mut a, sql), login, login, false, b'I');
+        // The same prepared statement now observes the restored actor.
+        send(&mut a, b'B', &bind);
+        send(&mut a, b'D', b"P\0");
+        send(&mut a, b'E', b"\0\0\0\0\0");
+        send(&mut a, b'S', b"");
+        identity(&until_ready(&mut a), login, login, binary, b'I');
+    }
+    native
+        .execute("REVOKE 'cat14_09@group''二'@'%' FROM 'cat14_09@reader''一'@'%'")
+        .unwrap();
+    denied(&mut a, "SET ROLE \"cat14_09@group'二\"", "42501", b'I');
+    identity(&ok(&mut a, sql), login, login, false, b'I');
+    ok(&mut a, "SET ROLE NONE");
+    ok(&mut a, "SET ROLE \"cat14_09@reader'一\"");
+    identity(&ok(&mut a, sql), login, login, false, b'I');
+    send(&mut a, b'C', b"Sidentity\0");
+    send(&mut a, b'S', b"");
+    assert_eq!(
+        until_ready(&mut a).iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"3Z"
+    );
+    for s in [&mut a, &mut b, &mut admin] {
+        send(s, b'X', b"");
+    }
+}

@@ -13,7 +13,7 @@ DML 与统计辅助：为特殊的 session KV 表执行 INSERT/UPDATE/DELETE，�
 - 协议 prepared statement：解析并注册单条 SQL，解析字段元数据和参数标记，安全绑定 typed 参数，维护计划缓存代际和关闭时的全局配额。关键符号为 `describe_result_fields`、`prepare_protocol_statement`、`execute_protocol_statement`、`close_protocol_statement`。
 - DML 与统计辅助：为特殊的 session KV 表执行 INSERT/UPDATE/DELETE，同时把一般关系表操作转交相邻实现；收集谓词列、同步/异步直方图加载需求，处理 `ANALYZE` 列选择和 DML EXPLAIN 结果。关键符号为 `apply_session_kv_mutations`、`execute_insert`、`execute_update`、`execute_delete`、`collect_predicate_columns_point`、`analyze_columns_info`。
 - 时间戳与变量控制：解析 `SET` 表达式、读写用户/系统变量，维护事务隔离、stale read、全局开关、计划缓存失效和相关 Domain 状态。关键符号为 `select_variable`、`evaluate_set_expression`、`evaluate_stale_read_ts`、`execute_set`、`SetSessionSystemVar`。
-- 管理语句：维护资源组运行时映射及默认资源组持久化；执行当前具体运行时支持的用户、角色和授权变更，并拒绝必须进入完整 planner/executor ABI 的选项。关键符号为 `execute_create_resource_group`、`execute_alter_resource_group`、`execute_alter_user`、`execute_create_user`、`execute_grant_role`、`execute_grant`、`execute_revoke`。
+- 管理语句：维护资源组运行时映射及默认资源组持久化；执行当前具体运行时支持的用户、角色和授权变更，并拒绝必须进入完整 planner/executor ABI 的选项。关键符号为 `execute_create_resource_group`、`execute_alter_resource_group`、`execute_alter_user`、`execute_create_user`、`execute_grant_role`、`execute_revoke_role`、`execute_grant`、`execute_revoke`。
 - 内存控制：为长数据、编译期和执行期建立 tracker/仲裁 guard，清理内存敏感计划缓存并保存测试可观测值。关键符号为 `ChargeBoundLongData`、`begin_compile_memory_arbitration`、`init_statement_memory_tracker`、`begin_statement_memory_arbitration`。
 
 ## 主要符号
@@ -30,7 +30,7 @@ DML 与统计辅助：为特殊的 session KV 表执行 INSERT/UPDATE/DELETE，�
 
 DML/统计方法包括：`read_session_kv`、`apply_session_kv_mutations`、`execute_insert`、`execute_update`、`mysql_stats_histograms_sets_version_zero`、`execute_delete`、`explain_dml_record_set`、`collect_predicate_columns_point`、`collect_statement_predicate_stats`、`collect_expression_subquery_stats`、`collect_query_statement_predicate_stats`、`referenced_column_ids`、`prune_index_access_paths`、`collect_predicate_column_names`、`collect_select_predicate_column_names`、`collect_query_predicate_column_names` 和 `analyze_columns_info`。相邻 `runtime/query.rs`、`runtime/explain_select.rs` 调用谓词统计入口；`runtime/typed_dml_executor.rs`、`runtime/import_compression.rs` 调用 INSERT 入口。
 
-变量、时间戳和管理方法包括：`select_variable`、`evaluate_set_expression`、`current_store_ts`、`validate_table_read_ts_after_last_commit`、`evaluate_stale_read_ts`、`execute_mem_arbitrator_set`、三个资源组执行方法、`persist_account_tls`、`execute_alter_user`、`execute_create_user`、`execute_grant_role`、`execute_set_role`、`execute_set_default_role`、`execute_grant`、`execute_privilege_mutation`、`execute_drop_user`、`execute_revoke`、`resource_group_priority` 和 `execute_set`。`runtime/dispatch.rs` 根据 AST 类型调用这些 `pub(super)` 方法。
+变量、时间戳和管理方法包括：`select_variable`、`evaluate_set_expression`、`current_store_ts`、`validate_table_read_ts_after_last_commit`、`evaluate_stale_read_ts`、`execute_mem_arbitrator_set`、三个资源组执行方法、`persist_account_tls`、`execute_alter_user`、`execute_create_user`、`execute_grant_role`、`execute_revoke_role`、`execute_set_role`、`execute_set_default_role`、`execute_grant`、`execute_privilege_mutation`、`execute_drop_user`、`execute_revoke`、`resource_group_priority` 和 `execute_set`。`runtime/dispatch.rs` 根据 AST 类型调用这些 `pub(super)` 方法。
 
 内存相关方法包括 `compiler_quota_at_executor_build_for_test`、`begin_compile_memory_arbitration`、`clear_memory_sensitive_plan_cache`、`init_statement_memory_tracker`、`begin_statement_memory_arbitration`，以及多个 tracker 测试观察器。它们连接 `astersql-util-memory` 的 tracker/仲裁器、`SQLKiller` 和 prepared plan cache。
 
@@ -289,3 +289,5 @@ INSERT VALUES, INSERT SELECT and UPDATE preparation reject typed text assignment
 ## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
 
 execute_grant 先解析永久元数据并复用 executor 白名单校验；规范表名只解析一次，临时表不覆盖目标。物化对象 ALL 只展开五种安全表权限，Column_priv 不由 ALL 引入 SELECT/INSERT/UPDATE/REFERENCES。原权限事务和缓存更新流程保持。此为 Go grant.go 的真实局部接线。
+
+`execute_revoke_role` 为共享原生角色图的局部反向操作：仅内部会话或未切换角色的bootstrap管理员可调用，先验证全部角色及账户存在，再移除授予边和对应默认角色并一次merge发布。它复用现有GRANT的运行时角色图，未新增持久PG成员选项或授权模型；PG SET ROLE每次读取当前图，所以撤销后再次切换会被拒绝。

@@ -165,12 +165,19 @@ struct Execution<'a> {
     database_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgDatabaseFact>>>,
     database_role_names: std::cell::RefCell<std::collections::BTreeMap<i64, String>>,
     role_facts: std::cell::RefCell<Option<Vec<astersql_session::runtime::PgRoleFact>>>,
+    session_identity: std::cell::RefCell<Option<(String, String)>>,
     providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
     ctes: std::cell::RefCell<std::collections::HashMap<usize, CatalogRows>>,
     materialized: std::cell::Cell<usize>,
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
+    fn session_identity(&self) -> ConnResult<(String, String)> {
+        if self.session_identity.borrow().is_none() {
+            *self.session_identity.borrow_mut() = Some(self.context.pg_session_identity()?);
+        }
+        Ok(self.session_identity.borrow().as_ref().unwrap().clone())
+    }
     fn role_facts(&self) -> ConnResult<Vec<astersql_session::runtime::PgRoleFact>> {
         if self.role_facts.borrow().is_none() {
             *self.role_facts.borrow_mut() = Some(self.context.pg_role_facts()?);
@@ -1317,7 +1324,9 @@ impl CatalogQuery {
                     {
                         Ok((crate::pg_oid::REGCLASS_TYPE, 0))
                     }
-                    ("current_user", []) => Ok((253, 0)),
+                    ("session_user" | "current_user" | "current_role", []) => {
+                        Ok((astersql_parser_mysql::r#type::TypePgName, 0))
+                    }
                     ("pg_get_serial_sequence", [a, b])
                         if [a, b].iter().all(|arg| {
                             matches!(arg, Expr::Null)
@@ -1831,6 +1840,7 @@ impl CatalogQuery {
             database_facts: Default::default(),
             database_role_names: Default::default(),
             role_facts: Default::default(),
+            session_identity: Default::default(),
             providers: Default::default(),
             ctes: Default::default(),
             materialized: std::cell::Cell::new(0),
@@ -4033,15 +4043,14 @@ impl CatalogQuery {
                     }
                     _ => unreachable!("validated translate arguments"),
                 },
-                "current_user" => Value::Text(
-                    execution
-                        .context
-                        .user_identity()?
-                        .split('@')
-                        .next()
-                        .unwrap_or("")
-                        .into(),
-                ),
+                "session_user" | "current_user" | "current_role" => {
+                    let (login, actor) = execution.session_identity()?;
+                    Value::Text(if path.last().unwrap() == "session_user" {
+                        login
+                    } else {
+                        actor
+                    })
+                }
                 "pg_is_in_recovery" => Value::Text("false".into()),
                 "txid_current" => {
                     let results = execution.context.execute_query(

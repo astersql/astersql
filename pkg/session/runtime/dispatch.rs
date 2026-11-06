@@ -1704,6 +1704,11 @@ impl ConcreteSession {
             self.execute_grant_role(grant_role)?;
             return Ok(None);
         }
+        if let Some(revoke_role) = statement.as_any().downcast_ref::<ast::RevokeRoleStmt>() {
+            self.finish_transaction(true)?;
+            self.execute_revoke_role(revoke_role)?;
+            return Ok(None);
+        }
         if let Some(set_role) = statement.as_any().downcast_ref::<ast::SetRoleStmt>() {
             self.execute_set_role(set_role)?;
             return Ok(None);
