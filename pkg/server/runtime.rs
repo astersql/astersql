@@ -844,6 +844,7 @@ pub(crate) enum SessionRequest {
     PgStandardTableVisible {
         column: Option<String>,
         owner_only: bool,
+        constraint_only: bool,
         database: String,
         table: Arc<astersql_meta_model::TableInfo>,
         response: mpsc::SyncSender<ConnResult<bool>>,
@@ -1067,6 +1068,7 @@ fn run_session_worker(
             SessionRequest::PgStandardTableVisible {
                 column,
                 owner_only,
+                constraint_only,
                 database,
                 table,
                 response,
@@ -1074,6 +1076,8 @@ fn run_session_worker(
                 let _ = response.send(
                     (if owner_only {
                         session.pg_standard_view_owner(&table)
+                    } else if constraint_only {
+                        session.pg_standard_constraint_visible(&database, &table)
                     } else if let Some(column) = column {
                         session.pg_standard_column_visible(&database, &table, &column)
                     } else {
@@ -2073,6 +2077,23 @@ impl TiDBContext for ConcreteTiDBContext {
         self.send_request(SessionRequest::PgStandardTableVisible {
             column: None,
             owner_only: false,
+            constraint_only: false,
+            database,
+            table,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
+    fn pg_standard_constraint_visible(
+        &self,
+        database: String,
+        table: Arc<astersql_meta_model::TableInfo>,
+    ) -> ConnResult<bool> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgStandardTableVisible {
+            column: None,
+            owner_only: false,
+            constraint_only: true,
             database,
             table,
             response: tx,
@@ -2089,6 +2110,7 @@ impl TiDBContext for ConcreteTiDBContext {
         self.send_request(SessionRequest::PgStandardTableVisible {
             column: Some(column),
             owner_only: false,
+            constraint_only: false,
             database,
             table,
             response: tx,
@@ -2103,6 +2125,7 @@ impl TiDBContext for ConcreteTiDBContext {
         self.send_request(SessionRequest::PgStandardTableVisible {
             column: None,
             owner_only: true,
+            constraint_only: false,
             database: String::new(),
             table,
             response: tx,

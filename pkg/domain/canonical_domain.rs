@@ -2069,10 +2069,51 @@ impl DdlMetadataService {
                     }
                 }
             }
-            catalog.tables.insert(key, new.clone());
+            // Rename FK column references in the same catalog publication as
+            // the column and index names. Readers must never see stale keys.
+            for fk in &mut new.ForeignKeys {
+                for name in &mut fk.Cols {
+                    if name.L == old_name {
+                        *name = new_name.clone();
+                    }
+                }
+                if fk.RefSchema.L == database && fk.RefTable.L == table {
+                    for name in &mut fk.RefCols {
+                        if name.L == old_name {
+                            *name = new_name.clone();
+                        }
+                    }
+                }
+            }
+            catalog.tables.insert(key.clone(), new.clone());
+            let mut old_tables = vec![(database.clone(), old)];
+            let mut new_tables = vec![(database.clone(), new)];
+            for (other_key, other) in &mut catalog.tables {
+                if other_key == &key || other_key.0 != database {
+                    continue;
+                }
+                if !other.ForeignKeys.iter().any(|fk| {
+                    fk.RefSchema.L == database
+                        && fk.RefTable.L == table
+                        && fk.RefCols.iter().any(|c| c.L == old_name)
+                }) {
+                    continue;
+                }
+                old_tables.push((database.clone(), other.clone()));
+                for fk in &mut other.ForeignKeys {
+                    if fk.RefSchema.L == database && fk.RefTable.L == table {
+                        for name in &mut fk.RefCols {
+                            if name.L == old_name {
+                                *name = new_name.clone();
+                            }
+                        }
+                    }
+                }
+                new_tables.push((database.clone(), other.clone()));
+            }
             Ok(DdlMetadataChange {
-                old_tables: vec![(database.clone(), old)],
-                new_tables: vec![(database, new)],
+                old_tables,
+                new_tables,
                 changed: true,
                 ..DdlMetadataChange::default()
             })

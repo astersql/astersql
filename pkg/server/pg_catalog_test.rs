@@ -9627,3 +9627,131 @@ fn pg13_036_contract() {
         "pg13_036_contract: scenarios=20 modes=2 alterations=8 corrupt_models=3 cycle null zero_describe no_allocation allocator_continuity error recovery cleanup"
     );
 }
+
+#[test]
+fn pg13_037_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE DATABASE pg13_037_contract_probe")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_037_contract_probe")
+            .unwrap();
+        assert!(TcpStream::connect(addr).is_err());
+        println!("PG37 cleanup: database dropped; listener closed");
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_037_contract_probe\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn cells(body: &[u8]) -> Vec<Option<&str>> {
+        let count = u16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut pos = 2;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let len = i32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            if len < 0 {
+                out.push(None);
+            } else {
+                let end = pos + len as usize;
+                out.push(Some(std::str::from_utf8(&body[pos..end]).unwrap()));
+                pos = end;
+            }
+        }
+        out
+    }
+    fn ok(socket: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(socket, sql);
+        assert!(m.iter().all(|m| m.0 != b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+        m
+    }
+    ok(
+        &mut socket,
+        "CREATE TABLE public.tc_p(a integer, b integer, CONSTRAINT tc_pk PRIMARY KEY(a,b), CONSTRAINT tc_u UNIQUE(b))",
+    );
+    ok(
+        &mut socket,
+        "CREATE TABLE public.tc_c(x integer NOT NULL, v integer, CONSTRAINT tc_f FOREIGN KEY(x) REFERENCES public.tc_p(b), CONSTRAINT tc_ck CHECK(v > 0))",
+    );
+    let sql = "SELECT constraint_catalog,constraint_schema,constraint_name,table_catalog,table_schema,table_name,constraint_type,is_deferrable,initially_deferred,enforced,nulls_distinct FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='tc_c' ORDER BY constraint_name";
+    let m = ok(&mut socket, sql);
+    assert_eq!(
+        columns(&m[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![19, 19, 19, 19, 19, 19, 1043, 1043, 1043, 1043, 1043]
+    );
+    let rows: Vec<_> = m
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| cells(&m.1))
+        .collect();
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        assert_eq!(&row[7..], &[Some("NO"), Some("NO"), Some("YES"), None]);
+    }
+    assert!(
+        rows.iter()
+            .any(|r| r[2] == Some("tc_f") && r[6] == Some("FOREIGN KEY"))
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r[2] == Some("tc_ck") && r[6] == Some("CHECK"))
+    );
+    let zero = ok(&mut socket, &sql.replace("tc_c'", "missing'"));
+    assert_eq!(columns(&zero[0].1), columns(&m[0].1));
+    assert!(!zero.iter().any(|m| m.0 == b'D'));
+    ok(&mut socket, "ALTER TABLE public.tc_c RENAME COLUMN x TO xx");
+    ok(&mut socket, "ALTER TABLE public.tc_p RENAME COLUMN b TO bb");
+    let after = ok(&mut socket, sql);
+    assert_eq!(after.iter().filter(|m| m.0 == b'D').count(), 3);
+    let keys = ok(
+        &mut socket,
+        "SELECT conkey,confkey FROM pg_catalog.pg_constraint WHERE conname='tc_f'",
+    );
+    assert!(
+        keys.iter()
+            .any(|m| m.0 == b'D' && m.1 == row(&[Some("{1}"), Some("{2}")]))
+    );
+    ok(&mut socket, "ALTER TABLE public.tc_c DROP CONSTRAINT tc_f");
+    assert_eq!(
+        ok(&mut socket, sql).iter().filter(|m| m.0 == b'D').count(),
+        2
+    );
+    ok(&mut socket, "DROP TABLE public.tc_c");
+    ok(&mut socket, "DROP TABLE public.tc_p");
+    println!(
+        "pg13_037_contract: scenarios=5 drop_constraint rename_child_parent p/u/f/c/n state null zero_describe cleanup"
+    );
+}

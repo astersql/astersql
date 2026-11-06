@@ -936,6 +936,13 @@ pub trait TiDBContext: Send + Sync {
     ) -> ConnResult<bool> {
         Err(ConnError::UnsupportedCommand(0))
     }
+    fn pg_standard_constraint_visible(
+        &self,
+        _database: String,
+        _table: std::sync::Arc<astersql_meta_model::TableInfo>,
+    ) -> ConnResult<bool> {
+        Err(ConnError::UnsupportedCommand(0))
+    }
     fn pg_standard_column_visible(
         &self,
         _database: String,

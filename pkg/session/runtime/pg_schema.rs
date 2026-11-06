@@ -16,6 +16,7 @@ pub enum PgTablePrivilege {
     Update,
     References,
     Delete,
+    Trigger,
 }
 impl PgTablePrivilege {
     pub fn sql(self) -> &'static str {
@@ -25,6 +26,7 @@ impl PgTablePrivilege {
             Self::Update => "UPDATE",
             Self::References => "REFERENCES",
             Self::Delete => "DELETE",
+            Self::Trigger => "TRIGGER",
         }
     }
 }
@@ -891,6 +893,8 @@ pub struct PgStandardSchema {
     pub columns: i64,
     #[serde(default)]
     pub cardinal_number: i64,
+    #[serde(default)]
+    pub table_constraints: i64,
 }
 impl ConcreteSession {
     pub fn pg_initialize_standard_schema(&self) -> SessionResult<()> {
@@ -927,6 +931,7 @@ impl ConcreteSession {
                                 views: allocate_namespace_id(txn, &ctx)?,
                                 columns: allocate_namespace_id(txn, &ctx)?,
                                 cardinal_number: allocate_namespace_id(txn, &ctx)?,
+                                table_constraints: allocate_namespace_id(txn, &ctx)?,
                             };
                             txn.Set(
                                 key.clone(),
@@ -966,6 +971,14 @@ impl ConcreteSession {
                                     .map_err(|e| kv::errors::New(e.to_string()))?,
                             )?;
                         }
+                        if standard.table_constraints == 0 {
+                            standard.table_constraints = allocate_namespace_id(txn, &ctx)?;
+                            txn.Set(
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema"),
+                                serde_json::to_vec(standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
                     }
                     Ok(())
                 })
@@ -982,9 +995,10 @@ impl ConcreteSession {
                 standard.views,
                 standard.columns,
                 standard.cardinal_number,
+                standard.table_constraints,
             ];
             let unique: BTreeSet<_> = ids.into_iter().collect();
-            if unique.len() != 9
+            if unique.len() != 10
                 || !(0x6000_0001..0x8000_0000).contains(&standard.owner)
                 || ids
                     .iter()
@@ -1102,6 +1116,36 @@ impl ConcreteSession {
         table: &astersql_meta_model::TableInfo,
         column: &str,
     ) -> SessionResult<bool> {
+        self.pg_standard_column_access(database, table, column, false)
+    }
+    /// TC admits ownership or writing privileges, never SELECT alone.
+    pub fn pg_standard_constraint_visible(
+        &self,
+        database: &str,
+        table: &astersql_meta_model::TableInfo,
+    ) -> SessionResult<bool> {
+        if self.pg_standard_view_owner(table)? {
+            return Ok(true);
+        }
+        for column in table
+            .Columns
+            .iter()
+            .filter(|c| c.State == astersql_meta_model::StatePublic && !c.Hidden)
+        {
+            if self.pg_standard_column_access(database, table, &column.Name.O, true)? {
+                return Ok(true);
+            }
+        }
+        // Empty tables can still carry table-level DELETE/TRIGGER grants.
+        self.pg_standard_column_access(database, table, "", true)
+    }
+    fn pg_standard_column_access(
+        &self,
+        database: &str,
+        table: &astersql_meta_model::TableInfo,
+        column: &str,
+        write_only: bool,
+    ) -> SessionResult<bool> {
         let actor = self.pg_schema_identity();
         let roles = self
             .pg_database_facts(None)?
@@ -1134,11 +1178,28 @@ impl ConcreteSession {
             return Ok(true);
         }
         use astersql_privilege_privileges::{InsertPriv, ReferencesPriv, SelectPriv, UpdatePriv};
-        let mask = SelectPriv | InsertPriv | UpdatePriv | ReferencesPriv;
+        let mask = if write_only {
+            InsertPriv | UpdatePriv | ReferencesPriv
+        } else {
+            SelectPriv | InsertPriv | UpdatePriv | ReferencesPriv
+        };
+        let table_mask = if write_only {
+            mask | astersql_privilege_privileges::DeletePriv
+                | astersql_privilege_privileges::TriggerPriv
+        } else {
+            mask
+        };
         // tables_priv.ColumnPriv summarizes grants on any column. It cannot
         // establish permission on this particular column; consult its exact key.
-        let table_grant =
-            privileges.RequestVerification(&active, user, host, database, &table.Name.O, "", mask);
+        let table_grant = privileges.RequestVerification(
+            &active,
+            user,
+            host,
+            database,
+            &table.Name.O,
+            "",
+            table_mask,
+        );
         let identities =
             std::iter::once(astersql_privilege_privileges::RoleIdentity::new(user, host))
                 .chain(privileges.FindAllUserEffectiveRoles(user, host, &active));

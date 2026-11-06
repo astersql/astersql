@@ -184,3 +184,28 @@ fn pg13_033_column_privilege_parser() {
             .is_some()
     );
 }
+
+#[test]
+fn pg13_037_constraint_utility_boundaries() {
+    assert_eq!(SessionQuery::parse("CREATE TABLE t(a integer,CONSTRAINT u UNIQUE NULLS NOT DISTINCT(a) DEFERRABLE INITIALLY DEFERRED)").err().unwrap().0,"0A000");
+    assert!(
+        SessionQuery::parse("CREATE TABLE t(a text DEFAULT 'nulls not distinct')")
+            .unwrap()
+            .is_none()
+    );
+    for verb in ["GRANT", "REVOKE"] {
+        let suffix = if verb == "GRANT" { "TO" } else { "FROM" };
+        assert!(
+            SessionQuery::parse(&format!("{verb} TRIGGER ON public.t {suffix} reader"))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            SessionQuery::parse(&format!("{verb} TRIGGER(a) ON public.t {suffix} reader"))
+                .err()
+                .unwrap()
+                .0,
+            "0A000"
+        );
+    }
+}

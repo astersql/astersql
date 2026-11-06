@@ -558,6 +558,14 @@ impl SessionQuery {
             return Ok(Some(Self::Sequence(command, name)));
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
+        if (word(tokens.first(), "create") || word(tokens.first(), "alter"))
+            && word(tokens.get(1), "table")
+            && tokens.windows(3).any(|w| {
+                word(w.first(), "nulls") && word(w.get(1), "not") && word(w.get(2), "distinct")
+            })
+        {
+            return Err(("0A000", "NULLS NOT DISTINCT keys are not supported".into()));
+        }
         use astersql_session::runtime::PgSchemaCommand;
         let identifier = |token: &Token| match token {
             Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
@@ -648,9 +656,16 @@ impl SessionQuery {
             return Err(("0A000", "unsupported PostgreSQL database policy".into()));
         }
         if (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
-            && ["select", "insert", "update", "references", "delete"]
-                .iter()
-                .any(|p| word(tokens.get(1), p))
+            && [
+                "select",
+                "insert",
+                "update",
+                "references",
+                "delete",
+                "trigger",
+            ]
+            .iter()
+            .any(|p| word(tokens.get(1), p))
         {
             use astersql_session::runtime::PgTablePrivilege;
             let privilege = if word(tokens.get(1), "insert") {
@@ -659,6 +674,8 @@ impl SessionQuery {
                 PgTablePrivilege::Update
             } else if word(tokens.get(1), "references") {
                 PgTablePrivilege::References
+            } else if word(tokens.get(1), "trigger") {
+                PgTablePrivilege::Trigger
             } else if word(tokens.get(1), "delete") {
                 PgTablePrivilege::Delete
             } else {
@@ -672,8 +689,13 @@ impl SessionQuery {
             } else {
                 (2, None)
             };
-            if column.is_some() && matches!(privilege, PgTablePrivilege::Delete) {
-                return Err(("0A000", "DELETE does not admit a column privilege".into()));
+            if column.is_some()
+                && matches!(
+                    privilege,
+                    PgTablePrivilege::Delete | PgTablePrivilege::Trigger
+                )
+            {
+                return Err(("0A000", "this privilege does not admit columns".into()));
             }
             if on == 5 && column.is_none() {
                 return Err(("42601", "expected a column identifier".into()));

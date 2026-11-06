@@ -2569,3 +2569,82 @@ fn pg13_036_sequence_configuration_preserves_watermark() {
         "pg13_036_sequence_configuration_preserves_watermark: pg_progression=1 native_alignment=1 signed_endpoint=1"
     );
 }
+
+#[test]
+fn pg13_037_rename_preserves_foreign_key_publication() {
+    use astersql_meta_model::{ColumnInfo, FKInfo, StatePublic, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    let mut column = ColumnInfo::New(1, NewCIStr("a"));
+    column.State = StatePublic;
+    let fk = |parent: &str| FKInfo {
+        ID: 1,
+        Name: NewCIStr("fk"),
+        RefSchema: NewCIStr("test"),
+        RefTable: NewCIStr(parent),
+        Cols: vec![NewCIStr("a")],
+        RefCols: vec![NewCIStr("a")],
+        State: StatePublic,
+        ..Default::default()
+    };
+    for (name, keys) in [
+        ("parent", vec![fk("parent")]),
+        ("child", vec![fk("parent")]),
+        ("unrelated", vec![]),
+    ] {
+        service
+            .create_table(
+                storage.as_ref(),
+                "test",
+                TableInfo {
+                    Name: NewCIStr(name),
+                    State: StatePublic,
+                    Columns: vec![column.clone()],
+                    ForeignKeys: keys,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+    }
+    column.Name = NewCIStr("b");
+    let change = service
+        .change_column(storage.as_ref(), "test", "parent", "a", column.clone())
+        .unwrap();
+    assert_eq!(change.old_tables.len(), 2);
+    assert_eq!(change.new_tables.len(), 2);
+    let parent = &change
+        .new_tables
+        .iter()
+        .find(|(_, t)| t.Name.L == "parent")
+        .unwrap()
+        .1;
+    let child = &change
+        .new_tables
+        .iter()
+        .find(|(_, t)| t.Name.L == "child")
+        .unwrap()
+        .1;
+    assert_eq!(parent.ForeignKeys[0].Cols[0].O, "b");
+    assert_eq!(parent.ForeignKeys[0].RefCols[0].O, "b");
+    assert_eq!(child.ForeignKeys[0].Cols[0].O, "a");
+    assert_eq!(child.ForeignKeys[0].RefCols[0].O, "b");
+    let before = child.ForeignKeys[0].ID;
+    column.Name = NewCIStr("c");
+    let change = service
+        .change_column(storage.as_ref(), "test", "child", "a", column)
+        .unwrap();
+    assert_eq!(change.new_tables.len(), 1);
+    let child = &change.new_tables[0].1;
+    assert_eq!(child.ForeignKeys[0].ID, before);
+    assert_eq!(child.ForeignKeys[0].Cols[0].O, "c");
+    assert_eq!(child.ForeignKeys[0].RefCols[0].O, "b");
+    println!(
+        "pg13_037 publication: scenarios=3 parent child self_reference ids_preserved unrelated_unchanged"
+    );
+}

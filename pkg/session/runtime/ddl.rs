@@ -4293,6 +4293,28 @@ impl ConcreteSession {
                     handled_additive_spec = true;
                     continue;
                 }
+                ast::AlterTableType::DropCheck
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL =>
+                {
+                    // The shared parser spells PG DROP CONSTRAINT as DropCheck.
+                    // Resolve only the existing FK path; other kinds stay gated.
+                    let name = spec
+                        .Constraint
+                        .as_ref()
+                        .map(|c| c.Name.as_str())
+                        .unwrap_or(&spec.Name);
+                    let (_, info) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| SessionError::new("unknown constraint table"))?;
+                    if !info.ForeignKeys.iter().any(|fk| fk.Name.O == name) {
+                        return Err(super::pg_schema::namespace_error(
+                            "0A000",
+                            "DROP CONSTRAINT kind is not supported",
+                        ));
+                    }
+                    return self.execute_drop_foreign_key(database, &statement.Table.Name.L, name);
+                }
                 ast::AlterTableType::DropForeignKey => {
                     return self.execute_drop_foreign_key(
                         database,

@@ -34,6 +34,19 @@ const TABLES_COLUMNS: &[&str] = &[
     "is_typed",
     "commit_action",
 ];
+const TABLE_CONSTRAINTS_COLUMNS: &[&str] = &[
+    "constraint_catalog",
+    "constraint_schema",
+    "constraint_name",
+    "table_catalog",
+    "table_schema",
+    "table_name",
+    "constraint_type",
+    "is_deferrable",
+    "initially_deferred",
+    "enforced",
+    "nulls_distinct",
+];
 const VIEWS_COLUMNS: &[&str] = &[
     "table_catalog",
     "table_schema",
@@ -208,7 +221,7 @@ pub(crate) struct CatalogQuery {
     cte_columns: CteColumns,
     parameter_oids: Vec<u32>,
     parameter_values: Vec<Expr>,
-    standard_view_id: Option<[i64; 4]>,
+    standard_view_id: Option<[i64; 5]>,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
@@ -327,6 +340,7 @@ impl CatalogQuery {
                     | "information_schema.tables"
                     | "information_schema.views"
                     | "information_schema.columns"
+                    | "information_schema.table_constraints"
             )
         }) {
             let standard = context
@@ -342,6 +356,7 @@ impl CatalogQuery {
                 standard.tables,
                 standard.views,
                 standard.columns,
+                standard.table_constraints,
             ]);
         }
         Ok(Some(query))
@@ -641,6 +656,7 @@ impl CatalogQuery {
                         | "information_schema.tables"
                         | "information_schema.views"
                         | "information_schema.columns"
+                        | "information_schema.table_constraints"
                         | "__pg_scalar"
                         | "pg_user"
                         | "pg_authid"
@@ -867,6 +883,22 @@ impl CatalogQuery {
                             "PostgreSQL column collation identity is unavailable".into(),
                         ));
                     }
+                    ("information_schema.table_constraints", column) => TABLE_CONSTRAINTS_COLUMNS
+                        .iter()
+                        .position(|n| *n == column)
+                        .map(|slot| {
+                            (
+                                slot,
+                                if slot < 6 {
+                                    crate::pg_result::CatalogColumnType::Name as u8
+                                } else if slot == 6 {
+                                    crate::pg_result::CatalogColumnType::Varchar as u8
+                                } else {
+                                    crate::pg_result::CatalogColumnType::YesOrNo as u8
+                                },
+                                0,
+                            )
+                        }),
                     ("information_schema.columns", column) => STANDARD_COLUMNS
                         .iter()
                         .find(|(name, _)| *name == column)
@@ -982,6 +1014,7 @@ impl CatalogQuery {
                     | "information_schema.tables"
                     | "information_schema.views"
                     | "information_schema.columns"
+                    | "information_schema.table_constraints"
             ) && qualifier.is_none_or(|q| q == r.alias)
         }) {
             return Err(("42703", format!("column {} does not exist", path.join("."))));
@@ -1596,6 +1629,7 @@ impl CatalogQuery {
                             | "information_schema.tables"
                             | "information_schema.views"
                             | "information_schema.columns"
+                            | "information_schema.table_constraints"
                     ) {
                         return None;
                     }
@@ -1604,6 +1638,7 @@ impl CatalogQuery {
                             "information_schema.tables" => 1,
                             "information_schema.views" => 2,
                             "information_schema.columns" => 3,
+                            "information_schema.table_constraints" => 4,
                             _ => 0,
                         }],
                         attribute_number: (slot % CATALOG_ROW_WIDTH + 1) as i16,
@@ -1861,6 +1896,119 @@ impl CatalogQuery {
     ) -> ConnResult<Vec<Vec<Value>>> {
         let mut rows = match name {
             "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
+            "information_schema.table_constraints" => {
+                let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
+                let facts = context
+                    .pg_namespace_facts()
+                    .transpose()?
+                    .ok_or(ConnError::UnsupportedCommand(0))?;
+                let local = context.pg_local_temporary_models()?;
+                let mut tables = snapshot
+                    .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                    .map_err(|e| ConnError::Session(e.to_string()))?;
+                tables.extend(
+                    local
+                        .iter()
+                        .cloned()
+                        .map(|m| astersql_infoschema::Table::from_model(m).0),
+                );
+                let constraints = index_constraint_rows_with_local(
+                    "pg_constraint",
+                    snapshot.as_ref(),
+                    database,
+                    cancel,
+                    &facts,
+                    local,
+                )?;
+                let mut rows = Vec::new();
+                let mut indexes = None;
+                for con in constraints {
+                    let Some(kind) = (match &con[2] {
+                        Value::Text(k) => match k.as_str() {
+                            "p" => Some("PRIMARY KEY"),
+                            "u" => Some("UNIQUE"),
+                            "f" => Some("FOREIGN KEY"),
+                            "c" | "n" => Some("CHECK"),
+                            _ => None,
+                        },
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let model = tables
+                        .iter()
+                        .filter_map(|t| t.model_meta.as_ref())
+                        .find(|m| {
+                            crate::pg_oid::table_oid(m.ID)
+                                .ok()
+                                .map(|id| Value::Signed(id as i64))
+                                == Some(con[3].clone())
+                        })
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    if !context.pg_standard_constraint_visible(database.into(), model.clone())? {
+                        continue;
+                    }
+                    if model.Partition.is_some() {
+                        return Err(ConnError::UnsupportedCommand(0));
+                    }
+                    let (schema, name) = match &model.PostgreSQLNamespace {
+                        Some((id, name)) => (
+                            facts
+                                .iter()
+                                .find(|f| f.id == *id)
+                                .ok_or(ConnError::UnsupportedCommand(0))?
+                                .name
+                                .as_str(),
+                            name.as_str(),
+                        ),
+                        None => ("public", model.Name.O.as_str()),
+                    };
+                    let yes_no = |v: &Value| match v {
+                        Value::Text(v) if v == "true" => Value::Text("YES".into()),
+                        Value::Text(v) if v == "false" => Value::Text("NO".into()),
+                        _ => Value::Null,
+                    };
+                    let nulls = if kind == "UNIQUE" {
+                        // The existing index provider records the supported NULL-distinct
+                        // key semantics. Missing/unsupported metadata remains unavailable.
+                        if indexes.is_none() {
+                            indexes = Some(index_constraint_rows_with_local(
+                                "pg_index",
+                                snapshot.as_ref(),
+                                database,
+                                cancel,
+                                &facts,
+                                context.pg_local_temporary_models()?,
+                            )?);
+                        }
+                        let indexes = indexes.as_ref().unwrap();
+                        indexes
+                            .iter()
+                            .find(|i| i[0] == con[6])
+                            .map_or(Value::Null, |i| match &i[6] {
+                                Value::Text(v) if v == "false" => Value::Text("YES".into()),
+                                Value::Text(v) if v == "true" => Value::Text("NO".into()),
+                                _ => Value::Null,
+                            })
+                    } else {
+                        Value::Null
+                    };
+                    rows.push(vec![
+                        Value::Text(database.into()),
+                        Value::Text(schema.into()),
+                        con[1].clone(),
+                        Value::Text(database.into()),
+                        Value::Text(schema.into()),
+                        Value::Text(name.into()),
+                        Value::Text(kind.into()),
+                        yes_no(&con[11]),
+                        yes_no(&con[12]),
+                        yes_no(&con[24]),
+                        nulls,
+                    ]);
+                }
+                rows
+            }
             "information_schema.columns" => {
                 let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
                 let facts = context
@@ -2021,6 +2169,7 @@ impl CatalogQuery {
                     (standard.tables, "tables"),
                     (standard.views, "views"),
                     (standard.columns, "columns"),
+                    (standard.table_constraints, "table_constraints"),
                 ] {
                     let mut row = vec![
                         Value::Text(database.into()),
@@ -2139,7 +2288,13 @@ impl CatalogQuery {
                         ]
                     })
                     .collect();
-                for name in ["schemata", "tables", "views", "columns"] {
+                for name in [
+                    "schemata",
+                    "tables",
+                    "views",
+                    "columns",
+                    "table_constraints",
+                ] {
                     rows.push(vec![
                         Value::Text(database.into()),
                         Value::Text("information_schema".into()),
@@ -2580,6 +2735,11 @@ impl CatalogQuery {
                     (standard.schemata, "schemata", SCHEMATA_COLUMNS),
                     (standard.tables, "tables", TABLES_COLUMNS),
                     (standard.views, "views", VIEWS_COLUMNS),
+                    (
+                        standard.table_constraints,
+                        "table_constraints",
+                        TABLE_CONSTRAINTS_COLUMNS,
+                    ),
                 ] {
                     let relation = crate::pg_oid::table_oid(view_id)?;
                     if name == "pg_class" {
@@ -2604,6 +2764,14 @@ impl CatalogQuery {
                                     standard.yes_or_no
                                 } else {
                                     standard.character_data
+                                }
+                            } else if view_id == standard.table_constraints {
+                                if slot < 6 {
+                                    standard.sql_identifier
+                                } else if slot == 6 {
+                                    standard.character_data
+                                } else {
+                                    standard.yes_or_no
                                 }
                             } else if view_id == standard.views {
                                 if slot < 3 {
@@ -2713,6 +2881,7 @@ impl CatalogQuery {
                                 standard.tables,
                                 standard.views,
                                 standard.columns,
+                                standard.table_constraints,
                             ]
                             .contains(&id)
                             {
@@ -2761,6 +2930,19 @@ impl CatalogQuery {
                 {
                     return Err(database_identity_unavailable(
                         "PostgreSQL relation kind or view insertability facts are unavailable",
+                    ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "information_schema.table_constraints")
+                    && row[base] != Value::Null
+                    && row[slot] == Value::Null
+                    && (matches!(local, 7..=9)
+                        || (local == 10 && row[base + 6] == Value::Text("UNIQUE".into())))
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL constraint execution state is unavailable",
                     ));
                 }
                 if self
@@ -6724,6 +6906,16 @@ pub(crate) fn index_constraint_rows(
     cancel: &CancellationToken,
     namespaces: &[astersql_session::runtime::PgNamespaceFact],
 ) -> ConnResult<Vec<Vec<Value>>> {
+    index_constraint_rows_with_local(relation, snapshot, database, cancel, namespaces, Vec::new())
+}
+fn index_constraint_rows_with_local(
+    relation: &str,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    cancel: &CancellationToken,
+    namespaces: &[astersql_session::runtime::PgNamespaceFact],
+    local: Vec<astersql_meta_model::TableInfo>,
+) -> ConnResult<Vec<Vec<Value>>> {
     use astersql_meta_model::StatePublic;
     check_catalog_cancel(cancel)?;
     let Some(schema) = snapshot
@@ -6733,9 +6925,14 @@ pub(crate) fn index_constraint_rows(
     else {
         return Ok(Vec::new());
     };
-    let tables = snapshot
+    let mut tables = snapshot
         .SchemaTableInfos(&schema.name)
         .map_err(|e| ConnError::Session(e.to_string()))?;
+    tables.extend(
+        local
+            .into_iter()
+            .map(|model| astersql_infoschema::Table::from_model(model).0),
+    );
     let namespace = i64::from(crate::pg_oid::namespace_oid(schema.id)?);
     let mut rows = Vec::new();
     let unsupported = || ConnError::UnsupportedCommand(0);
