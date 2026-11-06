@@ -128,3 +128,5 @@ has_column_privilege/has_any_column_privilege无FROM标量查询接既有Catalog
 ## 任务24：关系可见性与有效路径
 
 无FROM的pg_table_is_visible由identity_scalar归入既有CatalogQuery，Q及扩展Parse共用绑定和bool描述；带真实目录FROM的查询仍由目录provider求值。普通原生关系FROM上的表达式函数注册未在本任务扩展。
+
+任务25补充：identity_scalar同样识别无FROM的pg_type_is_visible，Q与扩展Parse共用既有CatalogQuery求值；带目录FROM入口不变。
