@@ -98,6 +98,11 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 有限ALTER TYPE/DOMAIN [schema.]name OWNER TO role沿PgSchemaCommand::TypeOwner进入现有session worker与共享KV元数据，不开放CREATE TYPE/DOMAIN。标识符复用已有词法器，完整保留引号名字；更新限已注册类型，管理员显式补齐旧owner，不从视图或当前reader推断。事务内按现有metadata DDL边界拒绝，避免独立事务写入逃逸ROLLBACK。
 
 
+## 三原语显式 owner（目录任务16）
+
+有限ALTER FUNCTION [pg_catalog.]name([pg_catalog.]oid) OWNER TO role沿已有SchemaUtility worker进入共享pg_function_owner，仅三条已有内省原语可以登记/转移。复用稳定角色OID和管理员检查，未知函数42883、未知角色42704、非管理员42501；其他签名或复合尾部0A000，不吞掉后续语句。命令标签ALTER FUNCTION，事务内沿既有DDL边界拒绝，不引入用户函数创建或任意函数执行子系统。新初始化逐函数owner由共享KV初始化事务持久登记，旧记录仅允许显式迁移，不由SQL目录读取回填。
+
+
 ## 2026-11-06 数据库授权事实与查询
 
 数据库GRANT/REVOKE适配在既有DatabaseUtility中识别CONNECT/TEMPORARY/CREATE、逗号列表、WITH GRANT OPTION及REVOKE GRANT OPTION FOR和RESTRICT/CASCADE；沿共享Access命令写入。PgSession暂存本次命令的01007/01006通知，执行前清空、响应时一次消费。

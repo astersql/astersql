@@ -158,3 +158,6 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 导出共享数据库权限字符串校验与pg_has_database_privilege，目录和正式普通函数消费同一实现。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+
+目录任务16导出PG_INTROSPECTION_FUNCTION_IDENTITIES供目录声明与共享owner更新共用；PgSchemaCommand::FunctionOwner沿现有schema命令worker运行。真正创建PgStandardSchema时在同一KV事务把bootstrap管理角色稳定OID写入逐函数function_owners；旧字段缺失不在启动/读取时补造。function_owner_overrides按数据库持久ID及三原语OID保存管理员显式迁移/转移的角色OID，原函数身份保持不变。

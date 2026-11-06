@@ -15970,6 +15970,476 @@ fn cat14_15() {
 }
 
 #[test]
+fn cat14_16() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_16_db").unwrap();
+    native.execute("CREATE DATABASE cat14_16_other").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_16_db")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_16_other")
+            .unwrap();
+        for name in ["cat14_16_reader", "cat14_16@owner'二", "cat14_16_group"] {
+            native
+                .execute(&format!(
+                    "DROP USER IF EXISTS '{}'@'%'",
+                    name.replace('\'', "''")
+                ))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_db = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    let connect = |user: &str| connect_db(user, "cat14_16_db");
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn values(body: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+        let mut offset = 2;
+        (0..count)
+            .map(|_| {
+                let len = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                offset += 4;
+                if len < 0 {
+                    None
+                } else {
+                    let v = body[offset..offset + len as usize].to_vec();
+                    offset += len as usize;
+                    Some(v)
+                }
+            })
+            .collect()
+    }
+    fn denied(s: &mut TcpStream, sql: &str, state: &str, status: u8) {
+        let r = query(s, sql);
+        assert!(
+            r.iter().any(|m| m.0 == b'E'
+                && m.1
+                    .windows(7)
+                    .any(|w| w == format!("C{state}\0").as_bytes())),
+            "{sql}: {r:?}"
+        );
+        assert!(data(&r).is_empty(), "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+    }
+    fn description(r: &[(u8, Vec<u8>)], types: &[(u32, i16)], binary: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            columns(t).iter().map(|c| c.1).collect::<Vec<_>>(),
+            types.iter().map(|c| c.0).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            columns(t).iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            vec!["oid", "proowner", "pg_get_userbyid"]
+        );
+        let mut offset = 2;
+        for (index, (oid, len)) in types.iter().enumerate() {
+            offset += t[offset..].iter().position(|b| *b == 0).unwrap() + 1;
+            let source = if index < 2 { 1255u32 } else { 0 };
+            let attr = [1i16, 4, 0][index];
+            assert_eq!(&t[offset..offset + 4], &source.to_be_bytes());
+            assert_eq!(&t[offset + 4..offset + 6], &attr.to_be_bytes());
+            assert_eq!(
+                u32::from_be_bytes(t[offset + 6..offset + 10].try_into().unwrap()),
+                *oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 10..offset + 12].try_into().unwrap()),
+                *len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[offset + 12..offset + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[offset + 16..offset + 18].try_into().unwrap()),
+                binary
+            );
+            offset += 18;
+        }
+    }
+
+    let mut admin = connect("root");
+    ok(&mut admin, "CREATE ROLE cat14_16_reader LOGIN");
+    ok(&mut admin, "CREATE ROLE \"cat14_16@owner'二\" NOLOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_16_group NOLOGIN");
+    let mut reader = connect("cat14_16_reader");
+    let mut other = connect("cat14_16_reader");
+    let sql = "SELECT oid,proowner,pg_get_userbyid(proowner) FROM pg_proc WHERE proname='pg_get_function_arguments'";
+    // A genuinely new standard record durably registers the bootstrap owner.
+    let names = "SELECT oid,proname FROM pg_proc WHERE proname='pg_get_function_arguments'";
+    let original_identity = values(&data(&ok(&mut reader, names))[0])[0].clone();
+    let initial = ok(&mut reader, sql);
+    description(&initial, &[(26, 4), (26, 4), (19, 64)], 0);
+    let identity = values(&data(&initial)[0])[0].clone().unwrap();
+    assert_eq!(Some(identity.clone()), original_identity);
+    assert_eq!(
+        values(&data(&initial)[0])[1],
+        Some(
+            native
+                .pg_database_role_id("root")
+                .unwrap()
+                .to_string()
+                .into_bytes()
+        )
+    );
+    assert_eq!(values(&data(&initial)[0])[2], Some(b"root".to_vec()));
+    for name in ["pg_get_function_result", "pg_get_function_sqlbody"] {
+        let r = ok(
+            &mut other,
+            &format!(
+                "SELECT proowner,pg_get_userbyid(proowner) FROM pg_proc WHERE proname='{name}'"
+            ),
+        );
+        assert_eq!(
+            values(&data(&r)[0]),
+            vec![
+                Some(
+                    native
+                        .pg_database_role_id("root")
+                        .unwrap()
+                        .to_string()
+                        .into_bytes()
+                ),
+                Some(b"root".to_vec()),
+            ]
+        );
+    }
+    // Simulate an old record without the new attribute; startup must not infer it.
+    let context = astersql_kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                let original = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                document
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("function_owner_overrides");
+                document.as_object_mut().unwrap().remove("function_owners");
+                tx.Set(key, serde_json::to_vec(&document).unwrap())
+            })
+        })
+        .unwrap();
+    native.pg_initialize_standard_schema().unwrap();
+    let mut reconnected = connect("cat14_16_reader");
+    denied(&mut reconnected, sql, "0A000", b'I');
+    let names = "SELECT oid,proname FROM pg_proc WHERE proname='pg_get_function_arguments'";
+    assert_eq!(
+        values(&data(&ok(&mut reconnected, names))[0])[0],
+        Some(identity.clone())
+    );
+    ok(
+        &mut admin,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO root",
+    );
+    assert_eq!(data(&ok(&mut reconnected, sql)).len(), 1);
+    send(&mut reconnected, b'X', b"");
+    drop(reconnected);
+    denied(
+        &mut reader,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO cat14_16_reader",
+        "42501",
+        b'I',
+    );
+    let mut foreign_admin = connect_db("root", "cat14_16_other");
+    let mut foreign_reader = connect_db("cat14_16_reader", "cat14_16_other");
+    ok(
+        &mut foreign_admin,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO root",
+    );
+    let foreign_initial = data(&ok(&mut foreign_reader, sql));
+    let mut parse = b"function_owner_stmt\0".to_vec();
+    parse.extend(b"SELECT oid,proowner,pg_get_userbyid(proowner) FROM pg_proc WHERE proname=$1\0");
+    parse.extend(1i16.to_be_bytes());
+    parse.extend(25u32.to_be_bytes());
+    send(&mut reader, b'P', &parse);
+    send(&mut reader, b'D', b"Sfunction_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+    for name in ["cat14_16_group", "cat14_16@owner'二"] {
+        let role = name.replace('\'', "''");
+        let quoted = name.replace('"', "\"\"");
+        ok(
+            &mut admin,
+            &format!(
+                "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO \"{quoted}\""
+            ),
+        );
+        let owner = native.pg_database_role_id(name).unwrap();
+        domain.reload().unwrap();
+        let expected = vec![
+            Some(identity.clone()),
+            Some(owner.to_string().into_bytes()),
+            Some(name.as_bytes().to_vec()),
+        ];
+        for c in [&mut reader, &mut other] {
+            assert_eq!(values(&data(&ok(c, sql))[0]), expected);
+        }
+        assert_eq!(
+            data(&ok(&mut foreign_reader, sql)),
+            foreign_initial,
+            "function owner must be scoped to its database"
+        );
+        let joined = ok(
+            &mut reader,
+            "SELECT t.proowner,r.oid,r.rolname FROM pg_proc t JOIN pg_roles r ON r.oid=t.proowner WHERE t.proname='pg_get_function_arguments'",
+        );
+        assert_eq!(
+            values(&data(&joined)[0]),
+            vec![
+                Some(owner.to_string().into_bytes()),
+                Some(owner.to_string().into_bytes()),
+                Some(name.as_bytes().to_vec())
+            ]
+        );
+        assert_eq!(
+            data(&ok(
+                &mut reader,
+                &format!("SELECT oid FROM pg_roles WHERE rolname='{role}'")
+            ))
+            .len(),
+            1
+        );
+        for binary in [0i16, 1] {
+            for param in [
+                Some("pg_get_function_arguments"),
+                None,
+                Some("cat14_16_absent"),
+            ] {
+                let mut bind = b"function_owner_portal\0function_owner_stmt\0".to_vec();
+                bind.extend(0i16.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(param.map_or(-1, |p| p.len() as i32).to_be_bytes());
+                if let Some(p) = param {
+                    bind.extend(p.as_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(binary.to_be_bytes());
+                send(&mut reader, b'B', &bind);
+                send(&mut reader, b'D', b"Pfunction_owner_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"function_owner_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+                description(&r, &[(26, 4), (26, 4), (19, 64)], binary);
+                if param.is_some_and(|p| p == "pg_get_function_arguments") {
+                    let mut expected = expected.clone();
+                    if binary == 1 {
+                        expected[0] = Some(
+                            std::str::from_utf8(&identity)
+                                .unwrap()
+                                .parse::<u32>()
+                                .unwrap()
+                                .to_be_bytes()
+                                .to_vec(),
+                        );
+                        expected[1] = Some((owner as u32).to_be_bytes().to_vec());
+                    }
+                    assert_eq!(values(&data(&r)[0]), expected);
+                } else {
+                    assert!(data(&r).is_empty());
+                }
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                send(&mut reader, b'C', b"Pfunction_owner_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+    }
+    let last_owner = data(&ok(&mut reader, sql));
+    denied(
+        &mut admin,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO cat14_16_absent",
+        "42704",
+        b'I',
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), last_owner);
+    denied(
+        &mut admin,
+        "ALTER FUNCTION pg_catalog.cat14_16_absent(oid) OWNER TO root",
+        "42883",
+        b'I',
+    );
+    denied(
+        &mut admin,
+        "ALTER FUNCTION public.pg_get_function_arguments(oid) OWNER TO root",
+        "42883",
+        b'I',
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), last_owner);
+    denied(
+        &mut reader,
+        "SELECT proowner FROM pg_proc WHERE proname='pg_get_function_result'",
+        "0A000",
+        b'I',
+    );
+    ok(&mut reader, "BEGIN");
+    denied(
+        &mut reader,
+        "SELECT proowner FROM pg_proc WHERE proname='pg_get_function_result'",
+        "0A000",
+        b'E',
+    );
+    denied(&mut reader, sql, "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    assert_eq!(data(&ok(&mut reader, sql)).len(), 1);
+    let before = data(&ok(&mut reader, sql));
+    ok(
+        &mut admin,
+        "GRANT cat14_16_group TO cat14_16_reader WITH INHERIT FALSE",
+    );
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(&mut admin, "REVOKE cat14_16_group FROM cat14_16_reader");
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    ok(&mut admin, "BEGIN");
+    denied(
+        &mut admin,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO root",
+        "0A000",
+        b'E',
+    );
+    ok(&mut admin, "ROLLBACK");
+    assert_eq!(data(&ok(&mut reader, sql)), before);
+    // An unrelated standard view owner is unchanged by function ownership.
+    let view = ok(
+        &mut reader,
+        "SELECT relowner FROM pg_class WHERE relname='schemata'",
+    );
+    assert_eq!(
+        values(&data(&view)[0])[0],
+        Some(
+            native
+                .pg_database_role_id("root")
+                .unwrap()
+                .to_string()
+                .into_bytes()
+        )
+    );
+    denied(
+        &mut reader,
+        "SELECT t.proowner FROM pg_proc t WHERE t.proname='pg_get_function_arguments' OR t.proname='pg_get_function_result'",
+        "0A000",
+        b'I',
+    );
+    let outer = ok(
+        &mut reader,
+        "SELECT r.proowner FROM pg_proc t LEFT JOIN pg_proc r ON r.proname='cat14_16_absent' WHERE t.proname='pg_get_function_arguments'",
+    );
+    assert_eq!(values(&data(&outer)[0]), vec![None]);
+    // Every registered primitive has an independent durable owner, including
+    // the NULL-body introspector; no row is omitted to avoid missing facts.
+    for name in ["pg_get_function_result", "pg_get_function_sqlbody"] {
+        let identity_query = format!("SELECT oid,proname FROM pg_proc WHERE proname='{name}'");
+        let before = data(&ok(&mut reader, &identity_query));
+        ok(
+            &mut admin,
+            &format!("ALTER FUNCTION pg_catalog.{name}(oid) OWNER TO cat14_16_group"),
+        );
+        assert_eq!(data(&ok(&mut other, &identity_query)), before);
+        let r = ok(
+            &mut other,
+            &format!(
+                "SELECT proowner,pg_get_userbyid(proowner) FROM pg_proc WHERE proname='{name}'"
+            ),
+        );
+        assert_eq!(
+            values(&data(&r)[0]),
+            vec![
+                Some(
+                    native
+                        .pg_database_role_id("cat14_16_group")
+                        .unwrap()
+                        .to_string()
+                        .into_bytes()
+                ),
+                Some(b"cat14_16_group".to_vec()),
+            ]
+        );
+    }
+    let restored = ok(
+        &mut admin,
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO root",
+    );
+    assert!(
+        restored
+            .iter()
+            .any(|m| m.0 == b'C' && m.1 == b"ALTER FUNCTION\0")
+    );
+    send(&mut reader, b'C', b"Sfunction_owner_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    for c in [
+        &mut reader,
+        &mut other,
+        &mut admin,
+        &mut foreign_reader,
+        &mut foreign_admin,
+    ] {
+        send(c, b'X', b"");
+    }
+    drop((reader, other, admin, foreign_reader, foreign_admin));
+    drop(_cleanup);
+    println!(
+        "cat14_16: persistent_function_owner=1 reader_connections=3 database_isolation=1 transfers=2 stable_oid=1 role_join=2 extended_text_binary=12 legacy_owner=1 recovery=1 cleanup=1"
+    );
+}
+
+#[test]
 fn cat14_17() {
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     native.execute("CREATE DATABASE cat14_17_db").unwrap();

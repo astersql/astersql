@@ -2058,7 +2058,7 @@ impl CatalogQuery {
         let mut rows = (*providers[0]).clone();
         if matches!(
             self.select.from.name.as_str(),
-            "pg_database" | "pg_namespace" | "pg_class" | "pg_type"
+            "pg_database" | "pg_namespace" | "pg_class" | "pg_type" | "pg_proc"
         ) && self.select.from.cte_id.is_none()
             && !self.select.joins.is_empty()
         {
@@ -3116,7 +3116,40 @@ impl CatalogQuery {
                 database,
                 cancel,
             )?,
-            "pg_proc" => function_rows(),
+            "pg_proc" => {
+                let owners = context
+                    .pg_namespace_facts()
+                    .transpose()?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find_map(|fact| fact.standard)
+                    .map(|standard| {
+                        let mut owners = standard.function_owners;
+                        if let Some(overrides) = snapshot
+                            .and_then(|snapshot| {
+                                snapshot.SchemaByName(&astersql_infoschema::CiString::new(database))
+                            })
+                            .and_then(|database| {
+                                standard.function_owner_overrides.get(&database.id)
+                            })
+                        {
+                            owners.extend(overrides);
+                        }
+                        owners
+                    })
+                    .unwrap_or_default();
+                function_rows()
+                    .into_iter()
+                    .map(|mut row| {
+                        if let Value::Signed(oid) = row[0] {
+                            if let Some(owner) = owners.get(&oid) {
+                                row[19] = Value::Signed(*owner);
+                            }
+                        }
+                        row
+                    })
+                    .collect()
+            }
             // Native physical partitions are not independent SQL relations in
             // this adapter. There are no PG inheritance edges to those objects.
             // PostgreSQL extension objects (foreign wrappers, custom operators,
@@ -3689,6 +3722,23 @@ impl CatalogQuery {
                     return Err(database_identity_unavailable(
                         "PostgreSQL database owner or policy requires explicit administrator migration",
                     ));
+                }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_proc")
+                    && slot % CATALOG_ROW_WIDTH == 19
+                    && row[slot - 19] != Value::Null
+                {
+                    match row[slot] {
+                        Value::Signed(oid)
+                            if execution.role_facts()?.iter().any(|role| role.oid == oid) => {}
+                        _ => {
+                            return Err(database_identity_unavailable(
+                                "PostgreSQL function owner identity is unavailable",
+                            ));
+                        }
+                    }
                 }
                 if self
                     .relations()
@@ -5616,8 +5666,8 @@ struct IntrospectionFunction {
 }
 const FUNCTION_INTROSPECTION: &[IntrospectionFunction] = &[
     IntrospectionFunction {
-        oid: 16000,
-        name: "pg_get_function_arguments",
+        oid: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[0].0,
+        name: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[0].1,
         namespace: 11,
         input_types: &[26],
         result_type: 25,
@@ -5626,8 +5676,8 @@ const FUNCTION_INTROSPECTION: &[IntrospectionFunction] = &[
         result: "text",
     },
     IntrospectionFunction {
-        oid: 16001,
-        name: "pg_get_function_result",
+        oid: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[1].0,
+        name: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[1].1,
         namespace: 11,
         input_types: &[26],
         result_type: 25,
@@ -5636,8 +5686,8 @@ const FUNCTION_INTROSPECTION: &[IntrospectionFunction] = &[
         result: "text",
     },
     IntrospectionFunction {
-        oid: 16002,
-        name: "pg_get_function_sqlbody",
+        oid: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[2].0,
+        name: astersql_session::runtime::PG_INTROSPECTION_FUNCTION_IDENTITIES[2].1,
         namespace: 11,
         input_types: &[26],
         result_type: 25,
@@ -5677,7 +5727,7 @@ fn function_rows() -> Vec<Vec<Value>> {
                 Value::Text("false".into()),         // invoker security
                 Value::Null,                         // no per-function configuration
                 Value::Null,                         // no native PostgreSQL cost model
-                Value::Null,                         // no PostgreSQL owner
+                Value::Null,                         // owner attached from durable facts
                 Value::Null,                         // no native PG row estimate
                 Value::Text("false".into()),         // not leakproof
                 Value::Text("u".into()),             // no parallel execution contract
@@ -5832,7 +5882,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         // No native cost model or MVCC identity exists for adapter primitives.
         // Reject at binding, including queries that would otherwise return no rows.
         ("pg_proc", "procost" | "prorows" | "xmin") => return None,
-        ("pg_proc", "proowner") => (19, 8),
+        ("pg_proc", "proowner") => (19, oid),
         ("pg_proc", "proleakproof") => (21, 1),
         ("pg_proc", "proparallel") => (22, internal_char),
         ("pg_proc", "oid") => (0, oid),

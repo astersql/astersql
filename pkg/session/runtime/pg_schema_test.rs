@@ -1672,3 +1672,62 @@ fn cat14_15_historical_type_owner_is_not_backfilled() {
     );
     domain.close();
 }
+
+#[test]
+fn cat14_16_historical_function_owner_is_not_backfilled() {
+    let (domain, pg) = CreateAnalyzeSession().unwrap();
+    pg.pg_initialize_standard_schema().unwrap();
+    let standard = || {
+        pg.pg_namespace_facts()
+            .unwrap()
+            .into_iter()
+            .find_map(|fact| fact.standard)
+            .unwrap()
+    };
+    let before = standard();
+    let root = pg.pg_database_role_id("root").unwrap();
+    assert_eq!(before.function_owners.len(), 3);
+    for (oid, _) in PG_INTROSPECTION_FUNCTION_IDENTITIES {
+        assert_eq!(before.function_owners[oid], root);
+    }
+    let context = kv::Context::default();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                let bytes = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                // Verify that initial ownership was actually persisted, not derived
+                // from schema/view ownership when the reader asked for it.
+                assert_eq!(value["function_owners"]["16000"].as_i64(), Some(root));
+                value.as_object_mut().unwrap().remove("function_owners");
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("function_owner_overrides");
+                tx.Set(key, serde_json::to_vec(&value).unwrap())
+            })
+        })
+        .unwrap();
+    pg.pg_initialize_standard_schema().unwrap();
+    assert!(standard().function_owners.is_empty());
+    assert!(standard().function_owner_overrides.is_empty());
+    pg.pg_schema_command(&PgSchemaCommand::FunctionOwner {
+        schema: Some("pg_catalog".into()),
+        name: "pg_get_function_arguments".into(),
+        owner: "root".into(),
+    })
+    .unwrap();
+    pg.pg_initialize_standard_schema().unwrap();
+    let after = standard();
+    assert!(after.function_owners.is_empty());
+    let overrides = after.function_owner_overrides.values().next().unwrap();
+    assert_eq!(overrides.len(), 1);
+    assert_eq!(overrides[&16000], root);
+    assert_eq!(
+        (after.sql_identifier, after.owner),
+        (before.sql_identifier, before.owner)
+    );
+    domain.close();
+}

@@ -285,3 +285,33 @@ fn cat14_15_type_owner_parser() {
         )))
     ));
 }
+
+#[test]
+fn cat14_16_function_owner_parser() {
+    use astersql_session::runtime::PgSchemaCommand;
+    for sql in [
+        "ALTER FUNCTION pg_catalog.pg_get_function_arguments(oid) OWNER TO \"cat14_16@owner'二\"",
+        "ALTER FUNCTION pg_get_function_arguments(pg_catalog.oid) OWNER TO \"cat14_16@owner'二\";",
+    ] {
+        match SessionQuery::parse(sql).unwrap().unwrap() {
+            SessionQuery::SchemaUtility(PgSchemaCommand::FunctionOwner {
+                schema,
+                name,
+                owner,
+            }) => {
+                assert!(schema.is_none() || schema.as_deref() == Some("pg_catalog"));
+                assert_eq!(name, "pg_get_function_arguments");
+                assert_eq!(owner, "cat14_16@owner'二");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+    for sql in [
+        "ALTER FUNCTION pg_get_function_arguments(text) OWNER TO root",
+        "ALTER FUNCTION pg_get_function_arguments(oid,oid) OWNER TO root",
+        "ALTER FUNCTION pg_get_function_arguments(oid) OWNER TO root; SELECT 1",
+        "ALTER FUNCTION pg_get_function_arguments(oid) OWNER TO root trailing",
+    ] {
+        assert!(SessionQuery::parse(sql).is_err(), "{sql}");
+    }
+}

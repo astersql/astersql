@@ -33,6 +33,11 @@ impl PgTablePrivilege {
 
 #[derive(Clone, Debug)]
 pub enum PgSchemaCommand {
+    FunctionOwner {
+        schema: Option<String>,
+        name: String,
+        owner: String,
+    },
     Create(String),
     Drop(String),
     Rename {
@@ -234,7 +239,8 @@ impl ConcreteSession {
                         match command {
                             PgSchemaCommand::RelationPrivilege { .. }
                             | PgSchemaCommand::RelationOwner { .. }
-                            | PgSchemaCommand::TypeOwner { .. } => {
+                            | PgSchemaCommand::TypeOwner { .. }
+                            | PgSchemaCommand::FunctionOwner { .. } => {
                                 unreachable!("handled before namespace transaction")
                             }
                             PgSchemaCommand::Create(name) => {
@@ -447,6 +453,14 @@ impl ConcreteSession {
     }
 
     pub fn pg_schema_command(&self, command: &PgSchemaCommand) -> SessionResult<()> {
+        if let PgSchemaCommand::FunctionOwner {
+            schema,
+            name,
+            owner,
+        } = command
+        {
+            return self.pg_function_owner(schema.as_deref(), name, owner);
+        }
         if let PgSchemaCommand::TypeOwner {
             schema,
             name,
@@ -908,6 +922,14 @@ pub struct PgStandardSchema {
     pub builtin_type_owners: BTreeMap<i64, i64>,
     #[serde(default)]
     pub builtin_type_owner_overrides: BTreeMap<i64, BTreeMap<i64, i64>>,
+    /// Per-function ownership registered in the initial standard-object transaction.
+    /// A missing historical field stays unknown; startup never backfills it.
+    #[serde(default)]
+    pub function_owners: BTreeMap<i64, i64>,
+    /// Explicit database-local ownership of the registered adapter primitives.
+    /// Historical missing entries carry no ownership assertion.
+    #[serde(default)]
+    pub function_owner_overrides: BTreeMap<i64, BTreeMap<i64, i64>>,
     /// Explicit per-type ownership; absent historical entries remain unknown.
     #[serde(default)]
     pub type_owners: BTreeMap<i64, i64>,
@@ -986,6 +1008,13 @@ impl ConcreteSession {
                                 builtin_type_owners: BTreeMap::new(),
                                 builtin_type_owner_overrides: BTreeMap::new(),
                                 owner: owner.expect("initialization has an owner"),
+                                function_owners: PG_INTROSPECTION_FUNCTION_IDENTITIES
+                                    .iter()
+                                    .map(|(id, _)| {
+                                        (*id, owner.expect("initialization has an owner"))
+                                    })
+                                    .collect(),
+                                function_owner_overrides: BTreeMap::new(),
                                 type_owners: BTreeMap::new(),
                                 type_owner_overrides: BTreeMap::new(),
                                 namespace: allocate_namespace_id(txn, &ctx)?,
@@ -1499,5 +1528,68 @@ impl ConcreteSession {
                 })
             })
             .map_err(|e| session_error("persist PostgreSQL type owner", e))
+    }
+}
+
+/// Identities of the three registered PG adapter primitives, not user routines.
+/// Catalog declarations and explicit ownership updates share this same registry.
+pub const PG_INTROSPECTION_FUNCTION_IDENTITIES: &[(i64, &str)] = &[
+    (16000, "pg_get_function_arguments"),
+    (16001, "pg_get_function_result"),
+    (16002, "pg_get_function_sqlbody"),
+];
+
+impl ConcreteSession {
+    // Reuse the existing standard-object KV record and administrative DDL boundary.
+    // This explicitly registers/transfers a fact; catalog reads never migrate it.
+    fn pg_function_owner(
+        &self,
+        schema: Option<&str>,
+        name: &str,
+        owner: &str,
+    ) -> SessionResult<()> {
+        let _guard = PG_NAMESPACE_DDL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.pg_schema_identity() != "root" {
+            return Err(namespace_error(
+                "42501",
+                "permission denied to change function owner",
+            ));
+        }
+        let id = PG_INTROSPECTION_FUNCTION_IDENTITIES
+            .iter()
+            .find(|(_, registered)| *registered == name)
+            .filter(|_| schema.is_none_or(|schema| schema == "pg_catalog"))
+            .map(|(id, _)| *id)
+            .ok_or_else(|| namespace_error("42883", "function does not exist"))?;
+        let owner = self.pg_database_role_id(owner)?;
+        let database = self
+            .domain
+            .info_schema()
+            .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
+            .ok_or_else(|| namespace_error("3D000", "no current database selected"))?;
+        let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        self.domain
+            .storage_handle()
+            .with_storage(|store| {
+                kv::RunInNewTxn(&context, store, true, |_, txn| {
+                    let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                    let value = txn.Get(&context, key.clone(), &[])?;
+                    let mut standard: PgStandardSchema = serde_json::from_slice(&value.Value)
+                        .map_err(|e| kv::errors::New(e.to_string()))?;
+                    standard
+                        .function_owner_overrides
+                        .entry(database.id)
+                        .or_default()
+                        .insert(id, owner);
+                    txn.Set(
+                        key,
+                        serde_json::to_vec(&standard)
+                            .map_err(|e| kv::errors::New(e.to_string()))?,
+                    )
+                })
+            })
+            .map_err(|e| session_error("persist PostgreSQL function owner", e))
     }
 }

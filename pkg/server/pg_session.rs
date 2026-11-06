@@ -172,6 +172,7 @@ impl PgSession {
                     | "DROP SCHEMA"
                     | "GRANT"
                     | "REVOKE"
+                    | "ALTER FUNCTION"
                     | "ALTER SCHEMA"
                     | "ALTER TABLE"
                     | "ALTER TYPE"
@@ -520,6 +521,9 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::Rename { .. }
                 | astersql_session::runtime::PgSchemaCommand::Owner { .. } => "ALTER SCHEMA",
                 astersql_session::runtime::PgSchemaCommand::RelationOwner { .. } => "ALTER TABLE",
+                astersql_session::runtime::PgSchemaCommand::FunctionOwner { .. } => {
+                    "ALTER FUNCTION"
+                }
                 astersql_session::runtime::PgSchemaCommand::TypeOwner { domain, .. } => {
                     if *domain {
                         "ALTER DOMAIN"
@@ -774,6 +778,52 @@ impl SessionQuery {
                 PgRoleCommand::Create { name, can_login }
             };
             return Ok(Some(Self::RoleUtility(command)));
+        }
+        if word(tokens.first(), "alter") && word(tokens.get(1), "function") {
+            let mut index = 2;
+            let first = tokens.get(index).and_then(&identifier);
+            index += 1;
+            let (schema, name) = if tokens.get(index) == Some(&Token::Symbol('.')) {
+                index += 1;
+                let name = tokens.get(index).and_then(&identifier);
+                index += 1;
+                (first, name)
+            } else {
+                (None, first)
+            };
+            if tokens.get(index) == Some(&Token::Symbol('(')) {
+                index += 1;
+                // All three accepted primitives have exactly one oid input.
+                let qualified = tokens.get(index).and_then(&identifier).as_deref()
+                    == Some("pg_catalog")
+                    && tokens.get(index + 1) == Some(&Token::Symbol('.'));
+                if qualified {
+                    index += 2;
+                }
+                let oid = tokens.get(index).and_then(&identifier).as_deref() == Some("oid");
+                index += 1;
+                if oid
+                    && tokens.get(index) == Some(&Token::Symbol(')'))
+                    && word(tokens.get(index + 1), "owner")
+                    && word(tokens.get(index + 2), "to")
+                    && tokens.len() == index + 4
+                {
+                    if let (Some(name), Some(owner)) =
+                        (name, tokens.get(index + 3).and_then(&identifier))
+                    {
+                        return Ok(Some(Self::SchemaUtility(PgSchemaCommand::FunctionOwner {
+                            schema,
+                            name,
+                            owner,
+                        })));
+                    }
+                }
+            }
+            // Never consume a compound statement or another function signature.
+            return Err((
+                "0A000",
+                "unsupported ALTER FUNCTION signature or operation".into(),
+            ));
         }
         if word(tokens.first(), "alter")
             && (word(tokens.get(1), "table")
