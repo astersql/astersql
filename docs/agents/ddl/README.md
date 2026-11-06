@@ -386,3 +386,17 @@ introducing native display widths, so existing bound views remain valid.
 Focused tests are `pg13_035_contract`,
 `pg13_035_differential`, and
 `pg13_035_computed_view_keeps_bound_integer_projection`.
+
+## 2026-11-06 Rust PostgreSQL referential constraint metadata
+
+`information_schema.referential_constraints` consumes the shared FK's supporting
+index identity and referenced relation identity to find the parent primary/unique
+constraint. An independent unique index leaves all three parent constraint fields
+NULL. The existing authenticated constraint visibility check also applies here.
+
+The existing foreign key engine rejects temporary tables. The PG adapter now
+rejects temporary table FK declarations with `0A000` before name binding or
+metadata publication, preserving that execution boundary. Explicit FK deferrability
+also returns `0A000` before the native parser instead of a syntax error. It does not register
+synthetic temporary FK rows. Focused tests are `pg13_039_contract`,
+`pg13_039_differential`, and `pg13_039_referential_constraints_upgrade_is_explicit`.

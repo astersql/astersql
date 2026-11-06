@@ -1554,6 +1554,29 @@ pub(crate) fn adapt(
     // Gate valid PG partition DDL before the native parser can misdiagnose it
     // as malformed MySQL partition syntax or create partial metadata.
     let parts = tokens(sql)?;
+    if parts.first().is_some_and(|t| t.word("create"))
+        && parts
+            .iter()
+            .take(4)
+            .any(|t| t.word("temp") || t.word("temporary"))
+        && parts.iter().take(4).any(|t| t.word("table"))
+        && parts.iter().any(|t| t.word("references"))
+    {
+        return Err(error(
+            "0A000",
+            "foreign keys on temporary tables are unsupported",
+        ));
+    }
+    if parts.first().is_some_and(|t| t.word("create"))
+        && parts.iter().take(4).any(|t| t.word("table"))
+        && parts.iter().any(|t| t.word("references"))
+        && parts.iter().any(|t| t.word("deferrable"))
+    {
+        return Err(error(
+            "0A000",
+            "explicit foreign key deferrability is unsupported",
+        ));
+    }
     if parts
         .first()
         .is_some_and(|t| t.word("create") || t.word("alter"))
