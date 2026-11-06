@@ -23,6 +23,33 @@ pub(super) fn default_table_acl(owner: i64) -> PostgreSQLRelationAcl {
         }],
     }
 }
+pub(super) fn default_sequence_acl(owner: i64) -> PostgreSQLRelationAcl {
+    let mut acl = default_table_acl(owner);
+    acl.grants[0].privileges = 7;
+    acl
+}
+pub fn pg_sequence_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
+    text.split(',')
+        .map(|item| {
+            let item = item.trim().to_ascii_uppercase();
+            let (base, option) = item
+                .strip_suffix(" WITH GRANT OPTION")
+                .map_or((item.as_str(), false), |s| (s, true));
+            let bit = match base {
+                "USAGE" => 1,
+                "SELECT" => 2,
+                "UPDATE" => 4,
+                _ => {
+                    return Err(namespace_error(
+                        "22023",
+                        "unrecognized sequence privilege type",
+                    ));
+                }
+            };
+            Ok((bit, option))
+        })
+        .collect()
+}
 pub fn pg_table_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
     text.split(',')
         .map(|item| {
@@ -63,9 +90,13 @@ pub fn pg_table_acl_fact(table: &TableInfo, roles: &[PgRoleFact]) -> PgDatabaseF
             .as_ref()
             .filter(|a| {
                 !a.default_acl
-                    || table
-                        .PostgreSQLOwner
-                        .is_some_and(|owner| **a == default_table_acl(owner))
+                    || table.PostgreSQLOwner.is_some_and(|owner| {
+                        **a == if table.Sequence.is_some() {
+                            default_sequence_acl(owner)
+                        } else {
+                            default_table_acl(owner)
+                        }
+                    })
             })
             .map(|a| a.grants.clone()),
         acl_default: table.PostgreSQLAcl.as_ref().is_some_and(|a| a.default_acl),
@@ -79,6 +110,9 @@ pub fn pg_table_acl_text(table: &TableInfo, roles: &[PgRoleFact]) -> SessionResu
     let fact = pg_table_acl_fact(table, roles);
     if fact.owner.is_none() {
         return Err(namespace_error("0A000", "table owner is unavailable"));
+    }
+    if table.Sequence.is_some() {
+        return fact.acl_text_with_modes(&[(2, 'r'), (4, 'w'), (1, 'U')]);
     }
     fact.acl_text_with_modes(&[
         (1, 'a'),
@@ -109,6 +143,29 @@ pub fn pg_has_table_privilege(
     actor: &str,
     values: &[Option<String>],
     oids: &[bool],
+) -> SessionResult<Option<bool>> {
+    pg_has_relation_privilege(tables, path, namespaces, roles, actor, values, oids, false)
+}
+pub fn pg_has_sequence_privilege(
+    tables: &[(String, String, TableInfo)],
+    path: &[String],
+    namespaces: &[PgNamespaceFact],
+    roles: &[PgRoleFact],
+    actor: &str,
+    values: &[Option<String>],
+    oids: &[bool],
+) -> SessionResult<Option<bool>> {
+    pg_has_relation_privilege(tables, path, namespaces, roles, actor, values, oids, true)
+}
+fn pg_has_relation_privilege(
+    tables: &[(String, String, TableInfo)],
+    path: &[String],
+    namespaces: &[PgNamespaceFact],
+    roles: &[PgRoleFact],
+    actor: &str,
+    values: &[Option<String>],
+    oids: &[bool],
+    sequence: bool,
 ) -> SessionResult<Option<bool>> {
     if values.iter().any(Option::is_none) {
         return Ok(None);
@@ -172,20 +229,28 @@ pub fn pg_has_table_privilege(
         };
         Some(found.ok_or_else(|| namespace_error("42P01", "relation does not exist"))?)
     };
-    let modes = pg_table_privileges(values[offset + 1].as_deref().unwrap())?;
+    let modes = if sequence {
+        pg_sequence_privileges(values[offset + 1].as_deref().unwrap())?
+    } else {
+        pg_table_privileges(values[offset + 1].as_deref().unwrap())?
+    };
     let Some((_, _, table)) = table else {
         return Ok(None);
     };
-    if table.Sequence.is_some() {
+    if !sequence && table.Sequence.is_some() {
         return Err(namespace_error(
             "0A000",
-            "sequence table privilege facts are unavailable",
+            "use sequence privilege queries for sequences",
         ));
     }
+    if sequence && table.Sequence.is_none() {
+        return Err(namespace_error("42809", "object is not a sequence"));
+    }
+    let mask = if table.Sequence.is_some() { 7 } else { u8::MAX };
     let fact = pg_table_acl_fact(table, roles);
     let mut allowed = false;
     for (bit, option) in modes {
-        allowed |= fact.has_privilege_mask(roles, member, bit, option, u8::MAX)?;
+        allowed |= fact.has_privilege_mask(roles, member, bit, option, mask)?;
     }
     Ok(Some(allowed))
 }
@@ -521,6 +586,7 @@ impl ConcreteSession {
         command: &PgSchemaCommand,
     ) -> SessionResult<Option<(&'static str, String)>> {
         let PgSchemaCommand::TablePrivileges {
+            sequence,
             columns,
             schema,
             table,
@@ -563,12 +629,32 @@ impl ConcreteSession {
                 "grant options cannot be granted to PUBLIC",
             ));
         }
+        let physical = self.pg_bind_relation(schema.as_deref(), table, false)?;
+        let database = self.current_database();
+        let model = self
+            .domain
+            .table_by_name(&database, &physical)
+            .map_err(|e| session_error("resolve table ACL", e))?;
+        if *sequence && model.Sequence.is_none() {
+            return Err(namespace_error("42809", "object is not a sequence"));
+        }
+        let mask = if model.Sequence.is_some() { 7 } else { u8::MAX };
+        if model.Sequence.is_some() && !columns.is_empty() {
+            return Err(namespace_error(
+                "42809",
+                "sequence has no column privileges",
+            ));
+        }
         let bits = if privileges == "ALL" {
-            u8::MAX
+            mask
         } else {
-            pg_table_privileges(privileges)?
-                .iter()
-                .fold(0, |bits, (bit, _)| bits | bit)
+            (if model.Sequence.is_some() {
+                pg_sequence_privileges(privileges)
+            } else {
+                pg_table_privileges(privileges)
+            })?
+            .iter()
+            .fold(0, |bits, (bit, _)| bits | bit)
         };
         if !columns.is_empty()
             && privileges != "ALL"
@@ -581,23 +667,11 @@ impl ConcreteSession {
         } else {
             bits
         };
-        let physical = self.pg_bind_relation(schema.as_deref(), table, false)?;
-        let database = self.current_database();
-        let model = self
-            .domain
-            .table_by_name(&database, &physical)
-            .map_err(|e| session_error("resolve table ACL", e))?;
-        if model.Sequence.is_some() {
-            return Err(namespace_error(
-                "0A000",
-                "sequence table ACL is unavailable",
-            ));
-        }
         let mut warning = None;
         self.domain
             .ddl_update_postgresql_acl(&database, model.ID, |model| {
                 let fact = pg_table_acl_fact(model, &roles);
-                fact.validate_acl_mask(u8::MAX)
+                fact.validate_acl_mask(mask)
                     .map_err(|e| kv::errors::New(e.to_string()))?;
                 let owner = fact
                     .owner

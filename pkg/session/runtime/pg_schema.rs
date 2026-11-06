@@ -64,6 +64,7 @@ pub enum PgSchemaCommand {
         owner: String,
     },
     TablePrivileges {
+        sequence: bool,
         columns: Vec<String>,
         schema: Option<String>,
         table: String,
@@ -620,6 +621,7 @@ impl ConcreteSession {
         } = command
         {
             self.pg_table_privilege_command(&PgSchemaCommand::TablePrivileges {
+                sequence: false,
                 columns: column.clone().into_iter().collect(),
                 schema: Some(schema.clone()),
                 table: table.clone(),

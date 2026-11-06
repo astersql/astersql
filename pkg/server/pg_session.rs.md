@@ -123,3 +123,5 @@ TablePrivileges沿现有SchemaUtility worker/通知通道；有界单表单受�
 ## 2026-11-06 列授权事实与查询（任务20）
 
 原有有界TablePrivileges语法新增单一权限列列表（支持多列）、WITH GRANT OPTION、REVOKE GRANT OPTION FOR及RESTRICT/CASCADE；正式列授权不再落入仅root旧native桥接。不同权限使用不同列列表仍要求拆为单独语句，不把列表并集扩大权限。
+
+任务21：显式ON SEQUENCE授权语句进入既有TablePrivileges解析/执行链，保留sequence类别标记，接受ALL、grant option和RESTRICT/CASCADE；序列分配/DDL语句仍走原pg_sequence适配器。

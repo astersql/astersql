@@ -1374,6 +1374,7 @@ impl CatalogQuery {
                         "pg_has_role"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_any_column_privilege"
                         | "has_column_privilege",
@@ -4235,7 +4236,8 @@ impl CatalogQuery {
                         Value::Text(if v { "t" } else { "f" }.into())
                     })
                 }
-                name @ ("has_table_privilege"
+                name @ ("has_sequence_privilege"
+                | "has_table_privilege"
                 | "has_column_privilege"
                 | "has_any_column_privilege") => {
                     let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
@@ -4258,29 +4260,35 @@ impl CatalogQuery {
                         })
                         .collect::<ConnResult<Vec<_>>>()?;
                     let facts = execution.table_privileges()?;
-                    let result = if name == "has_table_privilege" {
-                        astersql_session::runtime::pg_has_table_privilege(
-                            &facts.models,
-                            &self.relation_path,
-                            &facts.namespaces,
-                            &execution.role_facts()?,
-                            &execution.session_identity()?.1,
-                            &values,
-                            &oids,
-                        )
-                    } else {
-                        astersql_session::runtime::pg_has_column_privilege(
-                            &facts.models,
-                            &self.relation_path,
-                            &facts.namespaces,
-                            &execution.role_facts()?,
-                            &execution.session_identity()?.1,
-                            &values,
-                            &oids,
-                            name == "has_any_column_privilege",
-                        )
-                    }
-                    .map_err(crate::runtime::session_protocol_error)?;
+                    let result =
+                        if name == "has_table_privilege" || name == "has_sequence_privilege" {
+                            let function = if name == "has_sequence_privilege" {
+                                astersql_session::runtime::pg_has_sequence_privilege
+                            } else {
+                                astersql_session::runtime::pg_has_table_privilege
+                            };
+                            function(
+                                &facts.models,
+                                &self.relation_path,
+                                &facts.namespaces,
+                                &execution.role_facts()?,
+                                &execution.session_identity()?.1,
+                                &values,
+                                &oids,
+                            )
+                        } else {
+                            astersql_session::runtime::pg_has_column_privilege(
+                                &facts.models,
+                                &self.relation_path,
+                                &facts.namespaces,
+                                &execution.role_facts()?,
+                                &execution.session_identity()?.1,
+                                &values,
+                                &oids,
+                                name == "has_any_column_privilege",
+                            )
+                        }
+                        .map_err(crate::runtime::session_protocol_error)?;
                     result.map_or(Value::Null, |v| {
                         Value::Text(if v { "t" } else { "f" }.into())
                     })

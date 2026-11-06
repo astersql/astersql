@@ -637,7 +637,13 @@ impl SessionQuery {
         if tokens.last() == Some(&Token::Symbol(';')) {
             tokens.pop();
         }
-        if let Some((command, name)) = crate::pg_sequence::parse(&tokens)? {
+        let relation_acl = matches!(tokens.first(), Some(Token::Word(w)) if w == "grant" || w == "revoke")
+            && tokens.windows(2).any(|w| matches!((&w[0], &w[1]), (Token::Word(a), Token::Word(b)) if a == "on" && b == "sequence"));
+        if let Some((command, name)) = if relation_acl {
+            None
+        } else {
+            crate::pg_sequence::parse(&tokens)?
+        } {
             return Ok(Some(Self::Sequence(command, name)));
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
@@ -906,10 +912,7 @@ impl SessionQuery {
         // Table ACLs share namespace/database parsing boundaries, retaining the old column adapter.
         if word(tokens.first(), "grant") || word(tokens.first(), "revoke") {
             if let Some(on) = tokens.iter().position(|t| word(Some(t), "on")) {
-                if !word(tokens.get(on + 1), "schema")
-                    && !word(tokens.get(on + 1), "database")
-                    && !word(tokens.get(on + 1), "sequence")
-                {
+                if !word(tokens.get(on + 1), "schema") && !word(tokens.get(on + 1), "database") {
                     let grant = word(tokens.first(), "grant");
                     let only_option = !grant
                         && word(tokens.get(1), "grant")
@@ -966,10 +969,19 @@ impl SessionQuery {
                     }
                     let privileges = modes.join(",");
                     if privileges != "ALL" {
-                        astersql_session::runtime::pg_table_privileges(&privileges)
-                            .map_err(|_| ("42601", "invalid table privilege".into()))?;
+                        (if word(tokens.get(on + 1), "sequence") {
+                            astersql_session::runtime::pg_sequence_privileges
+                        } else {
+                            astersql_session::runtime::pg_table_privileges
+                        })(&privileges)
+                        .map_err(|_| ("42601", "invalid table privilege".into()))?;
                     }
-                    let at = on + 1 + usize::from(word(tokens.get(on + 1), "table"));
+                    let at = on
+                        + 1
+                        + usize::from(
+                            word(tokens.get(on + 1), "table")
+                                || word(tokens.get(on + 1), "sequence"),
+                        );
                     let first = tokens
                         .get(at)
                         .and_then(identifier)
@@ -1012,6 +1024,7 @@ impl SessionQuery {
                     }
                     return Ok(Some(Self::SchemaUtility(
                         PgSchemaCommand::TablePrivileges {
+                            sequence: word(tokens.get(on + 1), "sequence"),
                             columns,
                             schema,
                             table,

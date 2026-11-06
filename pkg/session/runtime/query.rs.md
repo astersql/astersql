@@ -417,3 +417,5 @@ has_table_privilege复用正式typed工厂与statement-owned回调；NULL先处�
 ## 2026-11-06 列授权事实与查询（任务20）
 
 has_column_privilege/has_any_column_privilege复用statement-owned PgDatabasePrivilegeEvaluator与正式typed工厂；普通单表SELECT在表权限不足时逐引用列检查，同一持久事实决定函数结果和数据可读。
+
+任务21：has_sequence_privilege接正式函数注册/typed signature与PgDatabasePrivilege evaluator，表数据FROM求值复用pg_has_sequence_privilege共享事实，输入NULL保持严格NULL；无独立目录执行器。

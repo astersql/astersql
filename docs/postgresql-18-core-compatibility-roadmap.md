@@ -6491,3 +6491,7 @@ PgNamespaces现有KV记录新增真实grantor/grantee稳定OID及USAGE/CREATE gr
 列授权由TableInfo.PostgreSQLColumnAcls按稳定column ID持久保存，attacl与has_column_privilege/has_any_column_privilege及实际SELECT共享真实ACL。新PG对象已知默认NULL，旧缺源0A000；显式空ACL与NULL分别表示。四种列权限、PUBLIC、grantor/grantee、表或列grant option委派、RESTRICT/CASCADE、用户/对象/属性重载与text/binary回归见本计划接口与证据的任务20。
 
 兼容性差异：本任务ROLE-PRIV明确要求表级REVOKE保留既有列授权，本端按该验收保留；PG18.4/18.6实采表明原生REVOKE SELECT ON TABLE会同时撤销同角色的列SELECT，不宣称此分支与PG一致。PG撤空列ACL回到NULL；独立真实metadata夹具另验证显式{}与默认NULL区别。
+
+### 2026-11-06 任务21序列授权增量
+
+序列relacl与has_sequence_privilege已接同一TableInfo.PostgreSQLAcl持久事实，USAGE/SELECT/UPDATE、grantor/grantee/PUBLIC、grant option及成员继承复用既有共享权限层；nextval/currval/setval消费同一事实。新显式/identity序列在创建事务保存owner默认ACL，旧私有SequenceAcl不再作为完整PG来源，旧记录须显式迁移。正式表达式与目录Q/扩展入口均有独立真实非root回归cat14_21；精确验证及PG18.4/18.6采样记录在本轮接口与证据任务21。

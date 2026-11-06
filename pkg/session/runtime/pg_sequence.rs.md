@@ -1,0 +1,3 @@
+# `pkg/session/runtime/pg_sequence.rs`
+
+PostgreSQL受限序列操作复用共享domain元数据、KV分配器及会话currval/cache。任务21移除私有用户名SequenceAcl消费，读取TableInfo.PostgreSQLAcl和真实稳定角色图；nextval需USAGE或UPDATE、currval需USAGE或SELECT、setval需UPDATE。owner的普通权限可以撤销，固有grant authority仍由共享ACL更新器处理。新序列ACL与owner在既有CREATE元数据事务保存；旧序列无完整事实0A000，不按root猜测owner。旧Grant枚举调用沿同一TablePrivileges更新，PG协议GRANT/REVOKE由共享解析器接受grant option和CASCADE。授权失败先于分配或会话currval/cache变更。原序列边界、类型、OWNED BY、identity及分配/缓存算法保留。

@@ -2,8 +2,7 @@
 //! Bounded PostgreSQL sequence operations over shared metadata and canonical KV.
 use super::pg_schema::namespace_error;
 use super::*;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use astersql_meta_model::TableInfo;
 
 /// Sequence operations accepted by the bounded PostgreSQL protocol adapter.
 /// Names are decoded identifiers; CREATE options are validated integer options.
@@ -57,72 +56,21 @@ pub enum PgSequenceCommand {
         next: bool,
     },
 }
-#[derive(Default, Serialize, Deserialize)]
-struct SequenceAcl {
-    owner: String,
-    grants: BTreeMap<String, BTreeSet<String>>,
-}
 impl ConcreteSession {
-    fn sequence_acl(
-        &self,
-        id: i64,
-        owner: Option<&str>,
-        change: Option<(&[String], &str, bool)>,
-    ) -> SessionResult<SequenceAcl> {
-        let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+    fn sequence_access(&self, table: &TableInfo, bit: u8) -> SessionResult<bool> {
         let actor = self.pg_schema_identity();
-        let mut result = SequenceAcl::default();
-        self.domain
-            .storage_handle()
-            .with_storage(|store| {
-                kv::RunInNewTxn(&context, store, true, |_, transaction| {
-                    let key = astersql_meta::transaction_meta_hash_key(
-                        b"PgSequenceAcl",
-                        id.to_string().as_bytes(),
-                    );
-                    let mut acl: SequenceAcl = match transaction.Get(&context, key.clone(), &[]) {
-                        Ok(value) => serde_json::from_slice(&value.Value)
-                            .map_err(|e| kv::errors::New(e.to_string()))?,
-                        Err(error) if kv::IsErrNotFound(&error) => SequenceAcl {
-                            owner: owner.unwrap_or("root").into(),
-                            ..Default::default()
-                        },
-                        Err(error) => return Err(error),
-                    };
-                    if let Some((privileges, grantee, grant)) = change {
-                        if actor != "root" && actor != acl.owner {
-                            return Err(kv::errors::New("permission denied for sequence ACL"));
-                        }
-                        let grants = acl.grants.entry(grantee.into()).or_default();
-                        for privilege in privileges {
-                            if grant {
-                                grants.insert(privilege.clone());
-                            } else {
-                                grants.remove(privilege);
-                            }
-                        }
-                    }
-                    if owner.is_some() || change.is_some() {
-                        transaction.Set(
-                            key,
-                            serde_json::to_vec(&acl).map_err(|e| kv::errors::New(e.to_string()))?,
-                        )?;
-                    }
-                    result = acl;
-                    Ok(())
-                })
-            })
-            .map_err(|error| {
-                if error
-                    .to_string()
-                    .contains("permission denied for sequence ACL")
-                {
-                    namespace_error("42501", "must be owner of sequence")
-                } else {
-                    session_error("sequence ACL metadata", error)
-                }
-            })?;
-        Ok(result)
+        let roles = if actor == "root" {
+            self.pg_namespace_role_identities()?
+        } else {
+            self.pg_role_facts()?
+        };
+        let member = roles
+            .iter()
+            .find(|r| r.name == actor)
+            .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+            .oid;
+        super::pg_table::pg_table_acl_fact(table, &roles)
+            .has_privilege_mask(&roles, member, bit, false, 7)
     }
 
     fn pg_sequence_owner(
@@ -269,13 +217,16 @@ impl ConcreteSession {
             return Err(namespace_error("42809", "object is not a sequence"));
         }
         let actor = self.pg_schema_identity();
-        let acl = self.sequence_acl(table.ID, create.then_some(actor.as_str()), None)?;
+        let owner = table.PostgreSQLOwner.ok_or_else(|| {
+            namespace_error("0A000", "sequence owner requires explicit migration")
+        })?;
+        let is_owner = actor == "root" || owner == self.pg_database_role_id(&actor)?;
         if create {
             return Ok(None);
         }
         match command {
             PgSequenceCommand::OwnedBy { owner, .. } => {
-                if actor != "root" && actor != acl.owner {
+                if !is_owner {
                     return Err(namespace_error("42501", "must be owner of sequence"));
                 }
                 let owner = self.pg_sequence_owner(owner.as_ref())?;
@@ -294,7 +245,7 @@ impl ConcreteSession {
                 Ok(None)
             }
             PgSequenceCommand::Rename { new_name, .. } => {
-                if actor != "root" && actor != acl.owner {
+                if !is_owner {
                     return Err(namespace_error("42501", "must be owner of sequence"));
                 }
                 let target = self.pg_bind_relation(schema, new_name, true)?;
@@ -304,7 +255,7 @@ impl ConcreteSession {
                 Ok(None)
             }
             PgSequenceCommand::Drop { .. } => {
-                if actor != "root" && actor != acl.owner {
+                if !is_owner {
                     return Err(namespace_error("42501", "must be owner of sequence"));
                 }
                 // Drop the already checked physical identity, preserving exact names.
@@ -328,19 +279,20 @@ impl ConcreteSession {
                 grant,
                 ..
             } => {
-                if grantee != "PUBLIC"
-                    && !runtime_privilege_handle(&self.domain)
-                        .Get()
-                        .user
-                        .iter()
-                        .any(|u| u.base.User == *grantee)
-                {
-                    return Err(namespace_error(
-                        "42704",
-                        "sequence grantee role does not exist",
-                    ));
-                }
-                self.sequence_acl(table.ID, None, Some((privileges, grantee, *grant)))?;
+                self.pg_table_privilege_command(
+                    &super::pg_schema::PgSchemaCommand::TablePrivileges {
+                        sequence: true,
+                        schema: schema.map(str::to_owned),
+                        table: name.into(),
+                        columns: Vec::new(),
+                        grantee: grantee.clone(),
+                        public: grantee == "PUBLIC",
+                        privileges: privileges.join(",").to_ascii_uppercase(),
+                        grant: *grant,
+                        grant_option: false,
+                        cascade: false,
+                    },
+                )?;
                 Ok(None)
             }
             PgSequenceCommand::Set {
@@ -348,12 +300,7 @@ impl ConcreteSession {
                 is_called,
                 ..
             } => {
-                let has_update = [actor.as_str(), "PUBLIC"].iter().any(|role| {
-                    acl.grants
-                        .get(*role)
-                        .is_some_and(|privileges| privileges.contains("update"))
-                });
-                if actor != "root" && actor != acl.owner && !has_update {
+                if !self.sequence_access(&table, 4)? {
                     return Err(namespace_error("42501", "permission denied for sequence"));
                 }
                 let seq = table.Sequence.as_ref().unwrap();
@@ -379,17 +326,8 @@ impl ConcreteSession {
             }
             PgSequenceCommand::Set { value: None, .. } => unreachable!(),
             PgSequenceCommand::Value { next, .. } => {
-                let has = |privilege: &str| {
-                    [actor.as_str(), "PUBLIC"].iter().any(|role| {
-                        acl.grants
-                            .get(*role)
-                            .is_some_and(|privileges| privileges.contains(privilege))
-                    })
-                };
-                if actor != "root"
-                    && actor != acl.owner
-                    && !has("usage")
-                    && !has(if *next { "update" } else { "select" })
+                if !self.sequence_access(&table, 1)?
+                    && !self.sequence_access(&table, if *next { 4 } else { 2 })?
                 {
                     return Err(namespace_error("42501", "permission denied for sequence"));
                 }

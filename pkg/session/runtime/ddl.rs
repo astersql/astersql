@@ -1671,7 +1671,7 @@ impl ConcreteSession {
             astersql_ddl::sequence::build_sequence_info(&options)
                 .map_err(|error| SessionError::new(format!("invalid sequence options: {error}")))?
         };
-        let table = astersql_meta_model::TableInfo {
+        let mut table = astersql_meta_model::TableInfo {
             Name: ast::NewCIStr(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
                 &statement.Name.Name.O
             } else {
@@ -1705,6 +1705,9 @@ impl ConcreteSession {
             }),
             ..Default::default()
         };
+        if let Some(owner) = table.PostgreSQLOwner {
+            table.PostgreSQLAcl = Some(super::pg_table::default_sequence_acl(owner));
+        }
         self.domain
             .ddl_create_table(&database, table, statement.IfNotExists)
             .map_err(|error| session_error("persist CREATE SEQUENCE metadata", error))?;

@@ -2098,6 +2098,7 @@ impl ConcreteSession {
                     | "pg_backend_pid"
                     | "has_database_privilege"
                     | "has_schema_privilege"
+                    | "has_sequence_privilege"
                     | "has_table_privilege"
                     | "has_column_privilege"
                     | "has_any_column_privilege"
@@ -2134,6 +2135,7 @@ impl ConcreteSession {
                     FnName.L.as_str(),
                     "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_column_privilege"
                         | "has_any_column_privilege"
@@ -2156,6 +2158,7 @@ impl ConcreteSession {
                 FnName.L.as_str(),
                 "has_database_privilege"
                     | "has_schema_privilege"
+                    | "has_sequence_privilege"
                     | "has_table_privilege"
                     | "has_column_privilege"
                     | "has_any_column_privilege"
@@ -2164,8 +2167,12 @@ impl ConcreteSession {
                 let schema_acl = FnName.L == "has_schema_privilege";
                 let table_acl = matches!(
                     FnName.L.as_str(),
-                    "has_table_privilege" | "has_column_privilege" | "has_any_column_privilege"
+                    "has_sequence_privilege"
+                        | "has_table_privilege"
+                        | "has_column_privilege"
+                        | "has_any_column_privilege"
                 );
+                let sequence_acl = FnName.L == "has_sequence_privilege";
                 let column_acl = FnName.L == "has_column_privilege";
                 let any_column_acl = FnName.L == "has_any_column_privilege";
                 let tables = if table_acl {
@@ -2214,15 +2221,12 @@ impl ConcreteSession {
                             any_column_acl,
                         )
                     } else if table_acl {
-                        pg_table::pg_has_table_privilege(
-                            &tables,
-                            &path,
-                            &namespaces,
-                            &roles,
-                            &actor,
-                            values,
-                            oids,
-                        )
+                        let function = if sequence_acl {
+                            pg_table::pg_has_sequence_privilege
+                        } else {
+                            pg_table::pg_has_table_privilege
+                        };
+                        function(&tables, &path, &namespaces, &roles, &actor, values, oids)
                     } else if schema_acl {
                         pg_schema::pg_has_schema_privilege(
                             &namespaces,
@@ -2321,6 +2325,7 @@ impl ConcreteSession {
                     "isempty"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_column_privilege"
                         | "has_any_column_privilege"
@@ -3688,6 +3693,7 @@ impl ConcreteSession {
                                 | "pg_backend_pid"
                                 | "has_database_privilege"
                                 | "has_schema_privilege"
+                                | "has_sequence_privilege"
                                 | "has_table_privilege"
                                 | "has_column_privilege"
                                 | "has_any_column_privilege"
@@ -5006,6 +5012,7 @@ impl ConcreteSession {
                             | "pg_backend_pid"
                             | "has_database_privilege"
                             | "has_schema_privilege"
+                            | "has_sequence_privilege"
                             | "has_table_privilege"
                             | "has_column_privilege"
                             | "has_any_column_privilege"
@@ -5926,6 +5933,7 @@ impl ConcreteSession {
                     "current_schema"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_column_privilege"
                         | "has_any_column_privilege"
@@ -6704,6 +6712,7 @@ impl ConcreteSession {
                         | "pg_backend_pid"
                         | "has_database_privilege"
                         | "has_schema_privilege"
+                        | "has_sequence_privilege"
                         | "has_table_privilege"
                         | "has_column_privilege"
                         | "has_any_column_privilege"
@@ -6732,6 +6741,7 @@ impl ConcreteSession {
                         "isempty"
                             | "has_database_privilege"
                             | "has_schema_privilege"
+                            | "has_sequence_privilege"
                             | "has_table_privilege"
                             | "has_column_privilege"
                             | "has_any_column_privilege"

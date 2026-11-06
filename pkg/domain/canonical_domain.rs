@@ -528,6 +528,17 @@ impl DdlMetadataService {
                     DBID: table.DBID,
                     ExactName: table.ExactName,
                     PostgreSQLOwner: table.PostgreSQLOwner,
+                    PostgreSQLAcl: table.PostgreSQLOwner.map(|owner| {
+                        astersql_meta_model::PostgreSQLRelationAcl {
+                            default_acl: true,
+                            grants: vec![astersql_meta_model::PostgreSQLAclGrant {
+                                grantor: owner,
+                                grantee: owner,
+                                privileges: 7,
+                                grant_options: 0,
+                            }],
+                        }
+                    }),
                     State: astersql_meta_model::StatePublic,
                     Sequence: Some(identity.Sequence.clone()),
                     PostgreSQLNamespace: table

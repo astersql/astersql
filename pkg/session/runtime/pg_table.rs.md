@@ -15,3 +15,7 @@ pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical meta
 ## 2026-11-06 列授权事实与查询（任务20）
 
 新增pg_column_acl_fact/pg_column_acl_text/pg_has_column_privilege，共享表ACL角色闭包、校验和codec。列合法权限arwx，表级或对应列级授权按任一判定；has_column_privilege支持省略/name/OID用户、text/OID表和name/int2属性号，has_any_column_privilege消费同一事实。NULL严格传播，缺OID/无效属性号NULL，缺名称42P01/42703，非法权限22023。列GRANT/REVOKE沿TablePrivileges.columns和既有metadata-only事务；表grant option可授权列委派，RESTRICT/CASCADE检查表及列依赖。真实SELECT逐引用列校验（空引用至少任一列），INSERT/UPDATE显式目标接列权限。按任务20明确目标，撤表级普通权限保留直接列授权；PG18参考此分支实际会移除同种列权限，交接明确记为兼容性差异。
+
+## 2026-11-06 序列授权事实与查询（任务21）
+
+序列复用TableInfo.PostgreSQLAcl与PgDatabaseFact，权限位USAGE/SELECT/UPDATE为1/2/4，文本输出顺序rwU。default_sequence_acl持久保存owner默认权限，严格校验default标记；relacl、has_sequence_privilege与实际nextval/currval/setval消费同一事实。TablePrivileges.sequence保留显式ON SEQUENCE类别检查；委派、PUBLIC、grant option及RESTRICT/CASCADE继续复用共享原子更新器。旧PgSequenceAcl缺失grantor/option来源，停止消费且不自动升级；旧对象缺来源0A000。原has_table_privilege对序列的有界拒绝保留，避免把INSERT位误当USAGE。独立测试cat14_21与runtime::pg_table_test::cat14_21_sequence_acl_provenance_atomicity_and_lifecycle。

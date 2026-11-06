@@ -158,3 +158,5 @@ Execution惰性缓存本次schema快照对应的表模型和namespace事实，re
 ## 2026-11-06 列授权事实与查询（任务20）
 
 attacl在实际选中pg_attribute行惰性读取本执行快照的TableInfo列ACL与角色事实；aclitem[] OID1034、来源1249/22、typlen=-1、typmod=-1。默认NULL、显式空数组、缺源0A000保持区别。新增两列权限函数共用正式typed签名和共享求值，int2属性号通过受检Smallint cast，保持NULL及SQLSTATE。
+
+任务21：has_sequence_privilege的用户省略/name/oid、对象text/oid重载沿单次Execution缓存的共享角色、namespace和TableInfo ACL事实；严格NULL、缺OID NULL、缺名称42P01、非法权限22023、错误类别42809。relacl序列文本使用真实rwU与grantor/grantee，默认NULL与显式{}不同。cat14_21同时覆盖正式表达式FROM入口及Q/扩展协议，未按客户端构造授权值。

@@ -118,8 +118,9 @@ mod pg_table;
 #[cfg(test)]
 mod pg_table_test;
 pub use pg_table::{
-    pg_column_acl_fact, pg_column_acl_text, pg_has_column_privilege, pg_has_table_privilege,
-    pg_table_acl_fact, pg_table_acl_text, pg_table_privileges,
+    pg_column_acl_fact, pg_column_acl_text, pg_has_column_privilege, pg_has_sequence_privilege,
+    pg_has_table_privilege, pg_sequence_privileges, pg_table_acl_fact, pg_table_acl_text,
+    pg_table_privileges,
 };
 mod pg_sequence;
 pub use pg_sequence::PgSequenceCommand;

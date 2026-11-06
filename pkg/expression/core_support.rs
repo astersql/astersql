@@ -81,6 +81,7 @@ pub static unFoldableFunctions: LazyLock<HashMap<&'static str, ()>> = LazyLock::
         ("pg_backend_pid", ()),
         ("has_database_privilege", ()),
         ("has_schema_privilege", ()),
+        ("has_sequence_privilege", ()),
         ("has_table_privilege", ()),
         ("has_column_privilege", ()),
         ("has_any_column_privilege", ()),

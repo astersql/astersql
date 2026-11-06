@@ -148,3 +148,5 @@ update_postgresql_acl沿现有metadata-only事务编辑TableInfo并发布schema 
 ## 2026-11-06 列授权事实与查询（任务20）
 
 owner转移沿既有metadata事务同时重写合并表/列ACL身份；canonical DROP COLUMN删除被移除column ID的ACL。稳定表OID和列ID不因owner改变。
+
+任务21：新identity内部序列在原create_table元数据事务随owner保存独立默认序列ACL（USAGE/SELECT/UPDATE），避免实际序列执行与目录ACL来源分裂。既有身份、生命周期、schema版本更新与分配算法不变；不迁移历史缺源对象。
