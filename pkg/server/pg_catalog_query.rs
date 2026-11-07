@@ -1165,21 +1165,119 @@ fn implicit_positions(tokens: &[Token]) -> Vec<(usize, String)> {
         };
         if relation && tokens.get(i + 2) != Some(&Token::Symbol('.')) {
             if let Some(Token::Word(name) | Token::Quoted(name)) = tokens.get(i + 1) {
-                if is_catalog_relation(name) {
-                    found.push((i + 1, name.clone()));
-                }
+                found.push((i + 1, name.clone()));
             }
         }
     }
     found
 }
 
+// Exclude lexical CTE references from the ownership probe. Definitions see
+// earlier siblings and outer scopes; a nonrecursive CTE cannot hide its own
+// physical source. Walk token ranges iteratively, including nested subqueries,
+// without imposing the catalog evaluator's grammar on ordinary engine SQL.
+fn cte_reference_positions(tokens: &[Token]) -> std::collections::HashSet<usize> {
+    let mut closes = vec![None; tokens.len()];
+    let mut opens = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Symbol('(') => opens.push(i),
+            Token::Symbol(')') => {
+                if let Some(open) = opens.pop() {
+                    closes[open] = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    let word = |i: usize, name: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w == name);
+    let name = |i: usize| match tokens.get(i) {
+        Some(Token::Word(w) | Token::Quoted(w)) => Some(w.clone()),
+        _ => None,
+    };
+    let positions: std::collections::HashMap<_, _> =
+        implicit_positions(tokens).into_iter().collect();
+    let mut hidden = std::collections::HashSet::new();
+    let mut ranges = vec![(0, tokens.len(), Vec::<String>::new())];
+    while let Some((mut i, end, mut scope)) = ranges.pop() {
+        if word(i, "with") {
+            i += 1;
+            let recursive = word(i, "recursive");
+            i += usize::from(recursive);
+            loop {
+                let Some(cte) = name(i) else { break };
+                i += 1;
+                if tokens.get(i) == Some(&Token::Symbol('(')) {
+                    let Some(close) = closes[i] else { break };
+                    i = close + 1;
+                }
+                if !word(i, "as") {
+                    break;
+                }
+                i += 1;
+                if word(i, "not") {
+                    i += 1;
+                }
+                if word(i, "materialized") {
+                    i += 1;
+                }
+                if tokens.get(i) != Some(&Token::Symbol('(')) {
+                    break;
+                }
+                let Some(close) = closes[i] else { break };
+                let mut body_scope = scope.clone();
+                if recursive {
+                    body_scope.push(cte.clone());
+                }
+                ranges.push((i + 1, close, body_scope));
+                scope.push(cte);
+                i = close + 1;
+                if tokens.get(i) != Some(&Token::Symbol(',')) {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        while i < end {
+            if tokens[i] == Token::Symbol('(') {
+                if let Some(close) = closes[i] {
+                    ranges.push((i + 1, close, scope.clone()));
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if positions.get(&i).is_some_and(|name| scope.contains(name)) {
+                hidden.insert(i);
+            }
+            i += 1;
+        }
+    }
+    hidden
+}
+
 pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
     lex(sql)
         .map(|tokens| {
+            let ctes = cte_reference_positions(&tokens);
             implicit_positions(&tokens)
                 .into_iter()
+                .filter(|(position, name)| !ctes.contains(position) && is_catalog_relation(name))
                 .map(|(_, n)| n)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// Candidate user relations need shared binding before the catalog parser can
+// distinguish an unsupported mixed query from an unresolved CTE reference.
+pub(crate) fn ordinary_relations(sql: &str) -> Vec<String> {
+    lex(sql)
+        .map(|tokens| {
+            let ctes = cte_reference_positions(&tokens);
+            implicit_positions(&tokens)
+                .into_iter()
+                .filter(|(position, name)| !ctes.contains(position) && !is_catalog_relation(name))
+                .map(|(_, name)| name)
                 .collect()
         })
         .unwrap_or_default()
@@ -1240,9 +1338,10 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
         && matches!(&w[2], Token::Word(s) if matches!(s.as_str(), "pg_is_in_recovery" | "txid_current" | "format_type" | "pg_get_indexdef" | "pg_get_constraintdef"))
         && w[3]==Token::Symbol('(')
     });
-    let implicit_catalog = implicit_positions(&tokens)
-        .iter()
-        .any(|(_, name)| !shadowed.contains(name));
+    let ctes = cte_reference_positions(&tokens);
+    let implicit_catalog = implicit_positions(&tokens).iter().any(|(position, name)| {
+        is_catalog_relation(name) && !ctes.contains(position) && !shadowed.contains(name)
+    });
     if !catalog
         && !implicit_catalog
         && !scalar_catalog

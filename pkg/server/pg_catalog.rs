@@ -354,7 +354,9 @@ impl CatalogQuery {
         oids: &[u32],
     ) -> ParseResult<Option<Self>> {
         let names = pg_catalog_query::implicit_relations(sql);
-        if names.is_empty() && pg_catalog_query::parse(sql)?.is_none() {
+        // Delay catalog diagnostics until shared binding has identified real
+        // ordinary relations, even when every catalog name is qualified.
+        if names.is_empty() && matches!(pg_catalog_query::parse(sql), Ok(None)) {
             return Ok(None);
         }
         let mut shadowed = Vec::new();
@@ -406,6 +408,24 @@ impl CatalogQuery {
                         .filter(|t| names.contains(&t.name.original))
                         .map(|t| t.name.original.clone()),
                 );
+            }
+        }
+        // Only real user relations turn an unresolved catalog-parser name into
+        // a mixed-query capability error. Missing/self/forward CTE references
+        // retain their existing 42P01 diagnostic.
+        for name in pg_catalog_query::ordinary_relations(sql) {
+            for schema in &path {
+                match context.pg_bind_relation(Some(schema.clone()), name.clone(), false) {
+                    Some(Ok(_)) => {
+                        shadowed.push(name.clone());
+                        break;
+                    }
+                    Some(Err(error)) if crate::pg_conn::sqlstate(&error) == "42P01" => {}
+                    Some(Err(error)) => {
+                        return Err((crate::pg_conn::sqlstate(&error), error.to_string()));
+                    }
+                    None => {}
+                }
             }
         }
         let Some(select) = pg_catalog_query::parse_shadowed(sql, &shadowed)? else {
