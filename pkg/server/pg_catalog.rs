@@ -1234,6 +1234,8 @@ impl CatalogQuery {
                         | "pg_collation"
                         | "pg_opfamily"
                         | "pg_opclass"
+                        | "pg_amop"
+                        | "pg_amproc"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
@@ -1859,6 +1861,8 @@ impl CatalogQuery {
                         ("pg_index", 18) => 12,
                         ("pg_index", 19) => 14,
                         ("pg_index", 20) => 15,
+                        ("pg_amop", slot) if slot <= 8 => [1, 5, 7, 9, 2, 3, 4, 6, 8][slot],
+                        ("pg_amproc", slot) if slot <= 5 => [1, 5, 6, 3, 4, 2][slot],
                         ("pg_opfamily", 0) => 1,
                         ("pg_opfamily", slot) if (2..=5).contains(&slot) => [3, 2, 5, 4][slot - 2],
                         ("pg_opclass", 0) => 1,
@@ -3303,7 +3307,15 @@ impl CatalogQuery {
             // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_aggregate" | "pg_amop" | "pg_amproc" => Vec::new(),
+            "pg_inherits" | "pg_aggregate" => Vec::new(),
+            "pg_amop" | "pg_amproc" => {
+                // Internal integer index class IDs do not supply the required
+                // family/operator/procedure/type membership facts. An empty
+                // provider would hide missing builtins, even behind WHERE/LIMIT.
+                return Err(database_identity_unavailable(
+                    "PostgreSQL operator family member registration facts are unavailable",
+                ));
+            }
             "pg_opfamily" | "pg_opclass" => {
                 // Integer key encodings establish the internal index class IDs,
                 // but not complete PG family/method/owner registration facts.
@@ -6498,6 +6510,10 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_amop", "amopopr") => (2, oid),
         ("pg_amop", "amopsortfamily") => (3, oid),
         ("pg_amop", "amopfamily") => (4, oid),
+        ("pg_amop", "amoplefttype") => (5, oid),
+        ("pg_amop", "amoprighttype") => (6, oid),
+        ("pg_amop", "amoppurpose") => (7, crate::pg_result::CatalogColumnType::InternalChar as u8),
+        ("pg_amop", "amopmethod") => (8, oid),
         ("pg_amproc", "oid") => (0, oid),
         ("pg_amproc", "amprocnum") => (1, 2),
         ("pg_amproc", "amproc") => (2, oid),
