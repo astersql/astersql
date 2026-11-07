@@ -1121,6 +1121,9 @@ pub(crate) fn is_catalog_relation(name: &str) -> bool {
         name,
         "pg_user" | "pg_roles" | "pg_shadow" | "pg_auth_members"
     ) || name == "pg_opclass"
+        // Recognize the required method catalog so the bounded catalog binder
+        // rejects its unavailable provider with 0A000, rather than 42P01.
+        || name == "pg_am"
         || name == "pg_locks"
         || crate::pg_oid::SYSTEM_RELATIONS
             .iter()

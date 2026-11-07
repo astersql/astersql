@@ -26266,3 +26266,303 @@ fn cat14_33() {
         "cat14_33: required collation gate; Q/extended text+binary/NULL; Describe and I/E recovery verified"
     );
 }
+
+#[test]
+fn cat14_34() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_34_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_34_other")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_34_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_34_db")
+            .unwrap();
+        for name in ["cat14_34_reader", "cat14_34_owner", "cat14_34_group"] {
+            native
+                .execute(&format!("DROP USER IF EXISTS '{name}'@'%'"))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+    fn state(r: &[(u8, Vec<u8>)]) -> String {
+        r.iter()
+            .find(|m| m.0 == b'E')
+            .and_then(|m| m.1.split(|b| *b == 0).find(|v| v.first() == Some(&b'C')))
+            .map(|v| String::from_utf8_lossy(&v[1..]).into_owned())
+            .unwrap_or_else(|| "success".into())
+    }
+
+    fn description(r: &[(u8, Vec<u8>)], expected: &[(u32, i16, u32, i16)], format: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            i16::from_be_bytes(t[..2].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        let mut o = 2;
+        for &(oid, len, source, attr) in expected {
+            o += t[o..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(u32::from_be_bytes(t[o..o + 4].try_into().unwrap()), source);
+            assert_eq!(
+                i16::from_be_bytes(t[o + 4..o + 6].try_into().unwrap()),
+                attr
+            );
+            assert_eq!(
+                u32::from_be_bytes(t[o + 6..o + 10].try_into().unwrap()),
+                oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 10..o + 12].try_into().unwrap()),
+                len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[o + 12..o + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 16..o + 18].try_into().unwrap()),
+                format
+            );
+            o += 18;
+        }
+    }
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    #[track_caller]
+    fn denied(s: &mut TcpStream, sql: &str, code: &str, status: u8) {
+        let r = query(s, sql);
+        assert_eq!(state(&r), code, "{sql}: {r:?}");
+        assert!(!r.iter().any(|m| matches!(m.0, b'D' | b'C')), "{r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+        if status == b'I' {
+            assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        }
+    }
+
+    let mut admin = connect_database("root", "cat14_34_db");
+    ok(&mut admin, "CREATE ROLE cat14_34_reader LOGIN");
+    let mut reader = connect_database("cat14_34_reader", "cat14_34_db");
+    ok(
+        &mut admin,
+        "CREATE TABLE public.cat14_34_t (id integer PRIMARY KEY)",
+    );
+    ok(
+        &mut admin,
+        "GRANT SELECT ON public.cat14_34_t TO cat14_34_reader",
+    );
+    ok(&mut admin, "INSERT INTO public.cat14_34_t VALUES (1)");
+    assert_eq!(
+        data(&ok(&mut reader, "SELECT id FROM public.cat14_34_t")),
+        vec![row(&[Some("1")])]
+    );
+    // Internal index identity remains usable without claiming complete PG objects.
+    assert_eq!(
+        data(&ok(
+            &mut admin,
+            "SELECT i.indclass FROM pg_index i JOIN pg_class c ON i.indrelid=c.oid WHERE c.relname='cat14_34_t'"
+        )),
+        vec![row(&[Some("1978")])]
+    );
+    for (relation, name_column, builtin, sql, expected) in [
+        (
+            "pg_opfamily",
+            "opfname",
+            "integer_ops",
+            "SELECT oid,opfname,opfmethod,opfowner,opfnamespace FROM pg_catalog.pg_opfamily WHERE opfname=$1",
+            vec![
+                (26, 4, 2753, 1),
+                (19, 64, 2753, 3),
+                (26, 4, 2753, 2),
+                (26, 4, 2753, 5),
+                (26, 4, 2753, 4),
+            ],
+        ),
+        (
+            "pg_opclass",
+            "opcname",
+            "int4_ops",
+            "SELECT oid,opcname,opcmethod,opcintype,opckeytype,opcdefault,opcfamily,opcowner,opcnamespace FROM pg_catalog.pg_opclass WHERE opcname=$1",
+            vec![
+                (26, 4, 2616, 1),
+                (19, 64, 2616, 3),
+                (26, 4, 2616, 2),
+                (26, 4, 2616, 7),
+                (26, 4, 2616, 9),
+                (16, 1, 2616, 8),
+                (26, 4, 2616, 6),
+                (26, 4, 2616, 5),
+                (26, 4, 2616, 4),
+            ],
+        ),
+    ] {
+        for sql in [
+            sql.replace("$1", &format!("'{builtin}'")),
+            format!("SELECT oid FROM {relation} WHERE {name_column}='cat14_34_missing'"),
+            format!("SELECT oid FROM {relation} WHERE oid IS NULL"),
+            format!("SELECT oid FROM {relation} LIMIT 0"),
+            format!(
+                "SELECT t.oid,c.oid FROM pg_type t LEFT JOIN {relation} c ON t.oid=c.oid WHERE t.typname='int4'"
+            ),
+            format!("SELECT xmin FROM {relation}"),
+        ] {
+            denied(&mut reader, &sql, "0A000", b'I');
+        }
+        send(
+            &mut reader,
+            b'P',
+            &[
+                b"op_stmt\0".as_slice(),
+                sql.as_bytes(),
+                b"\0",
+                &1i16.to_be_bytes(),
+                &25u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut reader, b'D', b"Sop_stmt\0");
+        send(&mut reader, b'S', b"");
+        let r = until_ready(&mut reader);
+        assert_eq!(state(&r), "success", "{r:?}");
+        description(&r, &expected, 0);
+        for value in [Some(builtin), Some("cat14_34_missing"), None] {
+            for format in [0i16, 1] {
+                let parameter = value.map_or_else(
+                    || (-1i32).to_be_bytes().to_vec(),
+                    |v| [&(v.len() as i32).to_be_bytes()[..], v.as_bytes()].concat(),
+                );
+                send(
+                    &mut reader,
+                    b'B',
+                    &[
+                        b"op_portal\0op_stmt\0".as_slice(),
+                        &0i16.to_be_bytes(),
+                        &1i16.to_be_bytes(),
+                        &parameter,
+                        &1i16.to_be_bytes(),
+                        &format.to_be_bytes(),
+                    ]
+                    .concat(),
+                );
+                send(&mut reader, b'D', b"Pop_portal\0");
+                send(
+                    &mut reader,
+                    b'E',
+                    &[b"op_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+                );
+                send(&mut reader, b'S', b"");
+                let r = until_ready(&mut reader);
+                assert_eq!(state(&r), "0A000", "{r:?}");
+                description(&r, &expected, format);
+                assert!(data(&r).is_empty());
+                assert!(!r.iter().any(|m| m.0 == b'C'));
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                assert_eq!(data(&ok(&mut reader, "SELECT 1")), vec![row(&[Some("1")])]);
+                send(&mut reader, b'C', b"Pop_portal\0");
+                send(&mut reader, b'S', b"");
+                until_ready(&mut reader);
+            }
+        }
+        denied(
+            &mut reader,
+            &format!("SELECT missing_column FROM {relation}"),
+            "42703",
+            b'I',
+        );
+        ok(&mut reader, "BEGIN");
+        denied(
+            &mut reader,
+            &format!("SELECT oid FROM {relation}"),
+            "0A000",
+            b'E',
+        );
+        denied(&mut reader, "SELECT 1", "25P02", b'E');
+        ok(&mut reader, "ROLLBACK");
+        assert_eq!(data(&ok(&mut reader, "SELECT 1")), vec![row(&[Some("1")])]);
+        send(&mut reader, b'C', b"Sop_stmt\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    denied(
+        &mut reader,
+        "SELECT c.oid,f.oid FROM pg_opclass c JOIN pg_opfamily f ON c.opcfamily=f.oid",
+        "0A000",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT c.oid,a.oid FROM pg_opclass c JOIN pg_am a ON c.opcmethod=a.oid",
+        "0A000",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT oid FROM pg_missing_opfamily",
+        "42P01",
+        b'I',
+    );
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON public.cat14_34_t FROM cat14_34_reader",
+    );
+    denied(
+        &mut reader,
+        "SELECT id FROM public.cat14_34_t",
+        "42501",
+        b'I',
+    );
+    denied(&mut reader, "SELECT oid FROM pg_opclass", "0A000", b'I');
+    ok(&mut admin, "DROP TABLE public.cat14_34_t");
+    send(&mut reader, b'X', b"");
+    send(&mut admin, b'X', b"");
+    println!(
+        "cat14_34: required operator family/class gate; nonroot Q/extended text+binary/NULL; Describe and I/E recovery verified"
+    );
+}

@@ -1232,6 +1232,8 @@ impl CatalogQuery {
                         | "pg_policy"
                         | "pg_rewrite"
                         | "pg_collation"
+                        | "pg_opfamily"
+                        | "pg_opclass"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
@@ -1857,6 +1859,8 @@ impl CatalogQuery {
                         ("pg_index", 18) => 12,
                         ("pg_index", 19) => 14,
                         ("pg_index", 20) => 15,
+                        ("pg_opfamily", 0) => 1,
+                        ("pg_opfamily", slot) if (2..=5).contains(&slot) => [3, 2, 5, 4][slot - 2],
                         ("pg_opclass", 0) => 1,
                         ("pg_opclass", 1) => 2,
                         ("pg_opclass", 3) => 3,
@@ -3299,7 +3303,16 @@ impl CatalogQuery {
             // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_aggregate" | "pg_opfamily" | "pg_amop" | "pg_amproc" => Vec::new(),
+            "pg_inherits" | "pg_aggregate" | "pg_amop" | "pg_amproc" => Vec::new(),
+            "pg_opfamily" | "pg_opclass" => {
+                // Integer key encodings establish the internal index class IDs,
+                // but not complete PG family/method/owner registration facts.
+                // Refuse before filters, joins or LIMIT can hide missing builtins;
+                // a partial class row or empty family would misrepresent indexes.
+                return Err(database_identity_unavailable(
+                    "PostgreSQL operator family, class and access method registration facts are unavailable",
+                ));
+            }
             "pg_collation" => {
                 // PostgreSQL requires built-in collations even without user
                 // objects. Native MySQL IDs do not prove PG provider, locale or
@@ -3386,7 +3399,6 @@ impl CatalogQuery {
                     row
                 })
                 .collect(),
-            "pg_opclass" => integer_opclass_rows(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -6477,9 +6489,9 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_collation", "colllocale") => (10, 253),
         ("pg_opfamily", "oid") => (0, oid),
         ("pg_opfamily", "xmin") => (1, 8),
-        ("pg_opfamily", "opfname") => (2, 253),
+        ("pg_opfamily", "opfname") => (2, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_opfamily", "opfmethod") => (3, oid),
-        ("pg_opfamily", "opfowner") => (4, 8),
+        ("pg_opfamily", "opfowner") => (4, oid),
         ("pg_opfamily", "opfnamespace") => (5, oid),
         ("pg_amop", "oid") => (0, oid),
         ("pg_amop", "amopstrategy") => (1, 2),
@@ -6519,7 +6531,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_opclass", "opckeytype") => (5, oid),
         ("pg_opclass", "opcdefault") => (6, 1),
         ("pg_opclass", "opcfamily") => (7, oid),
-        ("pg_opclass", "opcowner") => (8, 8),
+        ("pg_opclass", "opcowner") => (8, oid),
         ("pg_opclass", "opcnamespace") => (9, oid),
         ("pg_operator", "oid") => (4, oid),
         ("pg_proc", "proacl") => (24, crate::pg_result::CatalogColumnType::AclArray as u8),
@@ -8576,24 +8588,6 @@ const INTEGER_OPCLASSES: &[(i64, &str, i64)] = &[
     (1978, "int4_ops", 23),
     (3124, "int8_ops", 20),
 ];
-fn integer_opclass_rows() -> Vec<Vec<Value>> {
-    INTEGER_OPCLASSES
-        .iter()
-        .map(|&(oid, name, input)| {
-            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
-            row[0] = Value::Signed(oid);
-            row[1] = Value::Signed(403);
-            row[3] = Value::Text(name.into());
-            row[4] = Value::Signed(input);
-            row[5] = Value::Signed(0);
-            row[6] = Value::Text("true".into());
-            row[7] = Value::Signed(1976);
-            row[9] = Value::Signed(11);
-            row
-        })
-        .collect()
-}
-
 // A certificate is written only by synchronous PG CREATE TABLE after rejecting
 // deferred/NOT VALID/partition forms, before publishing its empty storage. Native
 // legacy models and subsequently introduced identities have no certificate.
