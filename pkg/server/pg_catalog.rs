@@ -4196,7 +4196,12 @@ impl CatalogQuery {
                     let snapshot = snapshot.ok_or_else(|| {
                         ConnError::Session("schema snapshot is unavailable".into())
                     })?;
-                    Value::Signed(i64::from(crate::pg_oid::resolve_in_path(
+                    let resolve = if matches!(inner.as_ref(), Expr::Text(_)) {
+                        crate::pg_oid::resolve_in_path
+                    } else {
+                        crate::pg_oid::resolve_name_in_path
+                    };
+                    Value::Signed(i64::from(resolve(
                         &s,
                         database,
                         snapshot,

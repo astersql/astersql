@@ -281,3 +281,7 @@ PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受�
 扩展协议把共享数据库授权命令的通知加入portal本次已编码响应；后续分页/重执行沿现有缓存语义，不能重复触发授权写入。
 
 聚焦行为回归：`pg_catalog_test::cat14_17`。
+
+## 目录 OID 参数边界（cat14_27）
+
+catalog_parameter 的 OID 26 文本输入支持 0..u32::MAX 及 PostgreSQL oidin 接受的 signed int4 拼写（-2147483648..-1 按相同 32 位身份解释）。越界返回 22003，非法数字返回 22P02。catalog_binary_parameter 的 OID 输入严格四字节网络序；不足四字节返回 08P01，超长返回 22P03。仅补齐既有目录参数解码分支，不扩展普通 SQL 参数类型。cat14_27 经真实非 root 连接核验输入/输出格式、NULL、错误后的 Sync/E、ROLLBACK/I 恢复及 statement/portal 清理。

@@ -133,9 +133,24 @@ pub(crate) fn resolve_in_path(
     path: &[String],
     facts: &[astersql_session::runtime::PgNamespaceFact],
 ) -> ConnResult<u32> {
+    if input.trim() == "-" {
+        return Ok(0);
+    }
     if !input.trim().is_empty() && input.trim().bytes().all(|b| b.is_ascii_digit()) {
         return input.trim().parse::<u32>().map_err(|_| range_error());
     }
+    resolve_name_in_path(input, database, snapshot, path, facts)
+}
+
+/// A declared text value uses name lookup, unlike regclass's unknown-literal
+/// input function, whose numeric and invalid-OID spellings denote OIDs directly.
+pub(crate) fn resolve_name_in_path(
+    input: &str,
+    database: &str,
+    snapshot: &dyn InfoSchema,
+    path: &[String],
+    facts: &[astersql_session::runtime::PgNamespaceFact],
+) -> ConnResult<u32> {
     let parts = name_parts(input)?;
     let (schema, name) = match parts.as_slice() {
         [name] => (None, name),
@@ -227,6 +242,9 @@ pub(crate) fn display_in_path(
     path: &[String],
     facts: &[astersql_session::runtime::PgNamespaceFact],
 ) -> ConnResult<String> {
+    if oid == 0 {
+        return Ok("-".into());
+    }
     for row in crate::pg_catalog::class_rows(snapshot, database)? {
         if row[0] != crate::conn::Value::Signed(i64::from(oid)) {
             continue;
@@ -261,11 +279,185 @@ pub(crate) fn display_in_path(
     }
     Ok(oid.to_string())
 }
+// PostgreSQL 18 quote_identifier leaves only UNRESERVED keywords unquoted.
+// These are the COL_NAME, TYPE_FUNC_NAME and RESERVED categories from kwlist.h;
+// the native MySQL keyword table has different categories and cannot be reused.
+fn needs_keyword_quotes(name: &str) -> bool {
+    matches!(
+        name,
+        "all"
+            | "analyse"
+            | "analyze"
+            | "and"
+            | "any"
+            | "array"
+            | "as"
+            | "asc"
+            | "asymmetric"
+            | "authorization"
+            | "between"
+            | "bigint"
+            | "binary"
+            | "bit"
+            | "boolean"
+            | "both"
+            | "case"
+            | "cast"
+            | "char"
+            | "character"
+            | "check"
+            | "coalesce"
+            | "collate"
+            | "collation"
+            | "column"
+            | "concurrently"
+            | "constraint"
+            | "create"
+            | "cross"
+            | "current_catalog"
+            | "current_date"
+            | "current_role"
+            | "current_schema"
+            | "current_time"
+            | "current_timestamp"
+            | "current_user"
+            | "dec"
+            | "decimal"
+            | "default"
+            | "deferrable"
+            | "desc"
+            | "distinct"
+            | "do"
+            | "else"
+            | "end"
+            | "except"
+            | "exists"
+            | "extract"
+            | "false"
+            | "fetch"
+            | "float"
+            | "for"
+            | "foreign"
+            | "freeze"
+            | "from"
+            | "full"
+            | "grant"
+            | "greatest"
+            | "group"
+            | "grouping"
+            | "having"
+            | "ilike"
+            | "in"
+            | "initially"
+            | "inner"
+            | "inout"
+            | "int"
+            | "integer"
+            | "intersect"
+            | "interval"
+            | "into"
+            | "is"
+            | "isnull"
+            | "join"
+            | "json"
+            | "json_array"
+            | "json_arrayagg"
+            | "json_exists"
+            | "json_object"
+            | "json_objectagg"
+            | "json_query"
+            | "json_scalar"
+            | "json_serialize"
+            | "json_table"
+            | "json_value"
+            | "lateral"
+            | "leading"
+            | "least"
+            | "left"
+            | "like"
+            | "limit"
+            | "localtime"
+            | "localtimestamp"
+            | "merge_action"
+            | "national"
+            | "natural"
+            | "nchar"
+            | "none"
+            | "normalize"
+            | "not"
+            | "notnull"
+            | "null"
+            | "nullif"
+            | "numeric"
+            | "offset"
+            | "on"
+            | "only"
+            | "or"
+            | "order"
+            | "out"
+            | "outer"
+            | "overlaps"
+            | "overlay"
+            | "placing"
+            | "position"
+            | "precision"
+            | "primary"
+            | "real"
+            | "references"
+            | "returning"
+            | "right"
+            | "row"
+            | "select"
+            | "session_user"
+            | "setof"
+            | "similar"
+            | "smallint"
+            | "some"
+            | "substring"
+            | "symmetric"
+            | "system_user"
+            | "table"
+            | "tablesample"
+            | "then"
+            | "time"
+            | "timestamp"
+            | "to"
+            | "trailing"
+            | "treat"
+            | "trim"
+            | "true"
+            | "union"
+            | "unique"
+            | "user"
+            | "using"
+            | "values"
+            | "varchar"
+            | "variadic"
+            | "verbose"
+            | "when"
+            | "where"
+            | "window"
+            | "with"
+            | "xmlattributes"
+            | "xmlconcat"
+            | "xmlelement"
+            | "xmlexists"
+            | "xmlforest"
+            | "xmlnamespaces"
+            | "xmlparse"
+            | "xmlpi"
+            | "xmlroot"
+            | "xmlserialize"
+            | "xmltable"
+    )
+}
+
 pub(crate) fn quoted(name: &str) -> String {
-    if name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+    if !needs_keyword_quotes(name)
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$')

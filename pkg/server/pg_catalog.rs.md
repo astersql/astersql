@@ -180,3 +180,7 @@ pg_table_is_visible(oid)使用同次Execution的有界pg_class provider缓存及
 ## 2026-11-07 目录任务26：真实函数签名可见性
 
 pg_proc由原三原语及PgStandardSchema/本连接临时声明枚举真实登记对象，投影OID/namespace/输入向量/结果/owner/implementation；可见性与普通调用同源，登记函数自身EXECUTE也走原ACL；继续保留行数和工作预算。
+
+## 名称与 OID 往返（cat14_27）
+
+regclass 强制转换区分输入函数和已声明 text 的名称转换：未知字符串字面量调用 `pg_oid::resolve_in_path`，包括数字 OID 与 `-`；text 参数或表达式调用 `resolve_name_in_path`，数字也必须作为关系名查找。两者继续共享同次 Execution 快照、有效路径和 namespace USAGE。regclass 到 text 使用同一身份的 `display_in_path`，必要时限定 schema 并正确引用名称。

@@ -989,8 +989,13 @@ fn catalog_parameter(oid: u32, value: Option<&[u8]>) -> Result<crate::pg_catalog
                 error("22P02", "invalid OID parameter")
             }
         })?;
-        let number =
-            u32::try_from(number).map_err(|_| error("22003", "OID parameter out of range"))?;
+        // oidin also accepts the signed int4 spelling of an unsigned OID.
+        // Restrict negatives to int4 before preserving their two's-complement bits.
+        let number = if number < 0 {
+            i32::try_from(number).map_err(|_| error("22003", "OID parameter out of range"))? as u32
+        } else {
+            u32::try_from(number).map_err(|_| error("22003", "OID parameter out of range"))?
+        };
         return Ok(Expr::Integer(i64::from(number)));
     }
     if oid == 19 {
@@ -1032,9 +1037,14 @@ fn catalog_binary_parameter(
     // JDBC can bind a schema identifier as int4/int8 and cast it to oid in
     // SQL, or bind an oid directly. OIDs preserve the full unsigned range.
     Ok(match oid {
-        26 => Expr::Integer(i64::from(u32::from_be_bytes(
-            value.try_into().map_err(|_| invalid())?,
-        ))),
+        26 => {
+            if value.len() < 4 {
+                return Err(error("08P01", "insufficient data left in OID parameter"));
+            }
+            Expr::Integer(i64::from(u32::from_be_bytes(
+                value.try_into().map_err(|_| invalid())?,
+            )))
+        }
         20 => Expr::Integer(i64::from_be_bytes(value.try_into().map_err(|_| invalid())?)),
         23 => Expr::Integer(i64::from(i32::from_be_bytes(
             value.try_into().map_err(|_| invalid())?,
