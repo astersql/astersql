@@ -53,3 +53,10 @@ PgStandardSchema新增按database ID保存的tablespace_catalog_acls，字段ser
 ## 2026-11-07 任务29外部对象空关系
 
 在现有PgStandardSchema的foreign_catalog_acls保存按database ID及已注册目录名的显式ACL覆盖，serde(default)兼容旧记录；foreign_catalog_acl为serde(skip)当前库只读事实。默认不创建FDW对象或写入对象选项，不做读时迁移。由cat14_29真实跨连接与跨库撤权验证。
+
+
+## 2026-11-07 任务30：行安全策略门禁
+
+PgStandardSchema的foreign_catalog_acls映射复用于已注册空pg_policy目录的按库ACL覆盖。保留历史序列化字段名及默认读取语义，不迁移旧记录；现有namespace事实过滤和DROP ROLE依赖遍历已经处理映射中的所有目录，无需新字段或新事务路径。
+
+聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。

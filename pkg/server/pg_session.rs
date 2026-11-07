@@ -659,6 +659,69 @@ impl SessionQuery {
         let word_at =
             |i: usize, value: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w == value);
         if word_at(0, "create") || word_at(0, "alter") || word_at(0, "drop") {
+            // Neither native metadata nor the PG adapter can store/enforce row
+            // policies. Gate every policy mutation before native parsing.
+            if word_at(1, "policy") {
+                return Err((
+                    "0A000",
+                    "PostgreSQL row security policies are not supported".into(),
+                ));
+            }
+            if word_at(0, "alter") && word_at(1, "table") {
+                let mut action = 2;
+                if word_at(action, "if") && word_at(action + 1, "exists") {
+                    action += 2;
+                }
+                action += usize::from(word_at(action, "only"));
+                // Skip the relation name, including a qualified/quoted name and
+                // optional inheritance marker. A column named security or a
+                // string containing the clause must not trigger this gate.
+                if matches!(tokens.get(action), Some(Token::Word(_) | Token::Quoted(_))) {
+                    action += 1;
+                    while tokens.get(action) == Some(&Token::Symbol('.'))
+                        && matches!(
+                            tokens.get(action + 1),
+                            Some(Token::Word(_) | Token::Quoted(_))
+                        )
+                    {
+                        action += 2;
+                    }
+                    if tokens.get(action) == Some(&Token::Symbol('*')) {
+                        action += 1;
+                    }
+                    let mut depth = 0i32;
+                    for i in action..tokens.len() {
+                        if i == action {
+                            let clause = if word_at(i, "no") && word_at(i + 1, "force") {
+                                Some(i + 2)
+                            } else if word_at(i, "enable")
+                                || word_at(i, "disable")
+                                || word_at(i, "force")
+                            {
+                                Some(i + 1)
+                            } else {
+                                None
+                            };
+                            if clause.is_some_and(|j| {
+                                word_at(j, "row")
+                                    && word_at(j + 1, "level")
+                                    && word_at(j + 2, "security")
+                            }) {
+                                return Err((
+                                    "0A000",
+                                    "PostgreSQL row level security is not supported".into(),
+                                ));
+                            }
+                        }
+                        match &tokens[i] {
+                            Token::Symbol('(') => depth += 1,
+                            Token::Symbol(')') => depth -= 1,
+                            Token::Symbol(',') if depth == 0 => action = i + 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
             // No FDW object can be installed. Refuse before native parsing and
             // never include option values (which can contain secrets) in errors.
             if word_at(1, "server")

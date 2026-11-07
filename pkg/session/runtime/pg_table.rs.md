@@ -37,3 +37,10 @@ pg_tablespace这一已注册虚拟目录关系的GRANT/REVOKE复用PostgreSQLRel
 ## 2026-11-07 任务29外部对象空关系
 
 把任务28既有虚拟目录ACL分支局部复用于pg_foreign_data_wrapper/server/table；共享导出更名为pg_empty_catalog_select，只接受这三类及pg_tablespace。默认PUBLIC SELECT，显式覆盖继续复用PostgreSQLRelationAcl、update_object_acl、grantor/grantee/grant option和角色继承，表空间存储格式保持兼容。PG_SYSTEM_RELATIONS登记wrapper 2328以支持真实系统关系来源与OID反查。独立行为回归server::pg_catalog_test::cat14_29。
+
+
+## 2026-11-07 任务30：行安全策略门禁
+
+已注册虚拟pg_policy加入既有空目录SELECT/GRANT/REVOKE白名单，复用当前角色闭包、PUBLIC默认SELECT、grant option及RESTRICT/CASCADE；ACL继续保存到现有按库/目录名的映射，无第二套授权模型。普通用户不能用目录零行绕过权限，prepared重执行消费当前授权。
+
+聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。

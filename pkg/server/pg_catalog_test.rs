@@ -24707,3 +24707,518 @@ fn cat14_29() {
     send(&mut owner, b'X', b"");
     send(&mut admin, b'X', b"");
 }
+
+#[test]
+#[allow(dead_code)]
+fn cat14_30() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_30_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_30_other")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_30_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_30_db")
+            .unwrap();
+        for name in ["cat14_30_reader", "cat14_30_owner", "cat14_30_group"] {
+            native
+                .execute(&format!("DROP USER IF EXISTS '{name}'@'%'"))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+    fn state(r: &[(u8, Vec<u8>)]) -> String {
+        r.iter()
+            .find(|m| m.0 == b'E')
+            .and_then(|m| m.1.split(|b| *b == 0).find(|v| v.first() == Some(&b'C')))
+            .map(|v| String::from_utf8_lossy(&v[1..]).into_owned())
+            .unwrap_or_else(|| "success".into())
+    }
+
+    fn description(r: &[(u8, Vec<u8>)], expected: &[(u32, i16, u32, i16)], format: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            i16::from_be_bytes(t[..2].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        let mut o = 2;
+        for &(oid, len, source, attr) in expected {
+            o += t[o..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(u32::from_be_bytes(t[o..o + 4].try_into().unwrap()), source);
+            assert_eq!(
+                i16::from_be_bytes(t[o + 4..o + 6].try_into().unwrap()),
+                attr
+            );
+            assert_eq!(
+                u32::from_be_bytes(t[o + 6..o + 10].try_into().unwrap()),
+                oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 10..o + 12].try_into().unwrap()),
+                len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[o + 12..o + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 16..o + 18].try_into().unwrap()),
+                format
+            );
+            o += 18;
+        }
+    }
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    #[track_caller]
+    fn denied(s: &mut TcpStream, sql: &str, code: &str, status: u8) {
+        let r = query(s, sql);
+        assert_eq!(state(&r), code, "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+        if status == b'I' {
+            assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        }
+    }
+    fn execute(s: &mut TcpStream, format: i16) -> Vec<(u8, Vec<u8>)> {
+        send(
+            s,
+            b'B',
+            &[
+                b"space_portal\0space_stmt\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i32.to_be_bytes(),
+                b"1",
+                &1i16.to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"Pspace_portal\0");
+        send(
+            s,
+            b'E',
+            &[b"space_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', b"");
+        until_ready(s)
+    }
+    let mut bootstrap = connect_database("root", "cat14_30_db");
+    for role in ["reader", "owner", "group"] {
+        ok(
+            &mut bootstrap,
+            &format!(
+                "CREATE ROLE cat14_30_{role} {}",
+                if role == "group" { "NOLOGIN" } else { "LOGIN" }
+            ),
+        );
+    }
+    ok(&mut bootstrap, "CREATE DATABASE cat14_30_work");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_30_other");
+    send(&mut bootstrap, b'X', b"");
+    let connect = |user: &str| connect_database(user, "cat14_30_work");
+    let mut admin = connect("root");
+    ok(&mut admin, "ALTER SCHEMA public OWNER TO root");
+    ok(
+        &mut admin,
+        "GRANT USAGE,CREATE ON SCHEMA public TO cat14_30_owner",
+    );
+    ok(
+        &mut admin,
+        "GRANT USAGE ON SCHEMA public TO cat14_30_reader",
+    );
+    let mut owner = connect("cat14_30_owner");
+    ok(&mut owner, "CREATE TABLE public.cat14_30_t(id integer)");
+    ok(&mut owner, "INSERT INTO public.cat14_30_t VALUES(1)");
+    ok(
+        &mut owner,
+        "GRANT SELECT ON public.cat14_30_t TO cat14_30_reader",
+    );
+    let mut reader = connect("cat14_30_reader");
+    let catalogs = [(
+        "pg_policy",
+        "oid,polname,polrelid,polpermissive,polroles,polcmd,polqual,polwithcheck",
+        "oid",
+        3256,
+        vec![
+            (26, 4),
+            (19, 64),
+            (26, 4),
+            (16, 1),
+            (1028, -1),
+            (18, 1),
+            (194, -1),
+            (194, -1),
+        ],
+    )];
+    for (relation, columns, key, source, types) in &catalogs {
+        let sql = format!("SELECT {columns} FROM pg_catalog.{relation} ORDER BY {key}");
+        let expected: Vec<_> = types
+            .iter()
+            .enumerate()
+            .map(|(i, (oid, len))| (*oid, *len, *source, [1, 2, 3, 5, 6, 4, 7, 8][i]))
+            .collect();
+        for stream in [&mut owner, &mut reader] {
+            let r = ok(stream, &sql);
+            description(&r, &expected, 0);
+            assert!(data(&r).is_empty());
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        }
+        // Prepare once: every Execute must consume current role/ACL facts.
+        let prepared = format!("SELECT {columns} FROM pg_catalog.{relation} WHERE {key}=$1::oid");
+        send(
+            &mut reader,
+            b'P',
+            &[
+                b"space_stmt\0".as_slice(),
+                prepared.as_bytes(),
+                b"\0",
+                &1i16.to_be_bytes(),
+                &26u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut reader, b'D', b"Sspace_stmt\0");
+        send(&mut reader, b'S', b"");
+        let r = until_ready(&mut reader);
+        assert_eq!(state(&r), "success", "{r:?}");
+        assert_eq!(
+            r.iter().find(|m| m.0 == b't').unwrap().1,
+            [&1i16.to_be_bytes()[..], &26u32.to_be_bytes()].concat()
+        );
+        description(&r, &expected, 0);
+        for format in [0, 1] {
+            let r = execute(&mut reader, format);
+            assert_eq!(state(&r), "success", "{r:?}");
+            description(&r, &expected, format);
+            assert!(data(&r).is_empty());
+            send(&mut reader, b'C', b"Pspace_portal\0");
+            send(&mut reader, b'S', b"");
+            until_ready(&mut reader);
+        }
+        send(
+            &mut reader,
+            b'B',
+            &[
+                b"space_portal\0space_stmt\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut reader, b'D', b"Pspace_portal\0");
+        send(
+            &mut reader,
+            b'E',
+            &[b"space_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(&mut reader, b'S', b"");
+        let null_parameter = until_ready(&mut reader);
+        assert_eq!(state(&null_parameter), "success");
+        assert!(data(&null_parameter).is_empty());
+        description(&null_parameter, &expected, 1);
+        send(&mut reader, b'C', b"Pspace_portal\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+        denied(
+            &mut reader,
+            &format!("SELECT absent_field FROM pg_catalog.{relation} LIMIT 0"),
+            "42703",
+            b'I',
+        );
+        denied(
+            &mut reader,
+            &format!("SELECT xmin FROM pg_catalog.{relation}"),
+            "0A000",
+            b'I',
+        );
+        // A reader cannot remove PUBLIC's enumeration privileges.
+        let r = ok(
+            &mut reader,
+            &format!("REVOKE SELECT ON pg_catalog.{relation} FROM PUBLIC"),
+        );
+        assert!(r.iter().any(|m| m.0 == b'N'));
+        assert!(data(&ok(&mut reader, &sql)).is_empty());
+        ok(
+            &mut admin,
+            &format!("REVOKE SELECT ON pg_catalog.{relation} FROM PUBLIC"),
+        );
+        for rejected in [
+            &sql,
+            &format!("SELECT {columns} FROM pg_catalog.{relation} LIMIT 0"),
+        ] {
+            denied(&mut reader, rejected, "42501", b'I');
+        }
+        let r = execute(&mut reader, 1);
+        assert_eq!(state(&r), "42501");
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+        let mut reconnected = connect("cat14_30_reader");
+        denied(&mut reconnected, &sql, "42501", b'I');
+        send(&mut reconnected, b'X', b"");
+        let mut other = connect_database("cat14_30_reader", "cat14_30_other");
+        assert!(data(&ok(&mut other, &sql)).is_empty());
+        send(&mut other, b'X', b"");
+        ok(&mut reader, "BEGIN");
+        denied(&mut reader, &sql, "42501", b'E');
+        denied(&mut reader, "SELECT 1", "25P02", b'E');
+        ok(&mut reader, "ROLLBACK");
+        assert_eq!(data(&ok(&mut reader, "SELECT 1")), vec![row(&[Some("1")])]);
+        ok(
+            &mut admin,
+            &format!("GRANT SELECT ON pg_catalog.{relation} TO cat14_30_group"),
+        );
+        denied(&mut admin, "DROP ROLE cat14_30_group", "2BP01", b'I');
+        ok(&mut admin, "GRANT cat14_30_group TO cat14_30_reader");
+        let r = execute(&mut reader, 1);
+        assert_eq!(state(&r), "success", "{r:?}");
+        description(&r, &expected, 1);
+        assert!(data(&r).is_empty());
+        send(&mut reader, b'C', b"Pspace_portal\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+        ok(&mut admin, "REVOKE cat14_30_group FROM cat14_30_reader");
+        denied(&mut reader, &sql, "42501", b'I');
+        ok(
+            &mut admin,
+            &format!("REVOKE SELECT ON pg_catalog.{relation} FROM cat14_30_group"),
+        );
+        ok(
+            &mut admin,
+            &format!("GRANT SELECT ON pg_catalog.{relation} TO cat14_30_owner WITH GRANT OPTION"),
+        );
+        ok(
+            &mut owner,
+            &format!("GRANT SELECT ON pg_catalog.{relation} TO cat14_30_reader"),
+        );
+        assert!(data(&ok(&mut reader, &sql)).is_empty());
+        denied(
+            &mut admin,
+            &format!(
+                "REVOKE GRANT OPTION FOR SELECT ON pg_catalog.{relation} FROM cat14_30_owner RESTRICT"
+            ),
+            "2BP01",
+            b'I',
+        );
+        ok(
+            &mut admin,
+            &format!(
+                "REVOKE GRANT OPTION FOR SELECT ON pg_catalog.{relation} FROM cat14_30_owner CASCADE"
+            ),
+        );
+        denied(&mut reader, &sql, "42501", b'I');
+        ok(
+            &mut admin,
+            &format!("REVOKE SELECT ON pg_catalog.{relation} FROM cat14_30_owner"),
+        );
+
+        ok(
+            &mut admin,
+            &format!("GRANT SELECT ON pg_catalog.{relation} TO PUBLIC"),
+        );
+        send(&mut reader, b'C', b"Sspace_stmt\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    denied(
+        &mut reader,
+        "SELECT oid FROM pg_catalog.pg_missing_policy",
+        "42P01",
+        b'I',
+    );
+    // An actual ordinary relation survives a LEFT JOIN with the absent policy;
+    // NULL expressions retain pg_node_tree rather than becoming text.
+    let join = "SELECT c.relname,p.oid,p.polname,p.polrelid,p.polpermissive,p.polroles,p.polcmd,p.polqual,p.polwithcheck FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_policy p ON c.oid=p.polrelid WHERE c.relname='cat14_30_t'";
+    let expected = [
+        (19, 64, 1259, 2),
+        (26, 4, 3256, 1),
+        (19, 64, 3256, 2),
+        (26, 4, 3256, 3),
+        (16, 1, 3256, 5),
+        (1028, -1, 3256, 6),
+        (18, 1, 3256, 4),
+        (194, -1, 3256, 7),
+        (194, -1, 3256, 8),
+    ];
+    let null_row = row(&[
+        Some("cat14_30_t"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]);
+    let r = ok(&mut reader, join);
+    assert_eq!(data(&r), vec![null_row.clone()]);
+    description(&r, &expected, 0);
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"null_stmt\0".as_slice(),
+            join.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut reader,
+        b'B',
+        &[
+            b"null_portal\0null_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'D', b"Pnull_portal\0");
+    send(
+        &mut reader,
+        b'E',
+        &[b"null_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert_eq!(state(&r), "success", "{r:?}");
+    assert_eq!(data(&r), vec![null_row]);
+    description(&r, &expected, 1);
+    send(&mut reader, b'C', b"Pnull_portal\0");
+    send(&mut reader, b'C', b"Snull_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    for relation in ["pg_policy"] {
+        ok(
+            &mut admin,
+            &format!("REVOKE SELECT ON pg_catalog.{relation} FROM PUBLIC"),
+        );
+        denied(&mut reader, join, "42501", b'I');
+        ok(
+            &mut admin,
+            &format!("GRANT SELECT ON pg_catalog.{relation} TO PUBLIC"),
+        );
+    }
+    for sql in [
+        "CREATE POLICY cat14_30_p ON public.cat14_30_t USING (id = 1)",
+        "CREATE /* boundary */ POLICY cat14_30_p ON public.cat14_30_t USING (id = 1) WITH CHECK (id = 1)",
+        "ALTER POLICY cat14_30_p ON public.cat14_30_t USING (id = 2)",
+        "DROP POLICY IF EXISTS cat14_30_p ON public.cat14_30_t",
+        "ALTER TABLE public.cat14_30_t ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE IF EXISTS ONLY public.cat14_30_t ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE ONLY public.cat14_30_t FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE public.cat14_30_t DISABLE ROW LEVEL SECURITY",
+        "ALTER TABLE public.cat14_30_t NO FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE public.cat14_30_t ADD COLUMN cat14_30_side integer, ENABLE ROW LEVEL SECURITY",
+    ] {
+        denied(&mut owner, sql, "0A000", b'I');
+        ok(&mut owner, "BEGIN");
+        denied(&mut owner, sql, "0A000", b'E');
+        denied(&mut owner, "SELECT 1", "25P02", b'E');
+        ok(&mut owner, "ROLLBACK");
+        assert_eq!(data(&ok(&mut owner, "SELECT 1")), vec![row(&[Some("1")])]);
+    }
+    // Extended Parse rejection must recover on Sync without installing a
+    // statement or executing the preceding ADD COLUMN action.
+    let rejected =
+        "ALTER TABLE public.cat14_30_t ADD COLUMN cat14_30_side integer, ENABLE ROW LEVEL SECURITY";
+    send(
+        &mut owner,
+        b'P',
+        &[
+            b"rejected_policy\0".as_slice(),
+            rejected.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut owner, b'S', b"");
+    let r = until_ready(&mut owner);
+    assert_eq!(state(&r), "0A000");
+    assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+    assert_eq!(data(&ok(&mut owner, "SELECT 1")), vec![row(&[Some("1")])]);
+    assert!(
+        data(&ok(
+            &mut reader,
+            "SELECT attname FROM pg_attribute a JOIN pg_class c ON a.attrelid=c.oid WHERE c.relname='cat14_30_t' AND a.attname='cat14_30_side'"
+        ))
+        .is_empty()
+    );
+    assert_eq!(
+        data(&ok(&mut reader, "SELECT id FROM public.cat14_30_t")),
+        vec![row(&[Some("1")])]
+    );
+    for (relation, columns, _, _, _) in &catalogs {
+        assert!(
+            data(&ok(
+                &mut reader,
+                &format!("SELECT {columns} FROM pg_catalog.{relation}")
+            ))
+            .is_empty()
+        );
+    }
+    // Policy identifiers are ordinary SQL names, not POLICY declarations.
+    ok(
+        &mut owner,
+        "CREATE TABLE public.\"policy\"(\"security\" integer)",
+    );
+    ok(&mut owner, "DROP TABLE public.\"policy\"");
+    send(&mut reader, b'X', b"");
+    send(&mut owner, b'X', b"");
+    send(&mut admin, b'X', b"");
+}

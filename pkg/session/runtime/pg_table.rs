@@ -157,7 +157,11 @@ pub fn pg_empty_catalog_select(
 ) -> SessionResult<bool> {
     if !matches!(
         relation,
-        "pg_tablespace" | "pg_foreign_data_wrapper" | "pg_foreign_server" | "pg_foreign_table"
+        "pg_tablespace"
+            | "pg_foreign_data_wrapper"
+            | "pg_foreign_server"
+            | "pg_foreign_table"
+            | "pg_policy"
     ) {
         return Err(namespace_error(
             "0A000",
@@ -710,7 +714,11 @@ impl ConcreteSession {
         // unqualified names, preserve ordinary search-path shadowing.
         let virtual_catalog = if !matches!(
             table.as_str(),
-            "pg_tablespace" | "pg_foreign_data_wrapper" | "pg_foreign_server" | "pg_foreign_table"
+            "pg_tablespace"
+                | "pg_foreign_data_wrapper"
+                | "pg_foreign_server"
+                | "pg_foreign_table"
+                | "pg_policy"
         ) {
             false
         } else if let Some(schema) = schema {

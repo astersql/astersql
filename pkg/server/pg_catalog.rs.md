@@ -194,3 +194,10 @@ pg_tablespace保持真实零行，五列为oid/name/oid/aclitem[]/text[]，保�
 ## 2026-11-07 任务29外部对象空关系
 
 三类FDW目录按PG18完整7/8/3列绑定，保留2328/1417/3118来源属性与oid/name/text/aclitem[]/text[]类型；未知字段42703，合法未实现系统属性0A000。无对象是因安装入口拒绝，不是缺provider；普通表不投影为外表。每次Execute复用pg_empty_catalog_select检查真实有效角色与当前库目录SELECT；LEFT JOIN空右侧仍保留左行与带类型NULL。独立回归cat14_29覆盖Q、扩展Describe/二进制、撤权重执行、恢复与秘密不泄漏。
+
+
+## 2026-11-07 任务30：行安全策略门禁
+
+pg_policy的8个已知字段绑定到26/19/26/16/1028/18/194/194，字段来源3256，物理属性序1/2/3/5/6/4/7/8。策略表达式保留pg_node_tree，包括空关系和LEFT JOIN产生的NULL；合法但未实现系统属性拒绝0A000、未知字段42703。当前共享模型/原生入口不能安装PG RLS或policy，SessionQuery补齐所有策略/RLS状态变更前置拒绝，所以本目录可返回已知空集；不能把一般PG的零policy行推导成RLS关闭。每次Execute仍复用真实有效角色和pg_empty_catalog_select授权。
+
+聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。

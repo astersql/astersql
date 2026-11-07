@@ -1090,6 +1090,7 @@ impl CatalogQuery {
                                 0,
                             )
                         }),
+                    ("pg_policy", "polpermissive") => Some((4, 1, boolean)),
                     ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_class", "relname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -1225,6 +1226,7 @@ impl CatalogQuery {
                         | "pg_foreign_data_wrapper"
                         | "pg_foreign_server"
                         | "pg_foreign_table"
+                        | "pg_policy"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
@@ -1893,6 +1895,12 @@ impl CatalogQuery {
                         ("pg_foreign_data_wrapper", slot) if slot <= 6 => (slot + 1) as i16,
                         ("pg_foreign_server", slot) if slot <= 7 => (slot + 1) as i16,
                         ("pg_foreign_table", slot) if slot <= 2 => (slot + 1) as i16,
+                        ("pg_policy", 0) => 1,
+                        ("pg_policy", slot @ (2 | 3)) => slot as i16,
+                        ("pg_policy", 4) => 5,
+                        ("pg_policy", 5) => 6,
+                        ("pg_policy", 6) => 4,
+                        ("pg_policy", slot @ (7 | 8)) => slot as i16,
                         ("pg_tablespace", 0) => 1,
                         ("pg_tablespace", 1) => 2,
                         ("pg_tablespace", 5) => 3,
@@ -3278,7 +3286,7 @@ impl CatalogQuery {
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
             "pg_inherits" | "pg_aggregate" | "pg_collation" | "pg_opfamily" | "pg_amop"
-            | "pg_amproc" | "pg_policy" | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            | "pg_amproc" | "pg_trigger" | "pg_rewrite" => Vec::new(),
             "pg_operator" => [(94, 21), (96, 23), (410, 20)]
                 .into_iter()
                 .map(|(oid, input)| {
@@ -3416,13 +3424,18 @@ impl CatalogQuery {
                 database,
                 cancel,
             )?,
+            // The shared model/native grammar has no RLS or policy objects;
+            // SessionQuery rejects POLICY and every RLS state mutation before
+            // publication. Thus this absence is an execution capability, not an
+            // inference from zero policies (enabled RLS alone would deny rows).
             // These storage/foreign objects cannot be installed by the PG DDL
             // entry. Keep their typed catalogs empty, but still enforce the
             // current catalog SELECT ACL before returning even zero rows.
             "pg_tablespace"
             | "pg_foreign_data_wrapper"
             | "pg_foreign_server"
-            | "pg_foreign_table" => {
+            | "pg_foreign_table"
+            | "pg_policy" => {
                 if !context.pg_role_administrator()? {
                     let namespaces =
                         context.pg_namespace_facts().transpose()?.ok_or_else(|| {
@@ -6394,14 +6407,13 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_amproc", "amprocrighttype") => (4, oid),
         ("pg_amproc", "amprocfamily") => (5, oid),
         ("pg_policy", "oid") => (0, oid),
-        ("pg_policy", "xmin") => (1, 8),
-        ("pg_policy", "polname") => (2, 253),
+        ("pg_policy", "polname") => (2, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_policy", "polrelid") => (3, oid),
         ("pg_policy", "polpermissive") => (4, 1),
         ("pg_policy", "polroles") => (5, crate::pg_result::CatalogColumnType::OidArray as u8),
         ("pg_policy", "polcmd") => (6, internal_char),
-        ("pg_policy", "polqual") => (7, 253),
-        ("pg_policy", "polwithcheck") => (8, 253),
+        ("pg_policy", "polqual") => (7, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
+        ("pg_policy", "polwithcheck") => (8, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_trigger", "oid") => (0, oid),
         ("pg_trigger", "tgrelid") => (1, oid),
         ("pg_rewrite", "oid") => (0, oid),

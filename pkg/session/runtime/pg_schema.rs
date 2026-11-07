@@ -1172,7 +1172,8 @@ pub(super) struct BuiltinTypeIdentity {
 /// server from these globally allocated IDs, never copied from a reference build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgStandardSchema {
-    /// Database-local overrides for the three registered empty FDW catalogs.
+    /// Database-local overrides for registered empty FDW and policy catalogs.
+    /// Keep the original persisted field name for existing databases.
     #[serde(default)]
     pub(super) foreign_catalog_acls:
         BTreeMap<i64, BTreeMap<String, astersql_meta_model::PostgreSQLRelationAcl>>,

@@ -147,3 +147,10 @@ ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由�
 ## 2026-11-07 任务29外部对象空关系
 
 有界lexer在原生解析或写入前对CREATE/ALTER/DROP SERVER、FOREIGN DATA WRAPPER、FOREIGN TABLE返回0A000。错误仅描述能力，不含输入SQL或选项值；普通表/列的同名标识符、字符串和注释不触发。独立解析边界回归cat14_29_foreign_object_parser，真实服务回归cat14_29。
+
+
+## 2026-11-07 任务30：行安全策略门禁
+
+SessionQuery::parse在原生解析/副作用之前拒绝CREATE/ALTER/DROP POLICY及ALTER TABLE的ENABLE、DISABLE、FORCE、NO FORCE ROW LEVEL SECURITY，统一0A000。词法识别跳过ONLY、带引号和限定关系名、继承星号，并在顶层逗号识别后续action，避免前序ADD COLUMN先执行。普通同名表/列、字符串和注释保持既有分派。该能力边界不建设RLS执行器。
+
+聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。

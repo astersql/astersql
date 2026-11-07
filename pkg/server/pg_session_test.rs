@@ -375,3 +375,32 @@ fn cat14_29_foreign_object_parser() {
         assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
     }
 }
+
+#[test]
+fn cat14_30_policy_parser() {
+    use crate::pg_session::SessionQuery;
+    for sql in [
+        "CREATE POLICY p ON t USING (true)",
+        "ALTER POLICY p ON t USING (false)",
+        "DROP POLICY IF EXISTS p ON t",
+        "ALTER TABLE t ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE ONLY public.\"Odd Table\" FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE IF EXISTS ONLY public.\"Odd Table\" * ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE t DISABLE ROW LEVEL SECURITY",
+        "ALTER TABLE t NO FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE t ADD x integer, ENABLE /* boundary */ ROW LEVEL SECURITY",
+    ] {
+        assert_eq!(SessionQuery::parse(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+    for sql in [
+        "CREATE TABLE policy(security integer)",
+        "ALTER TABLE t ADD policy integer",
+        "ALTER TABLE t ADD security text DEFAULT 'ENABLE ROW LEVEL SECURITY'",
+        "ALTER TABLE t RENAME COLUMN policy TO security",
+        "DROP TABLE policy",
+        "CREATE TABLE t(x integer) /* CREATE POLICY p ON t */",
+        "SELECT 'CREATE POLICY p ON t'",
+    ] {
+        assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
+    }
+}
