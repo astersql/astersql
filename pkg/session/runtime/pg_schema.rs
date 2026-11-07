@@ -911,6 +911,11 @@ impl ConcreteSession {
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
+            standard.foreign_catalog_acl = standard
+                .foreign_catalog_acls
+                .get(&database.id)
+                .cloned()
+                .unwrap_or_default();
             standard.tablespace_catalog_acl =
                 standard.tablespace_catalog_acls.get(&database.id).cloned();
             standard
@@ -1167,6 +1172,12 @@ pub(super) struct BuiltinTypeIdentity {
 /// server from these globally allocated IDs, never copied from a reference build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgStandardSchema {
+    /// Database-local overrides for the three registered empty FDW catalogs.
+    #[serde(default)]
+    pub(super) foreign_catalog_acls:
+        BTreeMap<i64, BTreeMap<String, astersql_meta_model::PostgreSQLRelationAcl>>,
+    #[serde(skip)]
+    pub(super) foreign_catalog_acl: BTreeMap<String, astersql_meta_model::PostgreSQLRelationAcl>,
     /// Database-local ACL for the registered virtual pg_tablespace relation.
     /// Object rows remain absent; this controls catalog enumeration only.
     #[serde(default)]
@@ -1281,6 +1292,8 @@ impl ConcreteSession {
                         Err(e) if kv::IsErrNotFound(&e) && initialize => {
                             created = true;
                             let standard = PgStandardSchema {
+                                foreign_catalog_acls: BTreeMap::new(),
+                                foreign_catalog_acl: BTreeMap::new(),
                                 tablespace_catalog_acls: BTreeMap::new(),
                                 tablespace_catalog_acl: None,
                                 extension_functions: BTreeMap::new(),

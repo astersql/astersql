@@ -142,3 +142,8 @@ ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由�
 ## 2026-11-07 表空间空关系策略（任务28）
 
 在已有PG lexer和SessionQuery::parse入口中，于序列适配器和原生写入之前拒绝CREATE/ALTER/DROP TABLESPACE及对象显式TABLESPACE子句，SQLSTATE 0A000。词法判断保留引号、字符串、注释及列声明语义；无宿主路径访问或空间对象创建。cat14_28覆盖表/索引/临时表/ALTER与引用名。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+有界lexer在原生解析或写入前对CREATE/ALTER/DROP SERVER、FOREIGN DATA WRAPPER、FOREIGN TABLE返回0A000。错误仅描述能力，不含输入SQL或选项值；普通表/列的同名标识符、字符串和注释不触发。独立解析边界回归cat14_29_foreign_object_parser，真实服务回归cat14_29。

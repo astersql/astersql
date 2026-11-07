@@ -48,3 +48,8 @@ TablePrivileges.columns将列ACL接入原SchemaUtility worker；标准column/tab
 ## 2026-11-07 表空间空关系策略（任务28）
 
 PgStandardSchema新增按database ID保存的tablespace_catalog_acls，字段serde(default)兼容旧记录；pg_namespace_facts只提取当前库的覆盖到serde(skip)临时事实。虚拟关系既有PUBLIC SELECT默认保留，显式GRANT/REVOKE使用原KV记录。为ABS-ACL夹具所需public schema授权，显式管理员GRANT/REVOKE可在已显式赋owner、默认标记已知、现有集合仅含PUBLIC时迁移其存储权限集合；读取、未知历史集合均不自动迁移。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+在现有PgStandardSchema的foreign_catalog_acls保存按database ID及已注册目录名的显式ACL覆盖，serde(default)兼容旧记录；foreign_catalog_acl为serde(skip)当前库只读事实。默认不创建FDW对象或写入对象选项，不做读时迁移。由cat14_29真实跨连接与跨库撤权验证。

@@ -43,3 +43,8 @@ DROP ROLE沿已有按活跃数据库扫描的事务检查类型owner与grantor/g
 ## 2026-11-07 表空间空关系策略（任务28）
 
 validate_database_acl开放到同级runtime模块供虚拟目录ACL复用，不改变校验算法。DROP ROLE复用现有跨库依赖扫描，检查活跃数据库的表空间目录ACL grantor/grantee，防止悬空角色引用；KV读取错误保持传播。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+既有DROP ROLE依赖扫描读取当前活跃数据库对应的foreign_catalog_acls，拒绝删除仍作grantor/grantee的角色（2BP01），保留KV错误。回归cat14_29分别验证三个目录的group依赖；不引入FDW对象owner生命周期。

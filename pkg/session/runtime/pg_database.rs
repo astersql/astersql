@@ -1601,6 +1601,19 @@ impl ConcreteSession {
                                     let standard: super::pg_schema::PgStandardSchema =
                                         serde_json::from_slice(&value.Value)
                                             .map_err(|e| kv::errors::New(e.to_string()))?;
+                                    if standard.foreign_catalog_acls.get(&schema.id).is_some_and(
+                                        |acls| {
+                                            acls.values().any(|acl| {
+                                                acl.grants
+                                                    .iter()
+                                                    .any(|g| g.grantee == *oid || g.grantor == *oid)
+                                            })
+                                        },
+                                    ) {
+                                        return Err(kv::errors::New(
+                                            "role has relation dependencies",
+                                        ));
+                                    }
                                     if standard
                                         .tablespace_catalog_acls
                                         .get(&schema.id)

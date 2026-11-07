@@ -659,6 +659,18 @@ impl SessionQuery {
         let word_at =
             |i: usize, value: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w == value);
         if word_at(0, "create") || word_at(0, "alter") || word_at(0, "drop") {
+            // No FDW object can be installed. Refuse before native parsing and
+            // never include option values (which can contain secrets) in errors.
+            if word_at(1, "server")
+                || (word_at(1, "foreign")
+                    && (word_at(2, "table") || (word_at(2, "data") && word_at(3, "wrapper"))))
+            {
+                return Err((
+                    "0A000",
+                    "PostgreSQL foreign objects are not supported".into(),
+                ));
+            }
+
             let mut depth = 0i32;
             for (i, token) in tokens.iter().enumerate() {
                 match token {

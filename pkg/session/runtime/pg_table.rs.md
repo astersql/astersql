@@ -31,4 +31,9 @@ pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical meta
 
 ## 2026-11-07 表空间空关系策略（任务28）
 
-pg_tablespace这一已注册虚拟目录关系的GRANT/REVOKE复用PostgreSQLRelationAcl、update_object_acl和角色闭包，保留grantor/grantee、PUBLIC、grant option、RESTRICT/CASCADE语义。显式pg_catalog与未限定名称按有效路径绑定，用户同名表不混淆。覆盖保存在现有PgStandardSchema中，按库隔离；provider执行pg_tablespace_catalog_select，在空关系及LIMIT 0时仍先检查权限。不是存储空间对象owner/ACL实现，也不扩展其他虚拟关系。
+pg_tablespace这一已注册虚拟目录关系的GRANT/REVOKE复用PostgreSQLRelationAcl、update_object_acl和角色闭包，保留grantor/grantee、PUBLIC、grant option、RESTRICT/CASCADE语义。显式pg_catalog与未限定名称按有效路径绑定，用户同名表不混淆。覆盖保存在现有PgStandardSchema中，按库隔离；provider执行pg_empty_catalog_select，在空关系及LIMIT 0时仍先检查权限。不是存储空间对象owner/ACL实现，也不扩展其他虚拟关系。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+把任务28既有虚拟目录ACL分支局部复用于pg_foreign_data_wrapper/server/table；共享导出更名为pg_empty_catalog_select，只接受这三类及pg_tablespace。默认PUBLIC SELECT，显式覆盖继续复用PostgreSQLRelationAcl、update_object_acl、grantor/grantee/grant option和角色继承，表空间存储格式保持兼容。PG_SYSTEM_RELATIONS登记wrapper 2328以支持真实系统关系来源与OID反查。独立行为回归server::pg_catalog_test::cat14_29。

@@ -189,3 +189,8 @@ regclass 强制转换区分输入函数和已声明 text 的名称转换：未�
 ## 2026-11-07 表空间空关系策略（任务28）
 
 pg_tablespace保持真实零行，五列为oid/name/oid/aclitem[]/text[]，保留1213的真实PG属性号与text/binary描述；未知列42703。每次Execute复用共享角色图和按库持久的虚拟关系ACL检查SELECT，拒绝42501优先于空行/LIMIT；不把无权限伪装为空集。pg_class.reltablespace使用0表示原生存储没有显式PG空间分配，LEFT JOIN保左行；没有捏造pg_default/pg_global对象。独立回归为pg_catalog_test::cat14_28。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+三类FDW目录按PG18完整7/8/3列绑定，保留2328/1417/3118来源属性与oid/name/text/aclitem[]/text[]类型；未知字段42703，合法未实现系统属性0A000。无对象是因安装入口拒绝，不是缺provider；普通表不投影为外表。每次Execute复用pg_empty_catalog_select检查真实有效角色与当前库目录SELECT；LEFT JOIN空右侧仍保留左行与带类型NULL。独立回归cat14_29覆盖Q、扩展Describe/二进制、撤权重执行、恢复与秘密不泄漏。

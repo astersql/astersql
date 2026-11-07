@@ -785,6 +785,7 @@ impl CatalogQuery {
                         | "pg_sequence"
                         | "pg_foreign_table"
                         | "pg_foreign_server"
+                        | "pg_foreign_data_wrapper"
                         | "pg_collation"
                         | "pg_opfamily"
                         | "pg_amop"
@@ -1218,8 +1219,13 @@ impl CatalogQuery {
                     | "information_schema.referential_constraints"
                     | "information_schema.constraint_column_usage"
             ) && qualifier.is_none_or(|q| q == r.alias)
-                || (r.name == "pg_tablespace"
-                    && qualifier.is_none_or(|q| q == r.alias)
+                || (matches!(
+                    r.name.as_str(),
+                    "pg_tablespace"
+                        | "pg_foreign_data_wrapper"
+                        | "pg_foreign_server"
+                        | "pg_foreign_table"
+                ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
                         Some("tableoid" | "xmin" | "cmin" | "xmax" | "cmax" | "ctid")
@@ -1884,6 +1890,9 @@ impl CatalogQuery {
                         ("pg_class", 11) => 6,
                         ("pg_class", 13) => 32,
                         ("pg_class", 14) => 9,
+                        ("pg_foreign_data_wrapper", slot) if slot <= 6 => (slot + 1) as i16,
+                        ("pg_foreign_server", slot) if slot <= 7 => (slot + 1) as i16,
+                        ("pg_foreign_table", slot) if slot <= 2 => (slot + 1) as i16,
                         ("pg_tablespace", 0) => 1,
                         ("pg_tablespace", 1) => 2,
                         ("pg_tablespace", 5) => 3,
@@ -3268,9 +3277,8 @@ impl CatalogQuery {
             // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_aggregate" | "pg_foreign_table" | "pg_foreign_server"
-            | "pg_collation" | "pg_opfamily" | "pg_amop" | "pg_amproc" | "pg_policy"
-            | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            "pg_inherits" | "pg_aggregate" | "pg_collation" | "pg_opfamily" | "pg_amop"
+            | "pg_amproc" | "pg_policy" | "pg_trigger" | "pg_rewrite" => Vec::new(),
             "pg_operator" => [(94, 21), (96, 23), (410, 20)]
                 .into_iter()
                 .map(|(oid, input)| {
@@ -3408,17 +3416,21 @@ impl CatalogQuery {
                 database,
                 cancel,
             )?,
-            // Native storage has no PostgreSQL tablespace source. Keep the
-            // typed relation empty, without synthetic pg_default/pg_global
-            // rows or exposing paths from the server host.
-            "pg_tablespace" => {
+            // These storage/foreign objects cannot be installed by the PG DDL
+            // entry. Keep their typed catalogs empty, but still enforce the
+            // current catalog SELECT ACL before returning even zero rows.
+            "pg_tablespace"
+            | "pg_foreign_data_wrapper"
+            | "pg_foreign_server"
+            | "pg_foreign_table" => {
                 if !context.pg_role_administrator()? {
                     let namespaces =
                         context.pg_namespace_facts().transpose()?.ok_or_else(|| {
                             database_identity_unavailable("namespace facts are unavailable")
                         })?;
                     let identity = execution.session_identity()?;
-                    let allowed = astersql_session::runtime::pg_tablespace_catalog_select(
+                    let allowed = astersql_session::runtime::pg_empty_catalog_select(
+                        name,
                         &namespaces,
                         &execution.role_facts()?,
                         &identity.1,
@@ -3428,7 +3440,7 @@ impl CatalogQuery {
                         return Err(ConnError::PgFunction(
                             astersql_session::runtime::PgFunctionError {
                                 state: "42501",
-                                message: "permission denied for table pg_tablespace".into(),
+                                message: format!("permission denied for table {name}"),
                                 detail: None,
                                 hint: None,
                                 position: None,
@@ -6335,7 +6347,28 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
             (2, crate::pg_result::CatalogColumnType::TextArray as u8)
         }
         ("pg_foreign_server", "oid") => (0, oid),
-        ("pg_foreign_server", "srvname") => (1, 253),
+        ("pg_foreign_server", "srvname") => (1, crate::pg_result::CatalogColumnType::Name as u8),
+        ("pg_foreign_server", "srvowner") => (2, oid),
+        ("pg_foreign_server", "srvfdw") => (3, oid),
+        ("pg_foreign_server", "srvtype") => (4, 253),
+        ("pg_foreign_server", "srvversion") => (5, 253),
+        ("pg_foreign_server", "srvacl") => (6, crate::pg_result::CatalogColumnType::AclArray as u8),
+        ("pg_foreign_server", "srvoptions") => {
+            (7, crate::pg_result::CatalogColumnType::TextArray as u8)
+        }
+        ("pg_foreign_data_wrapper", "oid") => (0, oid),
+        ("pg_foreign_data_wrapper", "fdwname") => {
+            (1, crate::pg_result::CatalogColumnType::Name as u8)
+        }
+        ("pg_foreign_data_wrapper", "fdwowner") => (2, oid),
+        ("pg_foreign_data_wrapper", "fdwhandler") => (3, oid),
+        ("pg_foreign_data_wrapper", "fdwvalidator") => (4, oid),
+        ("pg_foreign_data_wrapper", "fdwacl") => {
+            (5, crate::pg_result::CatalogColumnType::AclArray as u8)
+        }
+        ("pg_foreign_data_wrapper", "fdwoptions") => {
+            (6, crate::pg_result::CatalogColumnType::TextArray as u8)
+        }
         ("pg_collation", "oid") => (0, oid),
         ("pg_collation", "xmin") => (1, 8),
         ("pg_collation", "collname") => (2, 253),

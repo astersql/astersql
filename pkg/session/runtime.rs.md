@@ -188,4 +188,9 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 
 ## 2026-11-07 表空间空关系策略（任务28）
 
-复用pg_table模块导出pg_tablespace_catalog_select，供目录执行从当前PgNamespaceFact/PgRoleFact计算SELECT；未新增SessionRequest或第二套授权执行器。
+复用pg_table模块导出pg_empty_catalog_select，供目录执行从当前PgNamespaceFact/PgRoleFact计算SELECT；未新增SessionRequest或第二套授权执行器。
+
+
+## 2026-11-07 任务29外部对象空关系
+
+pg_table导出pg_empty_catalog_select（替代原pg_tablespace_catalog_select），由既有PgNamespaceFact/PgRoleFact为四类已注册空目录计算SELECT；不增加worker请求或授权引擎。调用侧与任务28保持同一权限算法。

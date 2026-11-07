@@ -108,7 +108,7 @@ pub fn pg_table_acl_fact(table: &TableInfo, roles: &[PgRoleFact]) -> PgDatabaseF
 }
 // The existing virtual catalog has always admitted PUBLIC SELECT. Persist only
 // explicit overrides, with grantor identity from the registered standard owner.
-fn default_tablespace_catalog_acl(owner: i64) -> PostgreSQLRelationAcl {
+fn default_empty_catalog_acl(owner: i64) -> PostgreSQLRelationAcl {
     let mut acl = default_table_acl(owner);
     acl.grants.push(PostgreSQLAclGrant {
         grantor: owner,
@@ -118,14 +118,24 @@ fn default_tablespace_catalog_acl(owner: i64) -> PostgreSQLRelationAcl {
     });
     acl
 }
-fn tablespace_catalog_fact(standard: &PgStandardSchema, roles: &[PgRoleFact]) -> PgDatabaseFact {
+fn empty_catalog_fact(
+    relation: &str,
+    standard: &PgStandardSchema,
+    roles: &[PgRoleFact],
+) -> PgDatabaseFact {
     let names: BTreeMap<_, _> = roles.iter().map(|r| (r.oid, r.name.clone())).collect();
-    let acl = standard
-        .tablespace_catalog_acl
-        .clone()
-        .unwrap_or_else(|| default_tablespace_catalog_acl(standard.owner));
+    let acl = if relation == "pg_tablespace" {
+        standard.tablespace_catalog_acl.clone()
+    } else {
+        standard.foreign_catalog_acl.get(relation).cloned()
+    }
+    .unwrap_or_else(|| default_empty_catalog_acl(standard.owner));
     PgDatabaseFact {
-        id: 1213,
+        id: PG_SYSTEM_RELATIONS
+            .iter()
+            .find(|(n, _)| *n == relation)
+            .unwrap()
+            .1 as i64,
         owner: names
             .get(&standard.owner)
             .map(|n| (standard.owner, n.clone())),
@@ -139,16 +149,26 @@ fn tablespace_catalog_fact(standard: &PgStandardSchema, roles: &[PgRoleFact]) ->
     }
 }
 /// SELECT on the virtual relation uses the same current role graph as table ACLs.
-pub fn pg_tablespace_catalog_select(
+pub fn pg_empty_catalog_select(
+    relation: &str,
     namespaces: &[PgNamespaceFact],
     roles: &[PgRoleFact],
     actor: &str,
 ) -> SessionResult<bool> {
+    if !matches!(
+        relation,
+        "pg_tablespace" | "pg_foreign_data_wrapper" | "pg_foreign_server" | "pg_foreign_table"
+    ) {
+        return Err(namespace_error(
+            "0A000",
+            "virtual catalog ACL is unsupported",
+        ));
+    }
     let standard = namespaces
         .iter()
         .find_map(|n| n.standard.as_ref())
         .ok_or_else(|| namespace_error("0A000", "standard catalog identity is unavailable"))?;
-    let fact = tablespace_catalog_fact(standard, roles);
+    let fact = empty_catalog_fact(relation, standard, roles);
     if fact.owner.is_none() {
         return Err(namespace_error(
             "0A000",
@@ -688,7 +708,10 @@ impl ConcreteSession {
         }
         // Explicit pg_catalog qualification cannot bind a user relation. For
         // unqualified names, preserve ordinary search-path shadowing.
-        let virtual_tablespace = if table != "pg_tablespace" {
+        let virtual_catalog = if !matches!(
+            table.as_str(),
+            "pg_tablespace" | "pg_foreign_data_wrapper" | "pg_foreign_server" | "pg_foreign_table"
+        ) {
             false
         } else if let Some(schema) = schema {
             schema == "pg_catalog"
@@ -711,7 +734,7 @@ impl ConcreteSession {
             }
             virtual_relation
         };
-        if virtual_tablespace {
+        if virtual_catalog {
             if *sequence || !columns.is_empty() {
                 return Err(namespace_error(
                     "0A000",
@@ -746,11 +769,16 @@ impl ConcreteSession {
                         let mut standard: PgStandardSchema =
                             serde_json::from_slice(&value.Value)
                                 .map_err(|e| kv::errors::New(e.to_string()))?;
-                        let mut acl = standard
-                            .tablespace_catalog_acls
-                            .get(&database)
-                            .cloned()
-                            .unwrap_or_else(|| default_tablespace_catalog_acl(owner));
+                        let mut acl = if table == "pg_tablespace" {
+                            standard.tablespace_catalog_acls.get(&database).cloned()
+                        } else {
+                            standard
+                                .foreign_catalog_acls
+                                .get(&database)
+                                .and_then(|acls| acls.get(table))
+                                .cloned()
+                        }
+                        .unwrap_or_else(|| default_empty_catalog_acl(owner));
                         super::pg_database::validate_database_acl(
                             &acl.grants,
                             |id| roles.iter().any(|r| r.oid == id),
@@ -773,7 +801,15 @@ impl ConcreteSession {
                         warning = notice;
                         if modified {
                             acl.default_acl = false;
-                            standard.tablespace_catalog_acls.insert(database, acl);
+                            if table == "pg_tablespace" {
+                                standard.tablespace_catalog_acls.insert(database, acl);
+                            } else {
+                                standard
+                                    .foreign_catalog_acls
+                                    .entry(database)
+                                    .or_default()
+                                    .insert(table.clone(), acl);
+                            }
                             txn.Set(
                                 key,
                                 serde_json::to_vec(&standard)
@@ -786,7 +822,7 @@ impl ConcreteSession {
                 .map_err(|e| {
                     let text = e.to_string();
                     if text.contains("requires grant option") {
-                        namespace_error("42501", "permission denied for pg_tablespace")
+                        namespace_error("42501", &format!("permission denied for {table}"))
                     } else if text.contains("dependent database privileges") {
                         namespace_error("2BP01", "dependent privileges exist")
                     } else {
@@ -1224,4 +1260,5 @@ pub const PG_SYSTEM_RELATIONS: &[(&str, u32)] = &[
     ("pg_rewrite", 2618),
     ("pg_foreign_table", 3118),
     ("pg_foreign_server", 1417),
+    ("pg_foreign_data_wrapper", 2328),
 ];

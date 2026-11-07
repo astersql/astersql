@@ -344,3 +344,34 @@ fn cat14_28_tablespace_parser() {
         assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
     }
 }
+
+#[test]
+fn cat14_29_foreign_object_parser() {
+    use crate::pg_session::SessionQuery;
+    for sql in [
+        "CREATE SERVER s FOREIGN DATA WRAPPER w",
+        "CREATE /* boundary */ FOREIGN DATA WRAPPER w OPTIONS (password 'secret_probe')",
+        "CREATE FOREIGN TABLE t(id integer) SERVER s",
+        "ALTER SERVER s OPTIONS (ADD password 'secret_probe')",
+        "ALTER FOREIGN DATA WRAPPER w NO HANDLER",
+        "ALTER FOREIGN TABLE t RENAME TO t2",
+        "DROP SERVER IF EXISTS s CASCADE",
+        "DROP FOREIGN DATA WRAPPER w",
+        "DROP FOREIGN TABLE t",
+    ] {
+        let error = SessionQuery::parse(sql).unwrap_err();
+        assert_eq!(error.0, "0A000");
+        assert!(!error.1.contains("secret_probe"));
+    }
+    for sql in [
+        "CREATE TABLE server(id integer)",
+        "CREATE TABLE public.\"foreign\"(\"server\" integer)",
+        "CREATE TABLE t(note text DEFAULT 'CREATE FOREIGN DATA WRAPPER w')",
+        "ALTER TABLE t ADD server integer",
+        "DROP TABLE server",
+        "CREATE TABLE t(id integer) /* CREATE SERVER s */",
+    ] {
+        crate::pg_catalog_query::lex(sql).unwrap();
+        assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
+    }
+}
