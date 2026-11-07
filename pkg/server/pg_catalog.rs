@@ -1314,10 +1314,12 @@ impl CatalogQuery {
                 for key in order {
                     self.expr_type(&key.expr)?;
                 }
-                if self.expr_type(inner)?.0 != 8 {
-                    return Err(("0A000", "array_agg currently requires bigint input".into()));
-                }
-                Ok((crate::pg_result::CatalogColumnType::Int8Array as u8, 0))
+                let array = match self.expr_type(inner)?.0 {
+                    8 => crate::pg_result::CatalogColumnType::Int8Array,
+                    crate::pg_oid::OID_TYPE => crate::pg_result::CatalogColumnType::OidArray,
+                    _ => return Err(("0A000", "array_agg requires bigint or oid input".into())),
+                };
+                Ok((array as u8, 0))
             }
             Expr::Arithmetic(left, op, right) => {
                 let a = self.expr_type(left)?.0;
@@ -5595,7 +5597,15 @@ impl CatalogQuery {
             for p in &self.select.projections {
                 let mut expr = p.expr.clone();
                 visit_expr(&mut expr, &mut |expr| {
-                    if let Expr::ArrayAgg(value, order) = expr {
+                    if matches!(expr, Expr::ArrayAgg(_, _)) {
+                        // Preserve the validated element identity through aggregate materialization.
+                        let array_type = self
+                            .expr_type(expr)
+                            .map_err(|(_, message)| ConnError::Session(message))?
+                            .0;
+                        let Expr::ArrayAgg(value, order) = expr else {
+                            unreachable!()
+                        };
                         let mut values = Vec::new();
                         for row in &rows {
                             execution.comparison()?;
@@ -5611,11 +5621,7 @@ impl CatalogQuery {
                         } else {
                             Value::Text(array_text(values.into_iter().map(|(v, _)| v)))
                         };
-                        *expr = Expr::TypedLiteral(
-                            Box::new(literal(&value, 253)),
-                            crate::pg_result::CatalogColumnType::Int8Array as u8,
-                            0,
-                        );
+                        *expr = Expr::TypedLiteral(Box::new(literal(&value, 253)), array_type, 0);
                     }
                     Ok::<_, ConnError>(())
                 })?;
