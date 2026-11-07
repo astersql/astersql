@@ -1231,6 +1231,7 @@ impl CatalogQuery {
                         | "pg_trigger"
                         | "pg_policy"
                         | "pg_rewrite"
+                        | "pg_collation"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
@@ -1900,6 +1901,10 @@ impl CatalogQuery {
                         ("pg_foreign_server", slot) if slot <= 7 => (slot + 1) as i16,
                         ("pg_foreign_table", slot) if slot <= 2 => (slot + 1) as i16,
                         ("pg_rewrite", slot) if slot < 8 => [1, 3, 2, 4, 5, 6, 7, 8][slot],
+                        ("pg_collation", 0) => 1,
+                        ("pg_collation", slot) if (2..=10).contains(&slot) => {
+                            [2, 8, 9, 4, 3, 5, 6, 7, 10][slot - 2]
+                        }
                         ("pg_trigger", slot @ (0 | 1)) => (slot + 1) as i16,
                         ("pg_trigger", 2) => 4,
                         ("pg_trigger", 3) => 5,
@@ -3294,8 +3299,16 @@ impl CatalogQuery {
             // PostgreSQL extension objects (foreign wrappers, custom operators,
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
-            "pg_inherits" | "pg_aggregate" | "pg_collation" | "pg_opfamily" | "pg_amop"
-            | "pg_amproc" => Vec::new(),
+            "pg_inherits" | "pg_aggregate" | "pg_opfamily" | "pg_amop" | "pg_amproc" => Vec::new(),
+            "pg_collation" => {
+                // PostgreSQL requires built-in collations even without user
+                // objects. Native MySQL IDs do not prove PG provider, locale or
+                // comparison semantics; NULL attributes cannot replace those
+                // missing facts. Refuse before filters/joins/LIMIT can hide them.
+                return Err(database_identity_unavailable(
+                    "PostgreSQL collation provider, locale and comparison semantics are unavailable",
+                ));
+            }
             "pg_rewrite" => {
                 // A stored view definition does not provide a PG rule identity or
                 // action tree. Materialize this gate before filters or LIMIT, so
@@ -6453,11 +6466,15 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         }
         ("pg_collation", "oid") => (0, oid),
         ("pg_collation", "xmin") => (1, 8),
-        ("pg_collation", "collname") => (2, 253),
+        ("pg_collation", "collname") => (2, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_collation", "collcollate") => (3, 253),
         ("pg_collation", "collctype") => (4, 253),
-        ("pg_collation", "collowner") => (5, 8),
+        ("pg_collation", "collowner") => (5, oid),
         ("pg_collation", "collnamespace") => (6, oid),
+        ("pg_collation", "collprovider") => (7, internal_char),
+        ("pg_collation", "collisdeterministic") => (8, 1),
+        ("pg_collation", "collencoding") => (9, 3),
+        ("pg_collation", "colllocale") => (10, 253),
         ("pg_opfamily", "oid") => (0, oid),
         ("pg_opfamily", "xmin") => (1, 8),
         ("pg_opfamily", "opfname") => (2, 253),
