@@ -404,3 +404,35 @@ fn cat14_30_policy_parser() {
         assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
     }
 }
+
+#[test]
+fn cat14_31_trigger_parser() {
+    use crate::pg_session::SessionQuery;
+    for sql in [
+        "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION f()",
+        "CREATE OR REPLACE TRIGGER tr BEFORE INSERT ON t EXECUTE FUNCTION f()",
+        "CREATE CONSTRAINT TRIGGER tr AFTER INSERT ON t DEFERRABLE FOR EACH ROW EXECUTE FUNCTION f()",
+        "CREATE OR REPLACE CONSTRAINT TRIGGER tr AFTER INSERT ON t FOR EACH ROW EXECUTE FUNCTION f()",
+        "ALTER TRIGGER tr ON t RENAME TO other",
+        "ALTER TRIGGER tr ON t DEPENDS ON EXTENSION ext",
+        "DROP TRIGGER IF EXISTS tr ON t CASCADE",
+        "ALTER TABLE t ENABLE TRIGGER ALL",
+        "ALTER TABLE IF EXISTS ONLY public.\"Odd Table\" * ENABLE ALWAYS TRIGGER tr",
+        "ALTER TABLE t ENABLE REPLICA TRIGGER tr",
+        "ALTER TABLE t DISABLE TRIGGER USER",
+        "ALTER TABLE t ADD COLUMN x integer, DISABLE /* boundary */ TRIGGER tr",
+    ] {
+        assert_eq!(SessionQuery::parse(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+    for sql in [
+        "CREATE TABLE trigger(\"trigger\" integer)",
+        "ALTER TABLE t ADD COLUMN trigger text DEFAULT 'ENABLE TRIGGER ALL'",
+        "ALTER TABLE t RENAME COLUMN trigger TO other",
+        "DROP TABLE trigger",
+        "CREATE TABLE t(x integer) /* CREATE TRIGGER tr */",
+        "SELECT 'CREATE TRIGGER tr'",
+        "GRANT TRIGGER ON public.t TO reader",
+    ] {
+        assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
+    }
+}

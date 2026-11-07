@@ -659,6 +659,18 @@ impl SessionQuery {
         let word_at =
             |i: usize, value: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w == value);
         if word_at(0, "create") || word_at(0, "alter") || word_at(0, "drop") {
+            // No PG user trigger can be installed or enabled. Reuse this
+            // capability gate before native parsing or metadata publication.
+            let mut object = 1;
+            if word_at(0, "create") && word_at(object, "or") && word_at(object + 1, "replace") {
+                object += 2;
+            }
+            if word_at(0, "create") && word_at(object, "constraint") {
+                object += 1;
+            }
+            if word_at(object, "trigger") {
+                return Err(("0A000", "PostgreSQL triggers are not supported".into()));
+            }
             // Neither native metadata nor the PG adapter can store/enforce row
             // policies. Gate every policy mutation before native parsing.
             if word_at(1, "policy") {
@@ -692,6 +704,20 @@ impl SessionQuery {
                     let mut depth = 0i32;
                     for i in action..tokens.len() {
                         if i == action {
+                            if word_at(i, "enable") || word_at(i, "disable") {
+                                let mut target = i + 1;
+                                if word_at(i, "enable")
+                                    && (word_at(target, "always") || word_at(target, "replica"))
+                                {
+                                    target += 1;
+                                }
+                                if word_at(target, "trigger") {
+                                    return Err((
+                                        "0A000",
+                                        "PostgreSQL triggers are not supported".into(),
+                                    ));
+                                }
+                            }
                             let clause = if word_at(i, "no") && word_at(i + 1, "force") {
                                 Some(i + 2)
                             } else if word_at(i, "enable")

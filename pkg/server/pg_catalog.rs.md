@@ -8,7 +8,7 @@
 
 - `CatalogQuery` 将 `pg_catalog_query` 产生的有限 AST 做绑定、列解析、类型推断和合法性检查；它只接受代码中列出的目录关系、表达式、函数及查询形态。
 - `Execution` 为一次执行固定当前数据库、单个 `SchemaRef` snapshot、取消令牌、provider/CTE 缓存和资源计数，保证同一查询的对象身份与元数据来自同一视图。
-- `provider_rows` 负责把 `pg_class`、`pg_namespace`、`pg_attribute`、`pg_type`、`pg_index`、`pg_constraint`、`pg_description`、`pg_sequence`、`pg_depend` 等 provider 映射为固定槽位行；没有可靠原生语义的 PG 对象返回有类型的空关系，而不是虚构对象。
+- `provider_rows` 负责把 `pg_class`、`pg_namespace`、`pg_attribute`、`pg_type`、`pg_index`、`pg_constraint`、`pg_description`、`pg_sequence`、`pg_depend` 等 provider 映射为固定槽位行；可证实不存在的 PG 对象返回有类型的空关系；存在对象却缺少可靠事实时拒绝读取，不虚构对象或伪空。
 - `evaluate`、`project`、`execute_rows` 和 `execute_select` 实现受限的 JOIN/LEFT JOIN、CTE、相关或非相关子查询、UNION、过滤、排序、DISTINCT、LIMIT、数组、`unnest`、`array_agg` 和三值逻辑。
 - `DATABASES_SQL`、`TRANSACTIONS_SQL` 是协议/客户端测试使用的代表性目录探测语句；`namespace_oid` 与 `catalog_indexes` 是同 crate 内 OID 解析和目录投影共享的窄接口。
 
@@ -39,7 +39,7 @@
 
 `Execution.snapshot` 是一次执行唯一的 schema 视图；`database` 同样只获取一次。`pg_class`、`pg_attribute`、`pg_index`、regclass 显示和定义反解都应使用这组一致数据。当前用户、事务列表和当前 TSO 则通过 `TiDBContext` 的受控查询或身份接口获取：`mysql.user` 映射 `pg_user`，`information_schema.tidb_trx` 映射 `pg_locks.transactionid`，`@@tidb_current_ts` 支撑 `txid_current()`。
 
-OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid` 与 `SYSTEM_RELATIONS` 保证 provider、regclass 和定义查询指向同一对象。`COLUMN_TYPES` 只登记当前可可靠映射的内建类型。未建立等价语义的 FDW、策略、触发器、rewrite、PG collation/operator family 等 provider 保留列类型但返回空行。
+OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid` 与 `SYSTEM_RELATIONS` 保证 provider、regclass 和定义查询指向同一对象。`COLUMN_TYPES` 只登记当前可可靠映射的内建类型。FDW、策略等尚无安装能力的 provider 保留列类型并返回空行；触发器读取须先核实当前库无FK，否则因缺PG内部trigger/function身份返回0A000。rewrite、PG collation/operator family等其他缺口沿各自任务处理。
 
 ## 依赖与调用关系
 
@@ -201,3 +201,12 @@ pg_tablespace保持真实零行，五列为oid/name/oid/aclitem[]/text[]，保�
 pg_policy的8个已知字段绑定到26/19/26/16/1028/18/194/194，字段来源3256，物理属性序1/2/3/5/6/4/7/8。策略表达式保留pg_node_tree，包括空关系和LEFT JOIN产生的NULL；合法但未实现系统属性拒绝0A000、未知字段42703。当前共享模型/原生入口不能安装PG RLS或policy，SessionQuery补齐所有策略/RLS状态变更前置拒绝，所以本目录可返回已知空集；不能把一般PG的零policy行推导成RLS关闭。每次Execute仍复用真实有效角色和pg_empty_catalog_select授权。
 
 聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。
+
+
+## 2026-11-07 目录任务31：触发器必需事实门禁
+
+`pg_trigger`提供oid/tgrelid/tgname/tgfoid/tgisinternal五列描述，类型26/26/19/26/16，来源OID2620，物理属性号1/2/4/5/8。未知用户列42703，尚未支持的系统属性0A000；空集和LEFT JOIN NULL仍保留这些描述。
+
+provider复用单次Execution的当前数据库schema快照与连接临时模型。无FK且未开放用户触发器安装能力时返回有类型的空集；任一模型有ForeignKeys则输出前0A000，因为现有FK执行没有PG内部trigger/function身份，不能以空集宣称完整FK内省。provider在过滤与JOIN前物化，故当前保守拒绝该库内所有pg_trigger读取（包括无关表过滤、父表、LIMIT0），不从SQL条件猜测不存在对象。每次Execute重新取事实，drop最后FK后恢复空集，另一数据库不受影响。未新增触发器执行器、对象或函数身份。
+
+`SessionQuery`的最小TRIGGER DDL拒绝门禁维护用户触发器不可安装边界；未来引入共享触发器事实时须一起更新provider。聚焦真实服务回归`pg_catalog_test::cat14_31`，含非root owner/reader、字段描述、text/binary、LEFT JOIN、FK前后prepared重执行、I/E恢复及跨库隔离。

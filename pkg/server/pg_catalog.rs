@@ -1091,6 +1091,7 @@ impl CatalogQuery {
                             )
                         }),
                     ("pg_policy", "polpermissive") => Some((4, 1, boolean)),
+                    ("pg_trigger", "tgisinternal") => Some((4, 1, boolean)),
                     ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_class", "relname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -1226,6 +1227,7 @@ impl CatalogQuery {
                         | "pg_foreign_data_wrapper"
                         | "pg_foreign_server"
                         | "pg_foreign_table"
+                        | "pg_trigger"
                         | "pg_policy"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
@@ -1895,6 +1897,10 @@ impl CatalogQuery {
                         ("pg_foreign_data_wrapper", slot) if slot <= 6 => (slot + 1) as i16,
                         ("pg_foreign_server", slot) if slot <= 7 => (slot + 1) as i16,
                         ("pg_foreign_table", slot) if slot <= 2 => (slot + 1) as i16,
+                        ("pg_trigger", slot @ (0 | 1)) => (slot + 1) as i16,
+                        ("pg_trigger", 2) => 4,
+                        ("pg_trigger", 3) => 5,
+                        ("pg_trigger", 4) => 8,
                         ("pg_policy", 0) => 1,
                         ("pg_policy", slot @ (2 | 3)) => slot as i16,
                         ("pg_policy", 4) => 5,
@@ -3286,7 +3292,38 @@ impl CatalogQuery {
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
             "pg_inherits" | "pg_aggregate" | "pg_collation" | "pg_opfamily" | "pg_amop"
-            | "pg_amproc" | "pg_trigger" | "pg_rewrite" => Vec::new(),
+            | "pg_amproc" | "pg_rewrite" => Vec::new(),
+            "pg_trigger" => {
+                // Native FK enforcement is not represented by PG trigger/function
+                // identities. A database containing an FK cannot truthfully expose
+                // an empty trigger catalog, including on its referenced tables.
+                // Providers materialize before filters: conservatively refuse the
+                // whole read rather than infer absence from a WHERE or LIMIT.
+                let snapshot = snapshot.ok_or_else(|| {
+                    database_identity_unavailable("schema snapshot is unavailable")
+                })?;
+                let mut tables = snapshot
+                    .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                    .map_err(|e| ConnError::Session(e.to_string()))?;
+                tables.extend(
+                    context
+                        .pg_local_temporary_models()?
+                        .into_iter()
+                        .map(|m| astersql_infoschema::Table::from_model(m).0),
+                );
+                for table in tables {
+                    check_catalog_cancel(cancel)?;
+                    let model = table.model_meta.as_ref().ok_or_else(|| {
+                        database_identity_unavailable("table metadata is unavailable")
+                    })?;
+                    if !model.ForeignKeys.is_empty() {
+                        return Err(database_identity_unavailable(
+                            "foreign key internal trigger identities and functions are unavailable",
+                        ));
+                    }
+                }
+                Vec::new()
+            }
             "pg_operator" => [(94, 21), (96, 23), (410, 20)]
                 .into_iter()
                 .map(|(oid, input)| {
@@ -6416,6 +6453,9 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_policy", "polwithcheck") => (8, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_trigger", "oid") => (0, oid),
         ("pg_trigger", "tgrelid") => (1, oid),
+        ("pg_trigger", "tgname") => (2, crate::pg_result::CatalogColumnType::Name as u8),
+        ("pg_trigger", "tgfoid") => (3, oid),
+        ("pg_trigger", "tgisinternal") => (4, 1),
         ("pg_rewrite", "oid") => (0, oid),
         ("pg_rewrite", "ev_class") => (1, oid),
         ("pg_opclass", "xmin") => (2, 8),

@@ -154,3 +154,10 @@ ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由�
 SessionQuery::parse在原生解析/副作用之前拒绝CREATE/ALTER/DROP POLICY及ALTER TABLE的ENABLE、DISABLE、FORCE、NO FORCE ROW LEVEL SECURITY，统一0A000。词法识别跳过ONLY、带引号和限定关系名、继承星号，并在顶层逗号识别后续action，避免前序ADD COLUMN先执行。普通同名表/列、字符串和注释保持既有分派。该能力边界不建设RLS执行器。
 
 聚焦回归：`pg_catalog_test::cat14_30`及`pg_session_test::cat14_30_policy_parser`。
+
+
+## 2026-11-07 任务31：触发器能力拒绝入口
+
+复用既有有界PG lexer，在native解析/元数据副作用前拒绝CREATE [OR REPLACE] [CONSTRAINT] TRIGGER、ALTER/DROP TRIGGER及ALTER TABLE ENABLE [ALWAYS|REPLICA]/DISABLE TRIGGER，SQLSTATE 0A000。ALTER TABLE沿已有RLS扫描器跳过ONLY/IF EXISTS/限定引号关系名/继承星号，并识别顶层复合action，避免先执行前序ADD COLUMN。普通表/列名、字符串、注释和GRANT TRIGGER保持现有分派。错误不包含输入SQL、函数体或选项值。此接线仅拒绝未支持能力，不创建触发器执行/身份子系统。
+
+独立词法边界`pg_session_test::cat14_31_trigger_parser`；真实非root服务、目录与无副作用回归`pg_catalog_test::cat14_31`。
