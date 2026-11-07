@@ -4300,8 +4300,16 @@ impl CatalogQuery {
                     .map_err(|(_, message)| ConnError::Session(message))?;
                 let rows = query.execute_select(execution, false)?;
                 if rows.len() > 1 {
-                    return Err(ConnError::Session(
-                        "PG scalar subquery returned more than one row".into(),
+                    return Err(ConnError::PgFunction(
+                        astersql_session::runtime::PgFunctionError {
+                            state: "21000",
+                            message:
+                                "more than one row returned by a subquery used as an expression"
+                                    .into(),
+                            detail: None,
+                            hint: None,
+                            position: None,
+                        },
                     ));
                 }
                 rows.first()

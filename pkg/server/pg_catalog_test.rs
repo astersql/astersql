@@ -27622,3 +27622,279 @@ fn cat14_37() {
         "cat14_37: real JOIN keys/database isolation; LEFT typed NULL; reusable CTE oid26; nonroot Q/extended text/binary; rejection/recovery/rename/drop verified"
     );
 }
+
+#[test]
+fn cat14_38() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_38_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_38_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_38_db")
+            .unwrap();
+        for name in ["cat14_38_reader", "cat14_38_owner"] {
+            native
+                .execute(&format!("DROP USER IF EXISTS '{name}'@'%'"))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+    fn state(r: &[(u8, Vec<u8>)]) -> String {
+        r.iter()
+            .find(|m| m.0 == b'E')
+            .and_then(|m| m.1.split(|b| *b == 0).find(|v| v.first() == Some(&b'C')))
+            .map(|v| String::from_utf8_lossy(&v[1..]).into_owned())
+            .unwrap_or_else(|| "success".into())
+    }
+
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    #[track_caller]
+    fn denied(s: &mut TcpStream, sql: &str, code: &str, status: u8) {
+        let r = query(s, sql);
+        assert_eq!(state(&r), code, "{sql}: {r:?}");
+        assert!(!r.iter().any(|m| matches!(m.0, b'D' | b'C')), "{r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+        if status == b'I' {
+            assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        }
+    }
+
+    fn description(r: &[(u8, Vec<u8>)], expected: &[(u32, i16, u32, i16)], format: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            i16::from_be_bytes(t[..2].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        let mut o = 2;
+        for &(oid, len, source, attr) in expected {
+            o += t[o..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(u32::from_be_bytes(t[o..o + 4].try_into().unwrap()), source);
+            assert_eq!(
+                i16::from_be_bytes(t[o + 4..o + 6].try_into().unwrap()),
+                attr
+            );
+            assert_eq!(
+                u32::from_be_bytes(t[o + 6..o + 10].try_into().unwrap()),
+                oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 10..o + 12].try_into().unwrap()),
+                len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[o + 12..o + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 16..o + 18].try_into().unwrap()),
+                format
+            );
+            o += 18;
+        }
+    }
+
+    let mut admin = connect_database("root", "cat14_38_db");
+    ok(&mut admin, "CREATE ROLE cat14_38_owner LOGIN");
+    ok(&mut admin, "CREATE ROLE cat14_38_reader LOGIN");
+    ok(&mut admin, "CREATE DATABASE cat14_38_work");
+    send(&mut admin, b'X', &[]);
+    let mut admin = connect_database("root", "cat14_38_work");
+    ok(&mut admin, "ALTER SCHEMA public OWNER TO root");
+    native
+        .execute("GRANT ALTER,DROP,CREATE,INSERT,SELECT ON cat14_38_work.* TO 'cat14_38_owner'@'%'")
+        .unwrap();
+    ok(
+        &mut admin,
+        "GRANT USAGE,CREATE ON SCHEMA public TO cat14_38_owner",
+    );
+    ok(
+        &mut admin,
+        "GRANT USAGE ON SCHEMA public TO cat14_38_reader",
+    );
+    let mut owner = connect_database("cat14_38_owner", "cat14_38_work");
+    let mut reader = connect_database("cat14_38_reader", "cat14_38_work");
+    ok(&mut owner, "CREATE TABLE public.route_t(id integer)");
+    ok(&mut owner, "INSERT INTO public.route_t VALUES(7)");
+    ok(&mut owner, "SET search_path=public,pg_catalog");
+    ok(&mut reader, "SET search_path=public,pg_catalog");
+    let model = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("cat14_38_work"),
+            &astersql_infoschema::CiString::new("route_t"),
+        )
+        .unwrap();
+    let oid = crate::pg_oid::table_oid(model.Meta().id).unwrap();
+    let oid_text = oid.to_string();
+    let one = "SELECT (SELECT oid FROM pg_catalog.pg_class WHERE relname='route_t') AS id FROM pg_catalog.pg_namespace WHERE nspname='public'";
+    let zero = one.replace("route_t", "route_missing");
+    denied(&mut reader, "SELECT id FROM public.route_t", "42501", b'I');
+    ok(
+        &mut owner,
+        "GRANT SELECT ON public.route_t TO cat14_38_reader",
+    );
+    assert_eq!(
+        data(&ok(&mut reader, "SELECT id FROM public.route_t")),
+        vec![row(&[Some("7")])]
+    );
+    ok(
+        &mut owner,
+        "REVOKE SELECT ON public.route_t FROM cat14_38_reader",
+    );
+    denied(&mut reader, "SELECT id FROM public.route_t", "42501", b'I');
+    let correlated = "SELECT (SELECT c.oid FROM pg_catalog.pg_class c WHERE c.relnamespace=n.oid AND c.relname='route_t') AS id FROM pg_catalog.pg_namespace n WHERE n.nspname='public'";
+    fn extended(s: &mut TcpStream, sql: &str, format: i16) -> Vec<(u8, Vec<u8>)> {
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+        );
+        send(s, b'D', b"S\0");
+        send(
+            s,
+            b'B',
+            &[
+                b"\0\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[b"\0".as_slice(), &0i32.to_be_bytes()].concat());
+        send(s, b'S', &[]);
+        until_ready(s)
+    }
+    let correlated_zero = correlated.replace("n.nspname='public'", "n.nspname='pg_catalog'");
+    for s in [&mut owner, &mut reader] {
+        for (sql, value) in [
+            (one, Some(oid_text.as_str())),
+            (zero.as_str(), None),
+            (correlated, Some(oid_text.as_str())),
+            (correlated_zero.as_str(), None),
+        ] {
+            let r = ok(s, sql);
+            description(&r, &[(26, 4, 0, 0)], 0);
+            assert_eq!(data(&r), vec![row(&[value])]);
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            for format in [0, 1] {
+                let r = extended(s, sql, format);
+                assert_eq!(state(&r), "success", "{sql}: {r:?}");
+                let t = r
+                    .iter()
+                    .filter(|m| m.0 == b'T')
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(t.len(), 2);
+                description(&t[..1], &[(26, 4, 0, 0)], 0);
+                description(&t[1..], &[(26, 4, 0, 0)], format);
+                let expected = if format == 1 && value.is_some() {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &4i32.to_be_bytes(),
+                        &oid.to_be_bytes(),
+                    ]
+                    .concat()
+                } else {
+                    row(&[value])
+                };
+                assert_eq!(data(&r), vec![expected]);
+                assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+                println!(
+                    "scalar sql={sql} oid={oid} metadata=26/4/-1 source=0/0 format={format} rows={:?}",
+                    data(&r)
+                );
+            }
+        }
+    }
+    // A second real schema relation makes the unqualified scalar return two rows.
+    ok(&mut admin, "CREATE SCHEMA cat14_38_second");
+    ok(
+        &mut admin,
+        "CREATE TABLE cat14_38_second.route_t(id integer)",
+    );
+    for s in [&mut owner, &mut reader] {
+        denied(s, one, "21000", b'I');
+        for format in [0, 1] {
+            let r = extended(s, one, format);
+            assert_eq!(state(&r), "21000", "{r:?}");
+            assert!(!r.iter().any(|m| matches!(m.0, b'D' | b'C')));
+            assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+            assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        }
+        ok(s, "BEGIN");
+        let r = extended(s, one, 0);
+        assert_eq!(state(&r), "21000");
+        assert!(!r.iter().any(|m| matches!(m.0, b'D' | b'C')));
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'E'])));
+        denied(s, "SELECT 1", "25P02", b'E');
+        ok(s, "ROLLBACK");
+        assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        let unsupported = "SELECT (SELECT c.oid FROM public.route_t c WHERE c.id=n.oid) FROM pg_catalog.pg_namespace n";
+        denied(s, unsupported, "0A000", b'I');
+        let r = extended(s, unsupported, 0);
+        assert_eq!(state(&r), "0A000");
+        assert!(!r.iter().any(|m| matches!(m.0, b'1' | b'D' | b'C')));
+    }
+    ok(&mut admin, "DROP TABLE cat14_38_second.route_t");
+    ok(&mut admin, "DROP SCHEMA cat14_38_second");
+    assert_eq!(data(&ok(&mut reader, one)), vec![row(&[Some(&oid_text)])]);
+    ok(&mut owner, "DROP TABLE public.route_t");
+    assert_eq!(data(&ok(&mut reader, one)), vec![row(&[None])]);
+    for s in [&mut owner, &mut reader, &mut admin] {
+        send(s, b'X', &[]);
+    }
+    println!(
+        "cat14_38: zero/one/many real scalar cardinality; typed NULL/OID; correlated reference; Q/extended text/binary; 21000 no rows; I/E recovery and cleanup"
+    );
+}
