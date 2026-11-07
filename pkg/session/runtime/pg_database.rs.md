@@ -38,3 +38,8 @@ update_object_acl_with_authority接收同对象上层表授权作为列grantor�
 DROP ROLE沿已有按活跃数据库扫描的事务检查类型owner与grantor/grantee引用，有依赖返回2BP01，不留下悬空ACL身份。类型事实仍保存在原PgStandardSchema记录，不另存角色依赖表。
 
 任务23：DROP ROLE 在原事务的活跃数据库依赖扫描内检查函数 owner、显式 ACL grantor/grantee，拒绝悬空引用。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+validate_database_acl开放到同级runtime模块供虚拟目录ACL复用，不改变校验算法。DROP ROLE复用现有跨库依赖扫描，检查活跃数据库的表空间目录ACL grantor/grantee，防止悬空角色引用；KV读取错误保持传播。

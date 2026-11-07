@@ -27,3 +27,8 @@ pg_table_privilege_command在现有PG namespace DDL锁下、通过canonical meta
 ## 2026-11-07 目录任务26：真实函数签名可见性
 
 共享PG_SYSTEM_RELATIONS为既有目录和真实可见性工厂提供同一目录身份，原表/列ACL不变。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+pg_tablespace这一已注册虚拟目录关系的GRANT/REVOKE复用PostgreSQLRelationAcl、update_object_acl和角色闭包，保留grantor/grantee、PUBLIC、grant option、RESTRICT/CASCADE语义。显式pg_catalog与未限定名称按有效路径绑定，用户同名表不混淆。覆盖保存在现有PgStandardSchema中，按库隔离；provider执行pg_tablespace_catalog_select，在空关系及LIMIT 0时仍先检查权限。不是存储空间对象owner/ACL实现，也不扩展其他虚拟关系。

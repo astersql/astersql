@@ -315,3 +315,32 @@ fn cat14_16_function_owner_parser() {
         assert!(SessionQuery::parse(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn cat14_28_tablespace_parser() {
+    use crate::pg_session::SessionQuery;
+    for sql in [
+        "CREATE TABLESPACE sp LOCATION '/abs_contract_only'",
+        "ALTER TABLESPACE sp RENAME TO renamed",
+        "DROP TABLESPACE sp",
+        "CREATE TABLE t(id integer) TABLESPACE sp",
+        "CREATE UNIQUE INDEX ix ON t(id) TABLESPACE sp",
+        "ALTER TABLE t SET TABLESPACE sp",
+        "CREATE TABLE t(id integer, PRIMARY KEY(id) USING INDEX TABLESPACE sp)",
+    ] {
+        let error = SessionQuery::parse(sql).unwrap_err();
+        assert_eq!(error.0, "0A000", "{sql}");
+    }
+    for sql in [
+        r#"CREATE TABLE tablespace("tablespace" integer, note text DEFAULT 'TABLESPACE')"#,
+        "CREATE TABLE public.tablespace(id integer)",
+        "ALTER TABLE t ADD tablespace integer",
+        "ALTER TABLE t ADD COLUMN tablespace integer",
+        "ALTER TABLE t ALTER tablespace TYPE integer",
+        "ALTER TABLE t RENAME TO tablespace",
+        "CREATE TABLE t(id integer) /* TABLESPACE sp */",
+    ] {
+        crate::pg_catalog_query::lex(sql).unwrap();
+        assert!(SessionQuery::parse(sql).is_ok(), "{sql}");
+    }
+}

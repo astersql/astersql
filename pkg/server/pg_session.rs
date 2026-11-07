@@ -653,6 +653,40 @@ impl SessionQuery {
         if tokens.last() == Some(&Token::Symbol(';')) {
             tokens.pop();
         }
+        // Reject unsupported storage declarations before sequence adapters,
+        // native parsing, or metadata publication. Quoted identifiers, strings,
+        // comments, and column names inside parentheses are not clauses.
+        let word_at =
+            |i: usize, value: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w == value);
+        if word_at(0, "create") || word_at(0, "alter") || word_at(0, "drop") {
+            let mut depth = 0i32;
+            for (i, token) in tokens.iter().enumerate() {
+                match token {
+                    Token::Symbol('(') => depth += 1,
+                    Token::Symbol(')') => depth -= 1,
+                    Token::Word(w) if depth == 0 && (w == "as" || w == "select") => break,
+                    Token::Word(w) if w == "tablespace" => {
+                        let object = i == 1;
+                        let clause = depth == 0
+                            && i > 2
+                            && matches!(tokens.get(i + 1), Some(Token::Word(_) | Token::Quoted(_)))
+                            && !matches!(tokens.get(i - 1), Some(Token::Symbol('.')))
+                            && !matches!(tokens.get(i-1), Some(Token::Word(w)) if matches!(w.as_str(), "table" | "index" | "sequence" | "schema" | "database" | "view" | "column" | "to" | "on" | "add" | "alter" | "drop"));
+                        let constraint_clause = depth > 0
+                            && i >= 2
+                            && word_at(i - 1, "index")
+                            && word_at(i - 2, "using");
+                        if object || clause || constraint_clause {
+                            return Err((
+                                "0A000",
+                                "PostgreSQL tablespaces are not supported".into(),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let relation_acl = matches!(tokens.first(), Some(Token::Word(w)) if w == "grant" || w == "revoke")
             && tokens.windows(2).any(|w| matches!((&w[0], &w[1]), (Token::Word(a), Token::Word(b)) if a == "on" && b == "sequence"));
         if let Some((command, name)) = if relation_acl {

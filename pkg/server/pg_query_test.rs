@@ -1453,16 +1453,16 @@ fn tablespace_catalog_empty_relation() {
     for (sql, fields) in [
         (
             "SELECT oid::bigint AS id, spcname AS name FROM pg_catalog.pg_tablespace ORDER BY oid",
-            vec![("id", 20u32), ("name", 25)],
+            vec![("id", 20u32), ("name", 19)],
         ),
         (
             "SELECT T.oid, T.spcname, T.spcowner, T.spcacl, T.spcoptions, D.description, pg_catalog.pg_get_userbyid(T.spcowner) AS owner FROM pg_catalog.pg_tablespace T LEFT JOIN pg_catalog.pg_shdescription D ON T.oid = D.objoid ORDER BY T.oid",
             vec![
                 ("oid", 26),
-                ("spcname", 25),
-                ("spcowner", 20),
-                ("spcacl", 25),
-                ("spcoptions", 25),
+                ("spcname", 19),
+                ("spcowner", 26),
+                ("spcacl", 1034),
+                ("spcoptions", 1009),
                 ("description", 25),
                 ("owner", 19),
             ],

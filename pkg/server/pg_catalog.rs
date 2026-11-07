@@ -1119,12 +1119,16 @@ impl CatalogQuery {
                     }
                     ("pg_namespace", "xmin") => Some((8, 8, 0)),
                     ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                    ("pg_tablespace", "spcname") => Some((1, 253, 0)),
-                    ("pg_tablespace", "spcowner") => Some((5, 8, 0)),
-                    // Optional ACL/options use the bounded catalog's nullable text
-                    // representation; no native tablespace rows currently exist.
-                    ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
-                    ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
+                    ("pg_tablespace", "spcname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
+                    ("pg_tablespace", "spcowner") => Some((5, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_tablespace", "spcacl") => {
+                        Some((8, crate::pg_result::CatalogColumnType::AclArray as u8, 0))
+                    }
+                    ("pg_tablespace", "spcoptions") => {
+                        Some((10, crate::pg_result::CatalogColumnType::TextArray as u8, 0))
+                    }
                     ("pg_authid", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_authid", "rolname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -1214,6 +1218,12 @@ impl CatalogQuery {
                     | "information_schema.referential_constraints"
                     | "information_schema.constraint_column_usage"
             ) && qualifier.is_none_or(|q| q == r.alias)
+                || (r.name == "pg_tablespace"
+                    && qualifier.is_none_or(|q| q == r.alias)
+                    && !matches!(
+                        path.last().map(String::as_str),
+                        Some("tableoid" | "xmin" | "cmin" | "xmax" | "cmax" | "ctid")
+                    ))
         }) {
             return Err(("42703", format!("column {} does not exist", path.join("."))));
         }
@@ -1873,6 +1883,12 @@ impl CatalogQuery {
                         ("pg_class", 3) => 18,
                         ("pg_class", 11) => 6,
                         ("pg_class", 13) => 32,
+                        ("pg_class", 14) => 9,
+                        ("pg_tablespace", 0) => 1,
+                        ("pg_tablespace", 1) => 2,
+                        ("pg_tablespace", 5) => 3,
+                        ("pg_tablespace", 8) => 4,
+                        ("pg_tablespace", 10) => 5,
                         _ => return None,
                     };
                     let oid = crate::pg_oid::SYSTEM_RELATIONS
@@ -3395,7 +3411,33 @@ impl CatalogQuery {
             // Native storage has no PostgreSQL tablespace source. Keep the
             // typed relation empty, without synthetic pg_default/pg_global
             // rows or exposing paths from the server host.
-            "pg_tablespace" => Vec::new(),
+            "pg_tablespace" => {
+                if !context.pg_role_administrator()? {
+                    let namespaces =
+                        context.pg_namespace_facts().transpose()?.ok_or_else(|| {
+                            database_identity_unavailable("namespace facts are unavailable")
+                        })?;
+                    let identity = execution.session_identity()?;
+                    let allowed = astersql_session::runtime::pg_tablespace_catalog_select(
+                        &namespaces,
+                        &execution.role_facts()?,
+                        &identity.1,
+                    )
+                    .map_err(crate::runtime::session_protocol_error)?;
+                    if !allowed {
+                        return Err(ConnError::PgFunction(
+                            astersql_session::runtime::PgFunctionError {
+                                state: "42501",
+                                message: "permission denied for table pg_tablespace".into(),
+                                detail: None,
+                                hint: None,
+                                position: None,
+                            },
+                        ));
+                    }
+                }
+                Vec::new()
+            }
             "pg_locks" => {
                 // Native TSO start timestamps are monotonically ordered. They
                 // are not PostgreSQL wraparound XIDs or fabricated lock rows.
@@ -5905,6 +5947,10 @@ fn class_row(oid: u32, name: &str, namespace: u32, kind: &str) -> Vec<Value> {
         Value::Signed(0),
         Value::Null,
         Value::Null,
+        Value::Null, // relation ACL is supplied by the shared model provider
+        // Native storage has no PG tablespace and explicit PG declarations are refused.
+        // Zero means no explicit assignment, not a fabricated default object identity.
+        Value::Signed(0),
     ]
 }
 
@@ -6383,9 +6429,9 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         // Refuse the requested field at bind time, including LIMIT 0 and predicates.
         (
             "pg_class",
-            "xmin" | "reltablespace" | "reloptions" | "relpersistence" | "relispartition"
-            | "relpartbound" | "relam",
+            "xmin" | "reloptions" | "relpersistence" | "relispartition" | "relpartbound" | "relam",
         ) => return None,
+        ("pg_class", "reltablespace") => (14, oid),
         ("pg_class", "relowner") => (11, oid),
         ("pg_class", "relacl") => (13, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_depend", "classid") => (0, oid),

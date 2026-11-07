@@ -255,7 +255,7 @@ pub fn pg_database_privileges(text: &str) -> SessionResult<Vec<(u8, bool)>> {
         .collect()
 }
 
-fn validate_database_acl(
+pub(super) fn validate_database_acl(
     acl: &[PgDatabaseGrant],
     exists: impl Fn(i64) -> bool,
     mask: u8,
@@ -1593,6 +1593,30 @@ impl ConcreteSession {
                             let owner: Option<i64> = load(txn, &ctx, owner_key(schema.id))?;
                             if owner == Some(*oid) {
                                 return Err(kv::errors::New("role owns a database"));
+                            }
+                            let key =
+                                astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                            match txn.Get(&ctx, key, &[]) {
+                                Ok(value) => {
+                                    let standard: super::pg_schema::PgStandardSchema =
+                                        serde_json::from_slice(&value.Value)
+                                            .map_err(|e| kv::errors::New(e.to_string()))?;
+                                    if standard
+                                        .tablespace_catalog_acls
+                                        .get(&schema.id)
+                                        .is_some_and(|acl| {
+                                            acl.grants
+                                                .iter()
+                                                .any(|g| g.grantee == *oid || g.grantor == *oid)
+                                        })
+                                    {
+                                        return Err(kv::errors::New(
+                                            "role has relation dependencies",
+                                        ));
+                                    }
+                                }
+                                Err(e) if kv::IsErrNotFound(&e) => {}
+                                Err(e) => return Err(e),
                             }
                             super::pg_type::type_role_dependency(txn, &ctx, schema.id, *oid)?;
                             super::pg_function::function_role_dependency(

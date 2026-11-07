@@ -106,6 +106,63 @@ pub fn pg_table_acl_fact(table: &TableInfo, roles: &[PgRoleFact]) -> PgDatabaseF
         roles: Arc::new(names),
     }
 }
+// The existing virtual catalog has always admitted PUBLIC SELECT. Persist only
+// explicit overrides, with grantor identity from the registered standard owner.
+fn default_tablespace_catalog_acl(owner: i64) -> PostgreSQLRelationAcl {
+    let mut acl = default_table_acl(owner);
+    acl.grants.push(PostgreSQLAclGrant {
+        grantor: owner,
+        grantee: 0,
+        privileges: 2,
+        grant_options: 0,
+    });
+    acl
+}
+fn tablespace_catalog_fact(standard: &PgStandardSchema, roles: &[PgRoleFact]) -> PgDatabaseFact {
+    let names: BTreeMap<_, _> = roles.iter().map(|r| (r.oid, r.name.clone())).collect();
+    let acl = standard
+        .tablespace_catalog_acl
+        .clone()
+        .unwrap_or_else(|| default_tablespace_catalog_acl(standard.owner));
+    PgDatabaseFact {
+        id: 1213,
+        owner: names
+            .get(&standard.owner)
+            .map(|n| (standard.owner, n.clone())),
+        can_connect: false,
+        acl: Some(acl.grants),
+        acl_default: acl.default_acl,
+        warning: None,
+        is_template: None,
+        allow_connections: None,
+        roles: Arc::new(names),
+    }
+}
+/// SELECT on the virtual relation uses the same current role graph as table ACLs.
+pub fn pg_tablespace_catalog_select(
+    namespaces: &[PgNamespaceFact],
+    roles: &[PgRoleFact],
+    actor: &str,
+) -> SessionResult<bool> {
+    let standard = namespaces
+        .iter()
+        .find_map(|n| n.standard.as_ref())
+        .ok_or_else(|| namespace_error("0A000", "standard catalog identity is unavailable"))?;
+    let fact = tablespace_catalog_fact(standard, roles);
+    if fact.owner.is_none() {
+        return Err(namespace_error(
+            "0A000",
+            "catalog owner identity is unavailable",
+        ));
+    }
+    let actor = roles
+        .iter()
+        .find(|r| r.name == actor)
+        .ok_or_else(|| namespace_error("42704", "role does not exist"))?
+        .oid;
+    fact.has_privilege_mask(roles, actor, 2, false, u8::MAX)
+}
+
 pub fn pg_table_acl_text(table: &TableInfo, roles: &[PgRoleFact]) -> SessionResult<Option<String>> {
     let fact = pg_table_acl_fact(table, roles);
     if fact.owner.is_none() {
@@ -628,6 +685,115 @@ impl ConcreteSession {
                 "0LP01",
                 "grant options cannot be granted to PUBLIC",
             ));
+        }
+        // Explicit pg_catalog qualification cannot bind a user relation. For
+        // unqualified names, preserve ordinary search-path shadowing.
+        let virtual_tablespace = if table != "pg_tablespace" {
+            false
+        } else if let Some(schema) = schema {
+            schema == "pg_catalog"
+        } else {
+            let mut path = self.pg_effective_path()?;
+            if !path.iter().any(|n| n == "pg_catalog") {
+                path.insert(0, "pg_catalog".into());
+            }
+            let mut virtual_relation = false;
+            for namespace in path {
+                if namespace == "pg_catalog" {
+                    virtual_relation = true;
+                    break;
+                }
+                match self.pg_bind_relation(Some(&namespace), table, false) {
+                    Ok(_) => break,
+                    Err(e) if e.pg_function_error().is_some_and(|e| e.state == "42P01") => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            virtual_relation
+        };
+        if virtual_tablespace {
+            if *sequence || !columns.is_empty() {
+                return Err(namespace_error(
+                    "0A000",
+                    "virtual catalog column/sequence ACL is unsupported",
+                ));
+            }
+            let standard = self.pg_standard_schema(false)?.ok_or_else(|| {
+                namespace_error("0A000", "standard catalog identity is unavailable")
+            })?;
+            let owner = standard.owner;
+            let bits = if privileges == "ALL" {
+                u8::MAX
+            } else {
+                pg_table_privileges(privileges)?
+                    .iter()
+                    .fold(0, |b, (v, _)| b | v)
+            };
+            let database = self
+                .domain
+                .info_schema()
+                .SchemaByName(&astersql_infoschema::CiString::new(self.current_database()))
+                .ok_or_else(|| namespace_error("3D000", "database does not exist"))?
+                .id;
+            let ctx = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+            let mut warning = None;
+            self.domain
+                .storage_handle()
+                .with_storage(|store| {
+                    kv::RunInNewTxn(&ctx, store, true, |_, txn| {
+                        let key = astersql_meta::transaction_meta_string_key(b"PgStandardSchema");
+                        let value = txn.Get(&ctx, key.clone(), &[])?;
+                        let mut standard: PgStandardSchema =
+                            serde_json::from_slice(&value.Value)
+                                .map_err(|e| kv::errors::New(e.to_string()))?;
+                        let mut acl = standard
+                            .tablespace_catalog_acls
+                            .get(&database)
+                            .cloned()
+                            .unwrap_or_else(|| default_tablespace_catalog_acl(owner));
+                        super::pg_database::validate_database_acl(
+                            &acl.grants,
+                            |id| roles.iter().any(|r| r.oid == id),
+                            u8::MAX,
+                        )
+                        .map_err(|e| kv::errors::New(e.to_string()))?;
+                        let (notice, modified) = update_object_acl(
+                            &mut acl.grants,
+                            owner,
+                            &actor,
+                            actor_id,
+                            &roles,
+                            bits,
+                            grantee,
+                            *grant,
+                            *grant_option,
+                            *cascade,
+                            privileges == "ALL",
+                        )?;
+                        warning = notice;
+                        if modified {
+                            acl.default_acl = false;
+                            standard.tablespace_catalog_acls.insert(database, acl);
+                            txn.Set(
+                                key,
+                                serde_json::to_vec(&standard)
+                                    .map_err(|e| kv::errors::New(e.to_string()))?,
+                            )?;
+                        }
+                        Ok(())
+                    })
+                })
+                .map_err(|e| {
+                    let text = e.to_string();
+                    if text.contains("requires grant option") {
+                        namespace_error("42501", "permission denied for pg_tablespace")
+                    } else if text.contains("dependent database privileges") {
+                        namespace_error("2BP01", "dependent privileges exist")
+                    } else {
+                        session_error("persist catalog ACL", e)
+                    }
+                })?;
+            return Ok(warning);
         }
         let physical = self.pg_bind_relation(schema.as_deref(), table, false)?;
         let database = self.current_database();

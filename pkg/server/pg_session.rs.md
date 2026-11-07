@@ -137,3 +137,8 @@ ON DOMAIN逐项校验注册类型类别：非域为42809；ON TYPE数组仍由�
 ## 2026-11-07 目录任务26：真实函数签名可见性
 
 函数GRANT/REVOKE携带完整有界输入OID序列（oid/int4/int8/text），共享ACL消费者按真实对象签名匹配，不能误授另一重载。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+在已有PG lexer和SessionQuery::parse入口中，于序列适配器和原生写入之前拒绝CREATE/ALTER/DROP TABLESPACE及对象显式TABLESPACE子句，SQLSTATE 0A000。词法判断保留引号、字符串、注释及列声明语义；无宿主路径访问或空间对象创建。cat14_28覆盖表/索引/临时表/ALTER与引用名。

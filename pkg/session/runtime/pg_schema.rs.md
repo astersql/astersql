@@ -43,3 +43,8 @@ TablePrivileges.columns将列ACL接入原SchemaUtility worker；标准column/tab
 ## 2026-11-07 目录任务26：真实函数签名可见性
 
 标准记录新增serde缺省扩展声明，旧记录不伪造对象；查询快照仅合并本库和本连接临时对象。原schema DROP事务拒绝真实函数依赖，rename沿稳定namespace ID读取当前名。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+PgStandardSchema新增按database ID保存的tablespace_catalog_acls，字段serde(default)兼容旧记录；pg_namespace_facts只提取当前库的覆盖到serde(skip)临时事实。虚拟关系既有PUBLIC SELECT默认保留，显式GRANT/REVOKE使用原KV记录。为ABS-ACL夹具所需public schema授权，显式管理员GRANT/REVOKE可在已显式赋owner、默认标记已知、现有集合仅含PUBLIC时迁移其存储权限集合；读取、未知历史集合均不自动迁移。

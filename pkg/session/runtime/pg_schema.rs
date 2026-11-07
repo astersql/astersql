@@ -389,6 +389,31 @@ impl ConcreteSession {
                                     .get_mut(schema)
                                     .ok_or_else(|| kv::errors::New("schema does not exist"))?;
                                 let roles = grant_roles.as_ref().unwrap();
+                                // Only an explicit admin command migrates the known public
+                                // defaults, after ownership has explicitly been assigned.
+                                // Reads and unknown historical grants never infer an ACL.
+                                if actor == "root"
+                                    && schema == "public"
+                                    && ns.owner_id.is_some()
+                                    && ns.grants.is_none()
+                                    && ns.explicit_acl == Some(false)
+                                    && ns.usage.iter().chain(&ns.create).all(|r| r == "PUBLIC")
+                                {
+                                    let owner = ns.owner_id.unwrap();
+                                    let mut grants = default_namespace_acl(owner);
+                                    let privileges = u8::from(ns.usage.contains("PUBLIC"))
+                                        | (u8::from(ns.create.contains("PUBLIC")) << 2);
+                                    if privileges != 0 {
+                                        grants.push(super::pg_database::PgDatabaseGrant {
+                                            grantor: owner,
+                                            grantee: 0,
+                                            privileges,
+                                            grant_options: 0,
+                                        });
+                                    }
+                                    ns.grants = Some(grants);
+                                    ns.explicit_acl = Some(true);
+                                }
                                 let fact = namespace_acl_fact(ns, roles);
                                 fact.validate_acl()
                                     .map_err(|e| kv::errors::New(e.to_string()))?;
@@ -886,6 +911,8 @@ impl ConcreteSession {
         let enabled = self.pg_enabled_namespace_roles()?;
         let mut standard = self.pg_standard_schema(false)?;
         if let Some(standard) = &mut standard {
+            standard.tablespace_catalog_acl =
+                standard.tablespace_catalog_acls.get(&database.id).cloned();
             standard
                 .extension_functions
                 .retain(|_, f| f.database == database.id);
@@ -1140,6 +1167,12 @@ pub(super) struct BuiltinTypeIdentity {
 /// server from these globally allocated IDs, never copied from a reference build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PgStandardSchema {
+    /// Database-local ACL for the registered virtual pg_tablespace relation.
+    /// Object rows remain absent; this controls catalog enumeration only.
+    #[serde(default)]
+    pub(super) tablespace_catalog_acls: BTreeMap<i64, astersql_meta_model::PostgreSQLRelationAcl>,
+    #[serde(skip)]
+    pub(super) tablespace_catalog_acl: Option<astersql_meta_model::PostgreSQLRelationAcl>,
     #[serde(default)]
     pub extension_functions: BTreeMap<i64, astersql_expression::PgExtensionDeclaration>,
     // Declarations register identities on upgrade, never unknown historical owners.
@@ -1248,6 +1281,8 @@ impl ConcreteSession {
                         Err(e) if kv::IsErrNotFound(&e) && initialize => {
                             created = true;
                             let standard = PgStandardSchema {
+                                tablespace_catalog_acls: BTreeMap::new(),
+                                tablespace_catalog_acl: None,
                                 extension_functions: BTreeMap::new(),
                                 builtin_types: BTreeMap::new(),
                                 function_acl_initialized: true,

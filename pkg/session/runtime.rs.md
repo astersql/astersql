@@ -184,3 +184,8 @@ PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，�
 ## 2026-11-07 目录任务26：真实函数签名可见性
 
 导出共享正式扩展声明与原系统目录OID清单，不新增第二套目录执行器或权限系统。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+复用pg_table模块导出pg_tablespace_catalog_select，供目录执行从当前PgNamespaceFact/PgRoleFact计算SELECT；未新增SessionRequest或第二套授权执行器。

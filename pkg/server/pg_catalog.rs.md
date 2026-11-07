@@ -184,3 +184,8 @@ pg_proc由原三原语及PgStandardSchema/本连接临时声明枚举真实登�
 ## 名称与 OID 往返（cat14_27）
 
 regclass 强制转换区分输入函数和已声明 text 的名称转换：未知字符串字面量调用 `pg_oid::resolve_in_path`，包括数字 OID 与 `-`；text 参数或表达式调用 `resolve_name_in_path`，数字也必须作为关系名查找。两者继续共享同次 Execution 快照、有效路径和 namespace USAGE。regclass 到 text 使用同一身份的 `display_in_path`，必要时限定 schema 并正确引用名称。
+
+
+## 2026-11-07 表空间空关系策略（任务28）
+
+pg_tablespace保持真实零行，五列为oid/name/oid/aclitem[]/text[]，保留1213的真实PG属性号与text/binary描述；未知列42703。每次Execute复用共享角色图和按库持久的虚拟关系ACL检查SELECT，拒绝42501优先于空行/LIMIT；不把无权限伪装为空集。pg_class.reltablespace使用0表示原生存储没有显式PG空间分配，LEFT JOIN保左行；没有捏造pg_default/pg_global对象。独立回归为pg_catalog_test::cat14_28。

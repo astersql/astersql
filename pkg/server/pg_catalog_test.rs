@@ -23737,3 +23737,447 @@ fn cat14_27() {
         send(s, b'X', b"");
     }
 }
+
+#[test]
+fn cat14_28() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE cat14_28_db").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::BootstrapRootAndNativeAccounts,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_28_other")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_28_work")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS cat14_28_db")
+            .unwrap();
+        for name in ["cat14_28_reader", "cat14_28_owner", "cat14_28_group"] {
+            native
+                .execute(&format!("DROP USER IF EXISTS '{name}'@'%'"))
+                .unwrap();
+        }
+        domain.close();
+        assert!(TcpStream::connect(address).is_err());
+    });
+    let connect_database = |user: &str, database: &str| {
+        let mut s = TcpStream::connect(address).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0{user}\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let r = until_ready(&mut s);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{r:?}");
+        s
+    };
+    #[track_caller]
+    fn ok(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let r = query(s, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+        r
+    }
+    fn state(r: &[(u8, Vec<u8>)]) -> String {
+        r.iter()
+            .find(|m| m.0 == b'E')
+            .and_then(|m| m.1.split(|b| *b == 0).find(|v| v.first() == Some(&b'C')))
+            .map(|v| String::from_utf8_lossy(&v[1..]).into_owned())
+            .unwrap_or_else(|| "success".into())
+    }
+
+    fn description(r: &[(u8, Vec<u8>)], expected: &[(u32, i16, u32, i16)], format: i16) {
+        let t = &r.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(
+            i16::from_be_bytes(t[..2].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        let mut o = 2;
+        for &(oid, len, source, attr) in expected {
+            o += t[o..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(u32::from_be_bytes(t[o..o + 4].try_into().unwrap()), source);
+            assert_eq!(
+                i16::from_be_bytes(t[o + 4..o + 6].try_into().unwrap()),
+                attr
+            );
+            assert_eq!(
+                u32::from_be_bytes(t[o + 6..o + 10].try_into().unwrap()),
+                oid
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 10..o + 12].try_into().unwrap()),
+                len
+            );
+            assert_eq!(
+                i32::from_be_bytes(t[o + 12..o + 16].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                i16::from_be_bytes(t[o + 16..o + 18].try_into().unwrap()),
+                format
+            );
+            o += 18;
+        }
+    }
+    fn data(r: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        r.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    #[track_caller]
+    fn denied(s: &mut TcpStream, sql: &str, code: &str, status: u8) {
+        let r = query(s, sql);
+        assert_eq!(state(&r), code, "{sql}: {r:?}");
+        assert_eq!(r.last(), Some(&(b'Z', vec![status])));
+        if status == b'I' {
+            assert_eq!(data(&ok(s, "SELECT 1")), vec![row(&[Some("1")])]);
+        }
+    }
+    fn execute(s: &mut TcpStream, format: i16) -> Vec<(u8, Vec<u8>)> {
+        send(
+            s,
+            b'B',
+            &[
+                b"space_portal\0space_stmt\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i32.to_be_bytes(),
+                b"1",
+                &1i16.to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(s, b'D', b"Pspace_portal\0");
+        send(
+            s,
+            b'E',
+            &[b"space_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', b"");
+        until_ready(s)
+    }
+    let mut bootstrap = connect_database("root", "cat14_28_db");
+    ok(&mut bootstrap, "CREATE ROLE cat14_28_reader LOGIN");
+    ok(&mut bootstrap, "CREATE ROLE cat14_28_owner LOGIN");
+    ok(&mut bootstrap, "CREATE ROLE cat14_28_group NOLOGIN");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_28_work");
+    ok(&mut bootstrap, "CREATE DATABASE cat14_28_other");
+    send(&mut bootstrap, b'X', b"");
+    let connect = |user: &str| connect_database(user, "cat14_28_work");
+    let mut admin = connect("root");
+    // Explicit owner assignment authorizes migrating the built-in public ACL from its stored sets.
+    ok(&mut admin, "ALTER SCHEMA public OWNER TO root");
+    ok(
+        &mut admin,
+        "GRANT USAGE,CREATE ON SCHEMA public TO cat14_28_owner",
+    );
+    ok(
+        &mut admin,
+        "GRANT USAGE ON SCHEMA public TO cat14_28_reader",
+    );
+    let mut owner = connect("cat14_28_owner");
+    ok(&mut owner, "CREATE TABLE public.cat14_28_t(id integer)");
+    native
+        .execute("GRANT ALTER,DROP,CREATE,INSERT ON cat14_28_work.* TO 'cat14_28_owner'@'%'")
+        .unwrap();
+    ok(&mut owner, "INSERT INTO public.cat14_28_t VALUES(1)");
+    ok(
+        &mut owner,
+        "GRANT SELECT ON public.cat14_28_t TO cat14_28_reader",
+    );
+    let mut reader = connect("cat14_28_reader");
+    let sql =
+        "SELECT oid,spcname,spcowner,spcacl,spcoptions FROM pg_catalog.pg_tablespace ORDER BY oid";
+    let expected = [
+        (26, 4, 1213, 1),
+        (19, 64, 1213, 2),
+        (26, 4, 1213, 3),
+        (1034, -1, 1213, 4),
+        (1009, -1, 1213, 5),
+    ];
+    for s in [&mut owner, &mut reader] {
+        let r = ok(s, sql);
+        description(&r, &expected, 0);
+        assert!(data(&r).is_empty());
+        assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+    }
+    let join = "SELECT c.relname,s.spcname,s.spcowner,s.spcacl,s.spcoptions FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_tablespace s ON c.reltablespace=s.oid WHERE c.relname='cat14_28_t'";
+    let r = ok(&mut reader, join);
+    assert_eq!(
+        data(&r),
+        vec![row(&[Some("cat14_28_t"), None, None, None, None])]
+    );
+    description(
+        &r,
+        &[
+            (19, 64, 1259, 2),
+            (19, 64, 1213, 2),
+            (26, 4, 1213, 3),
+            (1034, -1, 1213, 4),
+            (1009, -1, 1213, 5),
+        ],
+        0,
+    );
+    assert_eq!(
+        data(&ok(
+            &mut reader,
+            "SELECT reltablespace FROM pg_class WHERE relname='cat14_28_t'"
+        )),
+        vec![row(&[Some("0")])]
+    );
+    // Binary LEFT JOIN must retain all four SQL NULL lengths and name bytes.
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"null_stmt\0".as_slice(),
+            join.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut reader,
+        b'B',
+        &[
+            b"null_portal\0null_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'D', b"Pnull_portal\0");
+    send(
+        &mut reader,
+        b'E',
+        &[b"null_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut reader, b'S', b"");
+    let binary_null = until_ready(&mut reader);
+    assert_eq!(state(&binary_null), "success");
+    assert_eq!(
+        data(&binary_null),
+        vec![row(&[Some("cat14_28_t"), None, None, None, None])]
+    );
+    description(
+        &binary_null,
+        &[
+            (19, 64, 1259, 2),
+            (19, 64, 1213, 2),
+            (26, 4, 1213, 3),
+            (1034, -1, 1213, 4),
+            (1009, -1, 1213, 5),
+        ],
+        1,
+    );
+    send(&mut reader, b'C', b"Pnull_portal\0");
+    send(&mut reader, b'C', b"Snull_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    let storage = ok(
+        &mut reader,
+        "SELECT reltablespace FROM pg_class WHERE relname='cat14_28_t'",
+    );
+    description(&storage, &[(26, 4, 1259, 9)], 0);
+    let prepared = "SELECT oid,spcname,spcowner,spcacl,spcoptions FROM pg_catalog.pg_tablespace WHERE oid=$1 ORDER BY oid";
+    send(
+        &mut reader,
+        b'P',
+        &[
+            b"space_stmt\0".as_slice(),
+            prepared.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut reader, b'D', b"Sspace_stmt\0");
+    send(&mut reader, b'S', b"");
+    let r = until_ready(&mut reader);
+    assert_eq!(state(&r), "success");
+    description(&r, &expected, 0);
+    for format in [0, 1] {
+        let r = execute(&mut reader, format);
+        assert_eq!(state(&r), "success");
+        description(&r, &expected, format);
+        assert!(data(&r).is_empty());
+        send(&mut reader, b'C', b"Pspace_portal\0");
+        send(&mut reader, b'S', b"");
+        until_ready(&mut reader);
+    }
+    for ddl in [
+        "CREATE TABLESPACE cat14_28_sp LOCATION '/abs_contract_only'",
+        "CREATE TABLE public.cat14_28_side(id integer) TABLESPACE cat14_28_sp",
+        "CREATE INDEX cat14_28_ix ON public.cat14_28_t(id) TABLESPACE cat14_28_sp",
+        "ALTER TABLE public.cat14_28_t SET TABLESPACE cat14_28_sp",
+        "ALTER INDEX cat14_28_ix SET TABLESPACE cat14_28_sp",
+        "CREATE TEMPORARY TABLE cat14_28_temp(id integer) TABLESPACE pg_default",
+        "CREATE TABLE public.cat14_28_side3(id integer, PRIMARY KEY(id) USING INDEX TABLESPACE pg_default)",
+        "CREATE TABLE public.cat14_28_side2(id integer) /* clause */ TABLESPACE \"pg_default\"",
+    ] {
+        denied(&mut owner, ddl, "0A000", b'I');
+    }
+    assert_eq!(
+        data(&ok(&mut owner, "SELECT id FROM public.cat14_28_t")),
+        vec![row(&[Some("1")])]
+    );
+    assert!(data(&ok(&mut reader,"SELECT oid FROM pg_class WHERE relname IN ('cat14_28_side','cat14_28_ix','cat14_28_temp','cat14_28_side2','cat14_28_side3')")).is_empty());
+    // Quoted identifiers and string contents must not be mistaken for storage clauses.
+    ok(
+        &mut owner,
+        "CREATE TABLE public.cat14_28_names(\"tablespace\" integer, note text DEFAULT 'TABLESPACE')",
+    );
+    ok(&mut owner, "DROP TABLE public.cat14_28_names");
+    denied(
+        &mut reader,
+        "SELECT oid FROM pg_catalog.pg_missing_tablespace",
+        "42P01",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT missing_column FROM pg_catalog.pg_tablespace",
+        "42703",
+        b'I',
+    );
+    denied(
+        &mut reader,
+        "SELECT missing_column FROM pg_catalog.pg_tablespace LIMIT 0",
+        "42703",
+        b'I',
+    );
+    let warning = ok(
+        &mut reader,
+        "REVOKE SELECT ON pg_catalog.pg_tablespace FROM PUBLIC",
+    );
+    assert!(
+        warning
+            .iter()
+            .any(|m| m.0 == b'N' && m.1.windows(7).any(|w| w == b"C01006\0"))
+    );
+    assert!(data(&ok(&mut reader, sql)).is_empty());
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON pg_catalog.pg_tablespace FROM PUBLIC",
+    );
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON pg_catalog.pg_tablespace FROM cat14_28_reader",
+    );
+    denied(&mut reader, sql, "42501", b'I');
+    let mut reopened = connect("cat14_28_reader");
+    denied(&mut reopened, sql, "42501", b'I');
+    send(&mut reopened, b'X', b"");
+    denied(&mut reader, join, "42501", b'I');
+    denied(
+        &mut reader,
+        "SELECT oid FROM pg_tablespace LIMIT 0",
+        "42501",
+        b'I',
+    );
+    // A prepared statement must consult current ACLs on every Execute.
+    let r = execute(&mut reader, 1);
+    assert_eq!(state(&r), "42501");
+    assert_eq!(r.last(), Some(&(b'Z', vec![b'I'])));
+    ok(
+        &mut admin,
+        "GRANT SELECT ON pg_catalog.pg_tablespace TO cat14_28_reader",
+    );
+    let r = execute(&mut reader, 1);
+    assert_eq!(state(&r), "success");
+    description(&r, &expected, 1);
+    assert!(data(&r).is_empty());
+    send(&mut reader, b'C', b"Pspace_portal\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    send(&mut reader, b'C', b"Sspace_stmt\0");
+    send(&mut reader, b'S', b"");
+    until_ready(&mut reader);
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON pg_catalog.pg_tablespace FROM cat14_28_reader",
+    );
+    ok(&mut reader, "BEGIN");
+    denied(&mut reader, sql, "42501", b'E');
+    denied(&mut reader, "SELECT 1", "25P02", b'E');
+    ok(&mut reader, "ROLLBACK");
+    ok(&mut reader, "SELECT 1");
+    let mut other = connect_database("cat14_28_reader", "cat14_28_other");
+    assert!(data(&ok(&mut other, sql)).is_empty());
+    send(&mut other, b'X', b"");
+    // Shared enabled-role membership, not the login name, supplies SELECT.
+    ok(
+        &mut admin,
+        "GRANT SELECT ON pg_catalog.pg_tablespace TO cat14_28_group",
+    );
+    ok(&mut admin, "GRANT cat14_28_group TO cat14_28_reader");
+    assert!(data(&ok(&mut reader, sql)).is_empty());
+    denied(&mut admin, "DROP ROLE cat14_28_group", "2BP01", b'I');
+    ok(
+        &mut admin,
+        "REVOKE SELECT ON pg_catalog.pg_tablespace FROM cat14_28_group",
+    );
+    ok(&mut admin, "REVOKE cat14_28_group FROM cat14_28_reader");
+    denied(&mut reader, sql, "42501", b'I');
+    ok(
+        &mut admin,
+        "GRANT SELECT ON pg_catalog.pg_tablespace TO PUBLIC",
+    );
+    assert!(data(&ok(&mut reader, sql)).is_empty());
+    ok(
+        &mut owner,
+        "REVOKE SELECT ON public.cat14_28_t FROM cat14_28_reader",
+    );
+    assert!(data(&ok(&mut reader, sql)).is_empty()); // ordinary table ACL does not hide public catalogs
+    denied(
+        &mut reader,
+        "SELECT id FROM public.cat14_28_t",
+        "42501",
+        b'I',
+    );
+    ok(
+        &mut owner,
+        "ALTER TABLE public.cat14_28_t RENAME TO cat14_28_renamed",
+    );
+    let renamed = join.replace("cat14_28_t'", "cat14_28_renamed'");
+    assert_eq!(
+        data(&ok(&mut reader, &renamed)),
+        vec![row(&[Some("cat14_28_renamed"), None, None, None, None])]
+    );
+    ok(&mut owner, "DROP TABLE public.cat14_28_renamed");
+    assert!(data(&ok(&mut reader, &renamed)).is_empty());
+    for s in [&mut reader, &mut owner, &mut admin] {
+        send(s, b'X', b"");
+    }
+    println!(
+        "cat14_28: empty_oid=26/19/26/1034/1009 describe=Q/statement/portal text_binary=3 left_null=4 ddl_rejections=8 acl=grant/revoke/inherited/db_isolation prepared_refresh=1 transaction=I/T/E recovery=1 cleanup=1"
+    );
+}

@@ -1969,7 +1969,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             assert all(int(r[0]) > 0 and r[1] is None and r[3:] == [None, 'root'] for r in namespaces), namespaces
             assert [int(r[0]) for r in namespaces[1:]] == sorted(int(r[0]) for r in namespaces[1:]), namespaces
             assert len({r[0] for r in namespaces}) == len(namespaces)
-            query(tablespace_sql, [], metadata=[('id', 20), ('name', 25), ('owner', 25), ('spcacl', 25), ('spcoptions', 25)], extended=extended)
+            query(tablespace_sql, [], metadata=[('id', 20), ('name', 19), ('owner', 19), ('spcacl', 1034), ('spcoptions', 1009)], extended=extended)
             # Extracted from DataGrip PgIntroQueries.sql: the ID-only probe is
             # supported; full introspection requires features beyond this phase.
             query('select oid::bigint from pg_catalog.pg_tablespace', [], metadata=[('oid', 20)], extended=extended)
