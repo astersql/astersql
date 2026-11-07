@@ -39,7 +39,7 @@
 
 `Execution.snapshot` 是一次执行唯一的 schema 视图；`database` 同样只获取一次。`pg_class`、`pg_attribute`、`pg_index`、regclass 显示和定义反解都应使用这组一致数据。当前用户、事务列表和当前 TSO 则通过 `TiDBContext` 的受控查询或身份接口获取：`mysql.user` 映射 `pg_user`，`information_schema.tidb_trx` 映射 `pg_locks.transactionid`，`@@tidb_current_ts` 支撑 `txid_current()`。
 
-OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid` 与 `SYSTEM_RELATIONS` 保证 provider、regclass 和定义查询指向同一对象。`COLUMN_TYPES` 只登记当前可可靠映射的内建类型。FDW、策略等尚无安装能力的 provider 保留列类型并返回空行；触发器读取须先核实当前库无FK，否则因缺PG内部trigger/function身份返回0A000。rewrite、PG collation/operator family等其他缺口沿各自任务处理。
+OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid` 与 `SYSTEM_RELATIONS` 保证 provider、regclass 和定义查询指向同一对象。`COLUMN_TYPES` 只登记当前可可靠映射的内建类型。FDW、策略等尚无安装能力的 provider 保留列类型并返回空行；触发器读取须先核实当前库无FK，否则因缺PG内部trigger/function身份返回0A000。rewrite读取须先核实当前库无视图，否则因缺规则身份/定义返回0A000；PG collation/operator family等其他缺口沿各自任务处理。
 
 ## 依赖与调用关系
 
@@ -210,3 +210,10 @@ pg_policy的8个已知字段绑定到26/19/26/16/1028/18/194/194，字段来源3
 provider复用单次Execution的当前数据库schema快照与连接临时模型。无FK且未开放用户触发器安装能力时返回有类型的空集；任一模型有ForeignKeys则输出前0A000，因为现有FK执行没有PG内部trigger/function身份，不能以空集宣称完整FK内省。provider在过滤与JOIN前物化，故当前保守拒绝该库内所有pg_trigger读取（包括无关表过滤、父表、LIMIT0），不从SQL条件猜测不存在对象。每次Execute重新取事实，drop最后FK后恢复空集，另一数据库不受影响。未新增触发器执行器、对象或函数身份。
 
 `SessionQuery`的最小TRIGGER DDL拒绝门禁维护用户触发器不可安装边界；未来引入共享触发器事实时须一起更新provider。聚焦真实服务回归`pg_catalog_test::cat14_31`，含非root owner/reader、字段描述、text/binary、LEFT JOIN、FK前后prepared重执行、I/E恢复及跨库隔离。
+
+
+## 2026-11-07 目录任务32：重写规则必需事实门禁
+
+`pg_rewrite`绑定oid/ev_class/rulename/ev_type/ev_enabled/is_instead/ev_qual/ev_action八列，类型26/26/19/18/18/16/194/194，来源OID2618，属性号1/3/2/4/5/6/7/8。空集及LEFT JOIN的NULL保留完整描述，char/bool/pg_node_tree复用已有codec；未知列42703，未支持系统属性0A000。
+
+provider使用Execution单次快照、当前数据库与连接临时模型。普通表无规则时可空；有View或MaterializedView的模型时，因缺真实PG规则身份与节点树，在输出前返回0A000，不从viewdef伪造_RETURN。此门禁在过滤/JOIN/LIMIT前物化，故当前库存在视图时所有pg_rewrite读取均保守拒绝；每次Execute重取事实，drop最后视图后恢复，其他数据库不受影响。未引入规则对象系统或DDL执行器。未来上游发布真实规则事实时须同步替换此门禁。聚焦回归`pg_catalog_test::cat14_32`。

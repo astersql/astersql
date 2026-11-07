@@ -1092,6 +1092,7 @@ impl CatalogQuery {
                         }),
                     ("pg_policy", "polpermissive") => Some((4, 1, boolean)),
                     ("pg_trigger", "tgisinternal") => Some((4, 1, boolean)),
+                    ("pg_rewrite", "is_instead") => Some((5, 1, boolean)),
                     ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_class", "relname") => {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
@@ -1229,6 +1230,7 @@ impl CatalogQuery {
                         | "pg_foreign_table"
                         | "pg_trigger"
                         | "pg_policy"
+                        | "pg_rewrite"
                 ) && qualifier.is_none_or(|q| q == r.alias)
                     && !matches!(
                         path.last().map(String::as_str),
@@ -1897,6 +1899,7 @@ impl CatalogQuery {
                         ("pg_foreign_data_wrapper", slot) if slot <= 6 => (slot + 1) as i16,
                         ("pg_foreign_server", slot) if slot <= 7 => (slot + 1) as i16,
                         ("pg_foreign_table", slot) if slot <= 2 => (slot + 1) as i16,
+                        ("pg_rewrite", slot) if slot < 8 => [1, 3, 2, 4, 5, 6, 7, 8][slot],
                         ("pg_trigger", slot @ (0 | 1)) => (slot + 1) as i16,
                         ("pg_trigger", 2) => 4,
                         ("pg_trigger", 3) => 5,
@@ -3292,7 +3295,36 @@ impl CatalogQuery {
             // policies, triggers and rewrite rules) have no native PG object
             // identity or definition. MySQL collations are not PG collations.
             "pg_inherits" | "pg_aggregate" | "pg_collation" | "pg_opfamily" | "pg_amop"
-            | "pg_amproc" | "pg_rewrite" => Vec::new(),
+            | "pg_amproc" => Vec::new(),
+            "pg_rewrite" => {
+                // A stored view definition does not provide a PG rule identity or
+                // action tree. Materialize this gate before filters or LIMIT, so
+                // a database with views cannot silently report missing rules.
+                let snapshot = snapshot.ok_or_else(|| {
+                    database_identity_unavailable("schema snapshot is unavailable")
+                })?;
+                let mut tables = snapshot
+                    .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                    .map_err(|e| ConnError::Session(e.to_string()))?;
+                tables.extend(
+                    context
+                        .pg_local_temporary_models()?
+                        .into_iter()
+                        .map(|m| astersql_infoschema::Table::from_model(m).0),
+                );
+                for table in tables {
+                    check_catalog_cancel(cancel)?;
+                    let model = table.model_meta.as_ref().ok_or_else(|| {
+                        database_identity_unavailable("table metadata is unavailable")
+                    })?;
+                    if model.View.is_some() || model.MaterializedView.is_some() {
+                        return Err(database_identity_unavailable(
+                            "view rewrite rule identities and definitions are unavailable",
+                        ));
+                    }
+                }
+                Vec::new()
+            }
             "pg_trigger" => {
                 // Native FK enforcement is not represented by PG trigger/function
                 // identities. A database containing an FK cannot truthfully expose
@@ -6458,6 +6490,12 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_trigger", "tgisinternal") => (4, 1),
         ("pg_rewrite", "oid") => (0, oid),
         ("pg_rewrite", "ev_class") => (1, oid),
+        ("pg_rewrite", "rulename") => (2, crate::pg_result::CatalogColumnType::Name as u8),
+        ("pg_rewrite", "ev_type") => (3, internal_char),
+        ("pg_rewrite", "ev_enabled") => (4, internal_char),
+        ("pg_rewrite", "is_instead") => (5, 1),
+        ("pg_rewrite", "ev_qual") => (6, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
+        ("pg_rewrite", "ev_action") => (7, crate::pg_result::CatalogColumnType::PgNodeTree as u8),
         ("pg_opclass", "xmin") => (2, 8),
         ("pg_opclass", "opcname") => (3, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_opclass", "opcintype") => (4, oid),
